@@ -604,7 +604,9 @@ def canonical_lesson_author_example(*, language_id: str, knowledge_key: str, tit
     }
 
 
-def lesson_author_block_examples(*, language_id: str, citation_handle: str) -> dict[str, object]:
+def lesson_author_block_examples(
+    *, language_id: str, citation_handle: str, required_capabilities: tuple[str, ...] | None = None,
+) -> dict[str, object]:
     """One exact field example for every registered Lesson block type."""
 
     common = {"order_index": 0, "citation_ids": [citation_handle]}
@@ -616,7 +618,7 @@ def lesson_author_block_examples(*, language_id: str, citation_handle: str) -> d
         "code_example": {"block_id": "code-1", "type": "code_example", **common, "title": "代码示例", "language_id": language_id, "code": "value = 1", "explanation": ["解释这一行的可见行为。"], "execution_claim": "not_run"},
         "comparison": {"block_id": "comparison-1", "type": "comparison", **common, "title": "对比", "columns": ["写法", "行为"], "rows": [["A", "行为 A"]], "conclusion": "指出适用边界。"},
         "hint": {"block_id": "hint-1", "type": "hint", **common, "title": "提示", "steps": ["先检查输入和输出。"]},
-        "exercise_gate": {"block_id": "gate-1", "type": "exercise_gate", **common, "gate_key": "core.check", "gate_kind": "knowledge_check", "assessment_contract_version": "knowledge_check_v1", "required_capabilities": [f"{language_id}.core"], "learner_prompt": "用自己的话解释核心行为。"},
+        "exercise_gate": {"block_id": "gate-1", "type": "exercise_gate", **common, "gate_key": "core.check", "gate_kind": "knowledge_check", "assessment_contract_version": "knowledge_check_v1", "required_capabilities": list(required_capabilities) if required_capabilities is not None else [language_id], "learner_prompt": "用自己的话解释核心行为。"},
         "summary": {"block_id": "summary-1", "type": "summary", **common, "points": ["总结核心行为。"], "coverage_keys": ["core.behavior"]},
         "next_steps": {"block_id": "next-1", "type": "next_steps", **common, "items": ["完成受控练习。"]},
     }

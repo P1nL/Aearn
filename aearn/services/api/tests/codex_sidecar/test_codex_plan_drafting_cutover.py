@@ -1202,7 +1202,7 @@ def test_codex_missing_direction_marker_ignores_stale_model_question(
     assert receipt["direction_action"] == "clarify_direction"
     assert receipt["source"] == "server_fallback_missing_direction"
     assert host.turn_requests[0].effort == "low"
-    assert host.turn_requests[0].timeout_seconds == 45.0
+    assert host.turn_requests[0].timeout_seconds == 180.0
     assert host.turn_requests[0].max_visible_text_chars == 2_000
     assert host.turn_requests[0].max_reasoning_text_chars == 16_000
 

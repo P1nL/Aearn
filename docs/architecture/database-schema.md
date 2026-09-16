@@ -120,9 +120,22 @@ capability receipt 或 effect commit。
 
 ## 2026-08-18：Codex plan-drafting 受控切换
 
-`tutor_codex_runtime_health` 是无 learner ownership 的 shared infrastructure。server-side policy 只有在 feature enabled 且 latest heartbeat 对 exact allowlisted Runtime version、`deepseek-v4-flash`、`aearn_deepseek`、`responses`、generation 和 freshness 全部通过时，才为全新 `plan_drafting` conversation 冻结 `codex_sidecar_v1`。既有 conversation 后续 fresh turn 与 Retry 继承原 Runtime；Queue item 只保存服务端冻结值，客户端字段不能影响。Harness/Codex worker 对同一 durable dispatch queue 按 `runtime_kind` 精确 claim，关闭 admission 不删除历史 binding/receipt，也不让 active run 跨 Runtime 续跑。
+`tutor_codex_runtime_health` 是无 learner ownership 的 shared infrastructure。server-side policy 只有在 feature enabled 且 latest heartbeat 对 exact allowlisted Runtime version、`deepseek-flash`、`aearn_deepseek`、`responses`、generation 和 freshness 全部通过时，才为全新 `plan_drafting` conversation 冻结 `codex_sidecar_v1`。既有 conversation 后续 fresh turn 与 Retry 继承原 Runtime；Queue item 只保存服务端冻结值，客户端字段不能影响。Harness/Codex worker 对同一 durable dispatch queue 按 `runtime_kind` 精确 claim，关闭 admission 不删除历史 binding/receipt，也不让 active run 跨 Runtime 续跑。
 
 ## 5. LearningTrack、计划路线、掌握度与教学 scope
+
+### 2026-09-13：Frozen catalog scope
+
+增量 fragment `220_plan_catalog_knowledge_scope.sql` 为 `tutor_track_plan_nodes`
+增加可空 `catalog_knowledge_key`。INSERT guard 将非空映射与 immutable revision
+`plan_json` 中的同节点映射/能力对照，并验证同语言、能力兼容的 published catalog；
+旧 null 行与其 hash 不被回填改写。`tutor_plan_catalog_knowledge_key` 按
+user/track/revision/node 精确解析，`tutor_artifact_catalog_knowledge_key` 经 Artifact
+绑定的 TeachingSession frozen revision 解析。不存在或跨 scope 时 fail closed。
+Artifact/Attempt owner guard 只用映射检查内容身份，根 `knowledge_key`、session/
+assignment/version guard 和正式 Gate 的 progress owner 仍保持原路线节点身份。
+修改映射必须发布新计划 revision；不得重标 published item、复用其他节点成绩或
+改写旧 session/Attempt。仅内容映射并不构成学习完成、真实执行或独立内容覆盖证据。
 
 LearningTrack 是新增的 track-scoped 教学权威状态，与旧 `learning_*` 表以及
 user-level `tutor_plan_revisions` 明确隔离：
@@ -471,7 +484,7 @@ diagnostic、credential 和 secret 禁止落入该表、message 列或 conversat
 
 | 表 | 责任 | 关键不变量 |
 | --- | --- | --- |
-| `tutor_conversation_runtime_threads` | 一个 learner conversation 对应的持久 Codex App Server thread | owner/conversation scoped FK；每 conversation/runtime 最多一个 active row；固定 `deepseek-v4-flash` + `aearn_deepseek`；external identity immutable/private；记录 native/adopted legacy/reseed lineage 与 resume/compaction 时间 |
+| `tutor_conversation_runtime_threads` | 一个 learner conversation 对应的持久 Codex App Server thread | owner/conversation scoped FK；每 conversation/runtime 最多一个 active row；固定 `deepseek-flash` + `aearn_deepseek`；external identity immutable/private；记录 native/adopted legacy/reseed lineage 与 resume/compaction 时间 |
 | `tutor_run_runtime_bindings` | fresh TutorRun 到同 conversation thread 内一个新 Codex turn 的绑定 | 增加 conversation thread FK；run 仍唯一，external turn 唯一；不再要求 external thread 在 run binding 中唯一；input/lease/connection generation fence 仍控制投影 |
 | `tutor_runtime_text_items` | owner-scoped raw reasoning 与 final-answer current/history projection | `(binding, external item hash, channel)` 唯一；channel/state/sequence/hash/connection generation 闭合；streaming 可追加，completed/discarded/blocked terminal immutable；completed item 仅允许一次关联同 conversation 正式 message |
 
@@ -527,6 +540,22 @@ Learning Item-backed Artifact owner 固定 immutable version id 与 latest publi
 `tutor_continuation_intents` 保存 exact Artifact/session/checkpoint/track/progress/assignment fence、source kind/id/version、fixed priority、idempotency hash、not-before、state/version、claim owner/generation/expiry 与 consumed run；`tutor_continuation_intent_events` 保存 append-only transition evidence。一个 conversation 同时最多一条 claimed intent。claim 前必须确认没有 active foreground run、pending learner input 或 active branch，并重新验证 Artifact/session versions 与 checkpoint ancestry；stale intent转 cancelled，过期 claim按 generation release。producer 只写 intent，不创建 run或调用 provider。
 
 branch/continuation 六张表属于 user-owned cutover target。local export 只能输出 bounded state/count/identity summary；reset/delete 按 event/item/run-scope/intent child-to-root 清理。conversation snapshot 仅在 branch history 存在时投影 v5。repeat bootstrap 必须保留早期 fragment 110 对 persisted `tutor_conversation_event_v3` row 的兼容，否则 schema 120 之前会因 projection-version CHECK 失败。
+
+### 2026-09-13：Branch authority retirement
+
+增量 fragment `210_tutor_branch_supersession.sql` 增加 branch `superseded` 终态、`superseded_by_session_id` 与 `superseded_at`；它不表示正常答疑完成，`resolved_turn_id/resolved_at` 必须为空。旧 `active/resolved` 行不被迁移改写。`authority_superseded` 是 append-only branch event，保存 `superseding_session_id`，不带 source input、provider response、disposition 或 assistance receipt；已有事件类型仍必须拥有完整 source input。
+
+TeachingSession owner 在一个 caller-owned transaction/savepoint 内阻塞陈旧会话、建立真实 successor、调用 branch owner 追加事件并推进 branch CAS。数据库与 owner 都验证直接 predecessor、相同 user/conversation/track/knowledge、不同 authority snapshot、旧 session 已 blocked 且没有未终态 run；终态 root 不可再改。branch round、items、旧 disposition、Attempt 与学习进度均不重写。Python/SQL active-branch guard 不放宽；旧 Artifact 的内容保持不变，生命周期退役遵循下节独立合同。
+
+历史修复必须使用明确范围、有限且无环的 predecessor 链，先只读 dry-run，再核对当前 authority 与预期版本，通过 owner 处理；不得直接 UPDATE 状态或顺便调度陈旧 intent。local export 保留新的 retirement identity/timestamp，不把空 source input 补成旧 learner/Turn 来源。
+
+### 2026-09-15：Blocked TeachingSession Artifact retirement
+
+增量 fragment `230_artifact_authority_supersession.sql` 不改写数据。正常 TeachingSession open 在 conversation lock 和同一事务内，仅沿同 user/conversation/track/node、最多 32 层且全部 blocked 的祖先链，通过 Artifact owner 将最多 64 个非终态旧工件置为 `superseded`。正在运行或有未终态 Attempt 的工件必须先完成或取消，不可退役绕过。重复 open 不增加事件或版本。
+
+数据库的历史例外仅允许 `pending/ready/active → superseded`、version +1、清空 actions 并设置 terminal timestamp；其余冻结字段必须逐项保持不变。它要求真实且匹配当前 track/plan/progress/assignment 的 successor、同范围 checkpoint；教学 owner 的冻结 session version 对照原 checkpoint 而非已经 blocked 后的新 version。Gate/Review owner 保留身份和范围，退役不要求其可变版本仍为当前版本；Learning Item 仍校验原 published receipt、Practice materialization、kind 和 difficulty，Turn/Attempt scope 不豁免。
+
+deferred constraint trigger 在 COMMIT 验证对应版本、scope、确定 event key、predecessor/successor 及 reason code 的 append-only terminal event。缺 receipt、篡改题面或冻结 owner 的直接 UPDATE 均失败。正常 owner 同时发布 conversation `item_updated`；退役不生成 Attempt、score、mastery、进度或模型调用。
 
 ## 2026-09-01：Terminal execution result projection
 

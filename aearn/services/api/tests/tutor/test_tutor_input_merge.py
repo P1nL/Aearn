@@ -148,7 +148,7 @@ def test_interactive_turn_uses_deepseek_v4_flash_context_window_after_output_res
     tutor_api_settings: Settings,
 ) -> None:
     del tutor_api_settings
-    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash", tutor_thread_turn_v2_enabled=True)
+    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-flash", tutor_thread_turn_v2_enabled=True)
     dispatcher = RecordingTutorDispatcher()
     monkeypatch.setattr(tutor_route, "get_settings", lambda: settings)
     monkeypatch.setattr(tutor_route, "build_tutor_run_dispatcher", lambda _settings: dispatcher)
@@ -173,7 +173,7 @@ def test_interactive_turn_uses_deepseek_v4_flash_context_window_after_output_res
     budget_policy = row["policy_json"]["context_budget_policy"]
     assert budget_policy["capability"]["context_window_tokens"] == 192_512
     assert budget_policy["capability"]["max_output_reserve_tokens"] == 61_440
-    assert budget_policy["capability"]["capability_version"] == "deepseek-v4-flash-responses-v2"
+    assert budget_policy["capability"]["capability_version"] == "deepseek-flash-responses-v2"
     assert budget_policy["mode_targets"] == {
         "compact": 16_000,
         "normal": 64_000,

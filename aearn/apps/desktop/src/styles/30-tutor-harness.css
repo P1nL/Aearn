@@ -2240,6 +2240,14 @@
 
 .tutor-branch-summary:hover { color: var(--ink); background: rgba(47, 125, 99, .11); }
 
+.tutor-branch-retirement-note {
+  margin: 6px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .tutor-branch-items {
   display: grid;
   min-width: 0;

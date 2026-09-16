@@ -23,6 +23,7 @@ export type LearningPlanProfile = {
 };
 
 export type LearningPlanNode = {
+  catalog_knowledge_key?: string | null;
   knowledge_key: string;
   title: string;
   description: string;

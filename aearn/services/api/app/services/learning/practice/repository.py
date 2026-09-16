@@ -76,6 +76,8 @@ class GateScope:
     assignment_started_at: datetime | None
     document_id: str
     node_capabilities: tuple[str, ...]
+    catalog_knowledge_key: str | None = None
+    catalog_knowledge_key_source: str | None = None
 
 
 class PostgresExerciseGateRepository:
@@ -99,7 +101,13 @@ class PostgresExerciseGateRepository:
                    assignments.id AS assignment_id, assignments.assignment_version,
                    assignments.started_at AS assignment_started_at,
                    assignments.document_id,
-                   nodes.required_capabilities_json AS node_capabilities_json
+                   nodes.required_capabilities_json AS node_capabilities_json,
+                   COALESCE(nodes.catalog_knowledge_key, nodes.knowledge_key)
+                     AS catalog_knowledge_key,
+                   CASE WHEN nodes.catalog_knowledge_key IS NULL
+                        THEN 'legacy_knowledge_key'
+                        ELSE 'explicit_catalog_knowledge_key'
+                   END AS catalog_knowledge_key_source
             FROM tutor_learning_tracks AS tracks
             JOIN tutor_track_active_plans AS active
               ON (active.track_id, active.user_id) = (tracks.id, tracks.user_id)
@@ -133,6 +141,8 @@ class PostgresExerciseGateRepository:
             assignment_started_at=_datetime_or_none(row.get("assignment_started_at")),
             document_id=str(row["document_id"]),
             node_capabilities=tuple(_string_list(row.get("node_capabilities_json"))),
+            catalog_knowledge_key=_optional_text(row.get("catalog_knowledge_key")),
+            catalog_knowledge_key_source=_optional_text(row.get("catalog_knowledge_key_source")),
         )
 
     def ensure_curated_fixture(self, fixture: CuratedExerciseFixture, *, now: datetime) -> str:
@@ -267,6 +277,8 @@ class PostgresExerciseGateRepository:
                 node_capabilities_json=list(scope.node_capabilities),
                 scope_language_id=scope.language_id,
                 scope_knowledge_key=scope.knowledge_key,
+                scope_catalog_knowledge_key=scope.catalog_knowledge_key,
+                catalog_knowledge_key_source=scope.catalog_knowledge_key_source,
             )
             if not gate_slot_is_compatible(slot_scope):
                 continue
@@ -280,7 +292,7 @@ class PostgresExerciseGateRepository:
                     selection = select_published_knowledge_check(
                         self._conn,
                         language_id=scope.language_id,
-                        knowledge_key=scope.knowledge_key,
+                        knowledge_key=scope.catalog_knowledge_key or scope.knowledge_key,
                         required_capabilities=slot_capabilities,
                         available_capabilities=scope.node_capabilities,
                     )
@@ -449,6 +461,8 @@ class PostgresExerciseGateRepository:
             item.update(
                 scope_language_id=scope.language_id,
                 scope_knowledge_key=scope.knowledge_key,
+                scope_catalog_knowledge_key=scope.catalog_knowledge_key,
+                catalog_knowledge_key_source=scope.catalog_knowledge_key_source,
                 node_capabilities_json=list(scope.node_capabilities),
             )
             projected.append(item)
@@ -471,6 +485,12 @@ class PostgresExerciseGateRepository:
                    progress.knowledge_key AS scope_knowledge_key,
                    progress.status AS progress_status, progress.version AS progress_version,
                    nodes.required_capabilities_json AS node_capabilities_json,
+                   COALESCE(nodes.catalog_knowledge_key, nodes.knowledge_key)
+                     AS scope_catalog_knowledge_key,
+                   CASE WHEN nodes.catalog_knowledge_key IS NULL
+                        THEN 'legacy_knowledge_key'
+                        ELSE 'explicit_catalog_knowledge_key'
+                   END AS catalog_knowledge_key_source,
                    assignments.id AS assignment_id, assignments.assignment_version,
                    assignments.started_at AS assignment_started_at,
                    assignments.document_id, slots.gate_key, slots.gate_kind,
@@ -1175,3 +1195,10 @@ def _string_list(value: object) -> list[str]:
 
 def _datetime_or_none(value: object) -> datetime | None:
     return value if isinstance(value, datetime) else None
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text or None

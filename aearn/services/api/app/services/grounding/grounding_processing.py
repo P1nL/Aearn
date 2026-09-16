@@ -202,6 +202,7 @@ def is_admissible_lesson_source(chunk: GroundingChunk, *, allow_fixtures_for_tes
         and all(char in "0123456789abcdef" for char in chunk.document_content_hash)
         and chunk.document_content_hash != "0" * 64
         and bool(chunk.text.strip())
+        and not any(part.strip().rstrip("¶ ").casefold() in {"navigation", "this page", "table of contents", "quick search"} for part in chunk.section_path)
         and chunk.content_hash == _sha256(chunk.text)
         and chunk.fetched_at.tzinfo is not None
     )

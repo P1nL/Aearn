@@ -138,7 +138,7 @@ def ensure_codex_runtime_home(config: CodexRuntimeConfig, *, allow_existing: boo
     if root == global_home or global_home in root.parents:
         raise ValueError("Codex runtime home must not be inside the user global Codex Home")
     if config.model != DEEPSEEK_V4_FLASH_MODEL:
-        raise ValueError("Codex runtime requires exact deepseek-v4-flash")
+        raise ValueError("Codex runtime requires exact deepseek-flash")
     if config.model_provider != CODEX_MODEL_PROVIDER:
         raise ValueError("Codex runtime provider is invalid")
     if config.remote_compaction_supported:
@@ -150,7 +150,7 @@ def ensure_codex_runtime_home(config: CodexRuntimeConfig, *, allow_existing: boo
         != DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS
         or config.model_auto_compact_token_limit >= config.model_context_window
     ):
-        raise ValueError("Codex runtime context capability is not the verified DeepSeek V4 Flash contract")
+        raise ValueError("Codex runtime context capability is not the verified DeepSeek Flash contract")
     if not config.base_url:
         raise ValueError("Codex runtime DeepSeek base URL is required")
     if any(character in config.base_url for character in ("\r", "\n", '"', "\\")):
@@ -166,7 +166,6 @@ def ensure_codex_runtime_home(config: CodexRuntimeConfig, *, allow_existing: boo
         f'model = "{config.model}"\n'
         f'model_provider = "{config.model_provider}"\n'
         f'model_context_window = {config.model_context_window}\n'
-        f'model_max_output_tokens = {config.model_max_output_tokens}\n'
         f'model_auto_compact_token_limit = {config.model_auto_compact_token_limit}\n'
         'model_auto_compact_token_limit_scope = "total"\n'
         'approval_policy = "never"\n'

@@ -20,6 +20,8 @@ from app.services.tutor.branch_contracts import (
     BranchMessageClassification,
     BranchResponseDisposition,
     TutorPublicBranchGroupV1,
+    TutorPublicBranchGroupV2,
+    TutorPublicBranchGroup,
     TutorPublicBranchItemReferenceV1,
     branch_response_policy,
     classify_branch_message,
@@ -75,6 +77,8 @@ class TutorBranchRecord:
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
+    superseded_by_session_id: str | None = None
+    superseded_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,6 +434,94 @@ class PostgresTutorBranchRepository:
                 raise TutorBranchConflict("Tutor branch changed before response CAS")
             return self._record(updated)
 
+    def supersede_authority(
+        self, *, branch_id: str, user_id: str, conversation_id: str,
+        learning_track_id: str, knowledge_key: str, teaching_session_id: str,
+        successor_session_id: str, expected_version: int, expected_event_id: str,
+        expected_session_version: int, expected_successor_version: int,
+    ) -> TutorBranchRecord:
+        """Retire only a proven direct replacement; never dispatch a continuation.
+
+        The caller owns the outer transaction. A savepoint also prevents an
+        event without its root CAS if the caller catches a domain conflict.
+        """
+        request_hash = _hash({
+            "branch_id": branch_id, "user_id": user_id, "conversation_id": conversation_id,
+            "learning_track_id": learning_track_id, "knowledge_key": knowledge_key,
+            "teaching_session_id": teaching_session_id, "successor_session_id": successor_session_id,
+            "expected_version": expected_version, "expected_event_id": expected_event_id,
+            "expected_session_version": expected_session_version,
+            "expected_successor_version": expected_successor_version,
+        })
+        event_key = f"authority-superseded:{successor_session_id}"
+        with self._conn.transaction():
+            self._lock_conversation(user_id=user_id, conversation_id=conversation_id)
+            sessions = self._conn.execute(
+                """SELECT * FROM tutor_teaching_sessions WHERE id IN (%s,%s)
+                   AND user_id=%s AND conversation_id=%s AND track_id=%s AND knowledge_key=%s
+                   ORDER BY id FOR UPDATE""",
+                (teaching_session_id, successor_session_id, user_id, conversation_id,
+                 learning_track_id, knowledge_key),
+            ).fetchall()
+            by_id = {str(row["id"]): row for row in sessions}
+            if teaching_session_id not in by_id or successor_session_id not in by_id:
+                raise TutorBranchConflict("Tutor branch replacement session scope is invalid")
+            branch = self._conn.execute(
+                """SELECT * FROM tutor_conversation_branches WHERE id=%s AND user_id=%s
+                   AND conversation_id=%s AND learning_track_id=%s AND knowledge_key=%s
+                   AND teaching_session_id=%s FOR UPDATE""",
+                (branch_id, user_id, conversation_id, learning_track_id, knowledge_key, teaching_session_id),
+            ).fetchone()
+            if branch is None:
+                raise TutorBranchNotFound("Tutor branch replacement scope was not found")
+            event = self._conn.execute(
+                "SELECT * FROM tutor_conversation_branch_events WHERE branch_id=%s AND event_key=%s",
+                (branch_id, event_key),
+            ).fetchone()
+            if event is not None:
+                if (event["request_hash"] != request_hash or branch["state"] != "superseded"
+                        or branch["current_event_id"] != event["id"]):
+                    raise TutorBranchConflict("Tutor branch replacement replay conflicts")
+                return self._record(branch)
+            if (branch["state"] != "active" or _integer(branch["version"]) != expected_version
+                    or str(branch["current_event_id"]) != expected_event_id
+                    or _integer(by_id[teaching_session_id]["version"]) != expected_session_version
+                    or _integer(by_id[successor_session_id]["version"]) != expected_successor_version):
+                raise TutorBranchConflict("Tutor branch replacement authority CAS changed")
+            proof = self._conn.execute(
+                "SELECT tutor_branch_authority_replacement_valid(%s,%s,%s,%s,%s,%s) AS valid",
+                (user_id, conversation_id, learning_track_id, knowledge_key,
+                 teaching_session_id, successor_session_id),
+            ).fetchone()
+            if proof is None or proof["valid"] is not True:
+                raise TutorBranchConflict("Tutor branch requires an inactive replaced authority")
+            event_id = str(uuid4())
+            now = datetime.now(UTC)
+            self._conn.execute(
+                """INSERT INTO tutor_conversation_branch_events (
+                   id,branch_id,user_id,conversation_id,artifact_id,predecessor_event_id,
+                   branch_version,event_key,event_kind,message_classification,
+                   source_turn_id,source_message_id,source_input_revision,
+                   superseding_session_id,request_hash,created_at
+                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'authority_superseded','normal',
+                           NULL,NULL,NULL,%s,%s,%s)""",
+                (event_id, branch_id, user_id, conversation_id, branch["artifact_id"],
+                 expected_event_id, expected_version + 1, event_key,
+                 successor_session_id, request_hash, now),
+            )
+            updated = self._conn.execute(
+                """UPDATE tutor_conversation_branches SET state='superseded',
+                   superseded_by_session_id=%s,superseded_at=%s,current_event_id=%s,
+                   version=version+1,updated_at=%s
+                   WHERE id=%s AND user_id=%s AND conversation_id=%s AND state='active'
+                     AND version=%s AND current_event_id=%s RETURNING *""",
+                (successor_session_id, now, event_id, now, branch_id, user_id,
+                 conversation_id, expected_version, expected_event_id),
+            ).fetchone()
+            if updated is None:
+                raise TutorBranchConflict("Tutor branch changed before replacement CAS")
+            return self._record(updated)
+
     def read_for_artifact(
         self,
         *,
@@ -453,7 +545,7 @@ class PostgresTutorBranchRepository:
         *,
         user_id: str,
         conversation_id: str,
-    ) -> tuple[TutorPublicBranchGroupV1, ...]:
+    ) -> tuple[TutorPublicBranchGroup, ...]:
         branches = self._conn.execute(
             """
             SELECT * FROM tutor_conversation_branches
@@ -491,22 +583,22 @@ class PostgresTutorBranchRepository:
                     ),
                 )
             )
-        result: list[TutorPublicBranchGroupV1] = []
+        result: list[TutorPublicBranchGroup] = []
         for branch in branches:
             items = tuple(grouped.get(str(branch["id"]), ()))
             if not items:
                 raise TutorBranchConflict(
                     "stored Tutor branch has no explicit item membership"
                 )
+            group_type = TutorPublicBranchGroupV2 if branch["state"] == "superseded" else TutorPublicBranchGroupV1
+            extra = {"superseded_at": _iso(branch["superseded_at"])} if branch["state"] == "superseded" else {}
             result.append(
-                TutorPublicBranchGroupV1(
+                group_type.model_validate(dict(
                     branch_id=str(branch["id"]),
                     anchor_artifact_id=str(branch["artifact_id"]),
                     teaching_session_id=str(branch["teaching_session_id"]),
                     checkpoint_id=str(branch["checkpoint_id"]),
-                    state=cast(
-                        Literal["active", "resolved"], str(branch["state"])
-                    ),
+                    state=str(branch["state"]),
                     disposition=(
                         BranchResponseDisposition(str(branch["latest_disposition"]))
                         if branch.get("latest_disposition") is not None
@@ -514,7 +606,7 @@ class PostgresTutorBranchRepository:
                     ),
                     round_count=_integer(branch["round_count"]),
                     item_count=len(items),
-                    collapsed=str(branch["state"]) == "resolved",
+                    collapsed=str(branch["state"]) != "active",
                     items=items,
                     created_at=_iso(branch["created_at"]),
                     resolved_at=(
@@ -522,7 +614,8 @@ class PostgresTutorBranchRepository:
                         if branch.get("resolved_at") is not None
                         else None
                     ),
-                )
+                    **extra,
+                ))
             )
         return tuple(result)
 
@@ -996,6 +1089,10 @@ class PostgresTutorBranchRepository:
                 if row.get("resolved_at") is not None
                 else None
             ),
+            superseded_by_session_id=(str(row["superseded_by_session_id"])
+                if row.get("superseded_by_session_id") is not None else None),
+            superseded_at=(_datetime(row["superseded_at"])
+                if row.get("superseded_at") is not None else None),
         )
 
 

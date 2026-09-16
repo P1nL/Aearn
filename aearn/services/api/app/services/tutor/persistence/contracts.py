@@ -267,7 +267,7 @@ class TutorConversationSnapshot:
     has_more: bool
     stream_cursor: str
     active_artifact: TutorPublicArtifactItem | None = None
-    branch_groups: tuple[TutorPublicBranchGroupV1, ...] = ()
+    branch_groups: tuple[TutorPublicBranchGroup, ...] = ()
     snapshot_version: str = TUTOR_CONVERSATION_SNAPSHOT_VERSION
 
 

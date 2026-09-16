@@ -6,10 +6,11 @@ import logging
 import socket
 import urllib.error
 from collections.abc import Mapping, Sequence
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypedDict
 
 from app.agents.harness.contracts import (
     TutorCapabilityRequest,
+    TutorContextSection,
     TutorContextSelection,
     TutorDecision,
     TutorEffectProposal,
@@ -23,6 +24,7 @@ from app.agents.harness.provider_request import (
     build_tutor_provider_messages,
 )
 from app.core.config import Settings, get_settings
+from app.core.safe_diagnostics import log_safe_event
 from app.core.teaching_safety import check_teaching_output
 from app.services.llm.llm_client import (
     LLMCallError,
@@ -40,6 +42,7 @@ from app.services.llm.provider_diagnostics import (
     ProviderDiagnosticStore,
 )
 from app.services.tutor.ports import TutorLifecycleConflict
+from app.services.tutor.validation_diagnostics import validation_log_fields
 from app.services.tutor.public_thinking_stream import (
     TutorProviderPublicTextProjector,
     TutorPublicThinkingSafetyError,
@@ -118,6 +121,27 @@ def _assert_safe_tutor_output(text: str) -> None:
         raise TutorOutputSafetyError("Tutor output failed the teaching safety policy")
 
 
+def _assert_selected_teaching_action(
+    *, context: TutorContextSelection, decision: TutorDecision,
+) -> None:
+    if decision.teaching_step is not None:
+        return
+    # These are typed sources in this request, not provider-authored text.
+    # CatalogContextLoader verifies selection for the current run/input revision
+    # and published hashes before emitting the exact selected-Skill source id.
+    teaching_scoped = any(item.section is TutorContextSection.TEACHING_SESSION for item in context.items)
+    teaching_selected = any(
+        item.section is TutorContextSection.SYSTEM
+        and item.source_id == "catalog:selected:tutor.lesson-teaching@1.2.1"
+        for item in context.items
+    )
+    if teaching_scoped and teaching_selected:
+        raise TutorDecisionValidationError(
+            "Tutor selected teaching Skill requires a teaching step",
+            issues=(TutorDecisionValidationIssue(path="action.type", category="teaching_step_required"),),
+        )
+
+
 class PrimaryTutorProviderGateway:
     """Use exactly the configured provider and assemble control fields server-side."""
 
@@ -139,7 +163,7 @@ class PrimaryTutorProviderGateway:
             resolved_max_output_tokens
             > self._settings.tutor_deepseek_v4_flash_max_output_tokens
         ):
-            raise ValueError("max_output_tokens exceeds the configured DeepSeek V4 Flash maximum")
+            raise ValueError("max_output_tokens exceeds the configured DeepSeek Flash maximum")
         self._client = client
         self._max_output_tokens = resolved_max_output_tokens
         self._timeout_seconds = timeout_seconds
@@ -243,6 +267,7 @@ class PrimaryTutorProviderGateway:
                 _assert_raw_provider_text_safe(response.content)
                 decision = parse_tutor_provider_items(response.content, run=run)
                 _assert_decision_text_safe(decision)
+                _assert_selected_teaching_action(context=context, decision=decision)
                 if projector is not None and thinking_sink is not None:
                     raw_message = response.content.get("message")
                     raw_thinking = (
@@ -450,7 +475,7 @@ class PrimaryTutorProviderGateway:
 
             if projector is not None and thinking_sink is not None:
                 thinking_sink.discard_attempt(attempt_index)
-            _commit_provider_diagnostic(
+            artifact_id = _commit_provider_diagnostic(
                 rejected_capture,
                 run=run,
                 attempt_index=attempt_index,
@@ -475,6 +500,28 @@ class PrimaryTutorProviderGateway:
                     diagnostic_code=diagnostic_code,
                 )
             )
+            for issue in replacement_issues[:8]:
+                details = validation_log_fields(issue)
+                log_safe_event(
+                    logger, "tutor_provider_validation_issue",
+                    run_id=run.run_id, input_revision=run.input_revision,
+                    decision_iteration=run.model_call_count + 1,
+                    attempt=attempt_index, code=diagnostic_code,
+                    model=self._settings.llm_model or "unknown",
+                    provider_type=provider_type, protocol=protocol,
+                    artifact_id=artifact_id,
+                    max_attempts=PRIMARY_PROVIDER_DECISION_ATTEMPTS,
+                    repair_attempt=attempt_index - 1,
+                    retry_allowed=repairable and attempt_index < PRIMARY_PROVIDER_DECISION_ATTEMPTS,
+                    remaining_repair_attempts=(
+                        PRIMARY_PROVIDER_DECISION_ATTEMPTS - attempt_index if repairable else 0
+                    ),
+                    stage=issue.category,
+                    field_path=details.get("field_path"),
+                    expected_values=details.get("expected_values"),
+                    expected_rule=details.get("expected_rule"),
+                    expected_type=details.get("expected_type"),
+                )
             logger.warning(
                 "Tutor primary model response was rejected (%s/%s): %s [%s] "
                 "contract=%s",
@@ -509,6 +556,14 @@ def _build_default_client(settings: Settings) -> OpenAICompatibleClient:
     )
 
 
+class _DiagnosticAttemptIdentity(TypedDict):
+    run_id: str
+    input_revision: int
+    decision_iteration: int
+    attempt: int
+    code: str
+
+
 def _commit_provider_diagnostic(
     capture: ProviderBodyCapture | None,
     *,
@@ -519,13 +574,21 @@ def _commit_provider_diagnostic(
     model: str,
     diagnostic_code: str,
     contract_hash: str,
-) -> None:
+) -> str | None:
+    identity: _DiagnosticAttemptIdentity = {
+        "run_id": run.run_id, "input_revision": run.input_revision,
+        "decision_iteration": run.model_call_count + 1, "attempt": attempt_index,
+        "code": diagnostic_code,
+    }
     if capture is None:
-        return
+        log_safe_event(logger, "tutor_provider_diagnostic_capture", capture_state="not_captured", **identity)
+        return None
     try:
-        capture.commit(
+        artifact = capture.commit(
             ProviderDiagnosticMetadata(
                 run_id=run.run_id,
+                input_revision=run.input_revision,
+                decision_iteration=run.model_call_count + 1,
                 attempt_index=attempt_index,
                 provider_type=provider_type,
                 protocol=protocol,
@@ -535,10 +598,20 @@ def _commit_provider_diagnostic(
             )
         )
     except Exception as exc:
-        logger.warning(
-            "Tutor provider diagnostic capture failed: %s",
-            type(exc).__name__,
+        log_safe_event(
+            logger, "tutor_provider_diagnostic_capture",
+            capture_state="failed", exception=exc, **identity,
         )
+        return None
+    log_safe_event(
+        logger, "tutor_provider_diagnostic_capture",
+        capture_state="saved" if artifact else "empty",
+        artifact_id=artifact.artifact_id if artifact else None,
+        captured_bytes=artifact.captured_bytes if artifact else 0,
+        truncated=artifact.truncated if artifact else False,
+        **identity,
+    )
+    return artifact.artifact_id if artifact else None
 
 
 def _provider_invalid_response_diagnostic_code(exc: LLMInvalidResponseError) -> str:

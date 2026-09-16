@@ -13,7 +13,7 @@ class FakeRuntime:
 
     async def start(self) -> RuntimeHealthSnapshot:
         self.starts += 1
-        return RuntimeHealthSnapshot(RuntimeHealthStatus.READY, 1, version="fixture", model="deepseek-v4-flash", model_provider="aearn_deepseek")
+        return RuntimeHealthSnapshot(RuntimeHealthStatus.READY, 1, version="fixture", model="deepseek-flash", model_provider="aearn_deepseek")
 
     async def shutdown(self) -> None:
         self.stopped = True

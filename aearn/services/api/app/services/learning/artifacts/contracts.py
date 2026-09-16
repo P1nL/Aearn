@@ -840,6 +840,16 @@ class TutorArtifactBranchSummaryV1(_StrictArtifactModel):
         return self
 
 
+class TutorArtifactBranchSummaryV2(_StrictArtifactModel):
+    schema_version: Literal["tutor_artifact_branch_summary_v2"] = "tutor_artifact_branch_summary_v2"
+    branch_id: str = Field(min_length=1, max_length=160)
+    state: Literal["superseded"] = "superseded"
+    disposition: BranchResponseDisposition | None = None
+    round_count: int = Field(ge=1, le=100)
+    item_count: int = Field(ge=1, le=400)
+    collapsed: Literal[True] = True
+
+
 class TutorPublicArtifactItem(_StrictArtifactModel):
     kind: Literal["artifact"] = "artifact"
     id: str = Field(min_length=1, max_length=160)
@@ -864,7 +874,7 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
     allowed_actions: tuple[TutorArtifactActionKind, ...] = Field(default=(), max_length=6)
     source_references: tuple[TutorArtifactSourceReferenceV1, ...] = Field(default=(), max_length=12)
     active_attempt: TutorArtifactAttemptSummaryV1 | None = None
-    branch_summary: TutorArtifactBranchSummaryV1 | None = None
+    branch_summary: TutorArtifactBranchSummaryV1 | TutorArtifactBranchSummaryV2 | None = None
     version: int = Field(ge=1)
     created_at: str = Field(min_length=1, max_length=80)
     updated_at: str = Field(min_length=1, max_length=80)
@@ -1363,6 +1373,7 @@ __all__ = (
     "TutorArtifactAttemptResultV2",
     "TutorArtifactAttemptSummaryV1",
     "TutorArtifactBranchSummaryV1",
+    "TutorArtifactBranchSummaryV2",
     "TutorArtifactCancelAction",
     "TutorArtifactCompleteDemoAction",
     "TutorArtifactCompleteReviewAction",

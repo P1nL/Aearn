@@ -35,15 +35,15 @@ async def _initialize(client: StdioJsonRpcClient) -> None:
 
 
 async def _start_turn(client: StdioJsonRpcClient) -> None:
-    thread = await client.request("thread/start", {"model": "deepseek-v4-flash", "modelProvider": "aearn_deepseek", "dynamicTools": [{"name": "aearn_protocol_probe", "inputSchema": {"type": "object"}}]})
-    assert thread["model"] == "deepseek-v4-flash"
+    thread = await client.request("thread/start", {"model": "deepseek-flash", "modelProvider": "aearn_deepseek", "dynamicTools": [{"name": "aearn_protocol_probe", "inputSchema": {"type": "object"}}]})
+    assert thread["model"] == "deepseek-flash"
     await client.request("turn/start", {"threadId": "thr_fixture", "input": [{"type": "text", "text": "bounded fixture input"}]})
 
 
 def test_isolated_home_uses_exact_deepseek_responses_contract(tmp_path: Path) -> None:
     isolated = build_isolated_codex_home(tmp_path / "isolation", base_url="https://api.deepseek.example/v1/")
     config = isolated.config_path.read_text(encoding="utf-8")
-    assert 'model = "deepseek-v4-flash"' in config
+    assert 'model = "deepseek-flash"' in config
     assert 'model_provider = "aearn_deepseek"' in config
     assert 'wire_api = "responses"' in config
     assert 'requires_openai_auth = false' in config
@@ -248,7 +248,7 @@ async def test_installed_codex_offline_protocol_preflight(tmp_path: Path) -> Non
     assert result.executable.version is not None
     assert result.codex_home_matched is True
     assert result.platform_family == "windows"
-    assert result.model == "deepseek-v4-flash"
+    assert result.model == "deepseek-flash"
     assert result.model_provider == "aearn_deepseek"
     assert result.thread_model_matched is True
     assert result.thread_provider_matched is True

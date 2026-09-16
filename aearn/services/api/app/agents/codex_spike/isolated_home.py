@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.services.llm.llm_urls import normalize_deepseek_base_url
 
-MODEL_ID = "deepseek-v4-flash"
+MODEL_ID = "deepseek-flash"
 PROVIDER_ID = "aearn_deepseek"
 WIRE_API = "responses"
 ENV_KEY = "DEEPSEEK_API_KEY"

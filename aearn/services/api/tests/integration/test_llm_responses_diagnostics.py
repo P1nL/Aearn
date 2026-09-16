@@ -18,7 +18,7 @@ PROTECTED = "private-reasoning api-key secret prompt hidden-test"
 VISIBLE = '{"ok": true}'
 
 
-def _settings(provider: str = "deepseek", model: str = "deepseek-v4-flash") -> Settings:
+def _settings(provider: str = "deepseek", model: str = "deepseek-flash") -> Settings:
     return Settings(
         llm_type=provider, deepseek_api_key="fake", deepseek_base_url="https://provider.invalid",
         deepseek_model=model, openai_api_key="fake", openai_base_url="https://provider.invalid",
@@ -59,7 +59,7 @@ def _wire(monkeypatch: pytest.MonkeyPatch, frames: list[dict] | None = None) -> 
 
 @pytest.mark.parametrize("mode", [None, "enabled", "disabled"])
 @pytest.mark.parametrize("provider,model", [
-    ("deepseek", "deepseek-v4-flash"), ("deepseek", "deepseek-chat"),
+    ("deepseek", "deepseek-flash"), ("deepseek", "deepseek-chat"),
     ("openai", "fake-model"),
 ])
 def test_protocol_specific_thinking_on_actual_wire(

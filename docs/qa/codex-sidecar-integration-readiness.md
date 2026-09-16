@@ -9,7 +9,7 @@
 | 区域 | 已验证 | 非声明 |
 | --- | --- | --- |
 | Windows transport | stdio JSON-RPC、strict config、initialize/thread/turn/tool/interrupt/shutdown | 不支持 Windows daemon、WebSocket 或远程 transport |
-| Provider | exact `deepseek-v4-flash` + `aearn_deepseek` + Responses | 不支持 OpenAI、其他 DeepSeek、Chat Completions 或 fallback |
+| Provider | exact `deepseek-flash` + `aearn_deepseek` + Responses | 不支持 OpenAI、其他 DeepSeek、Chat Completions 或 fallback |
 | Runtime ownership | isolated Home、single process/file-lock owner、generation fence、child crash recovery | 不捆绑/安装/升级 Codex，不使用全局 Codex Home |
 | Domain tools | typed context/draft、repair、awaiting user、conflict、policy、fatal、timeout、duplicate replay | Codex 不能 confirm LearningPlan 或创建 LearningTrack |
 | Persistence/public | immutable Runtime kind、private binding、append-only receipt、safe final/error、SSE/history redaction | 不公开 reasoning、raw tool/provider body 或 external IDs |

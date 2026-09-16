@@ -1374,6 +1374,27 @@ class TutorPublicService:
     def _retry_turn(self, user_id: str, conversation_id: str, turn_id: str, control: int) -> dict[str, object]:
         now = datetime.now(UTC)
         try:
+            # Retry must remain a teaching turn, not merely inherit the broader
+            # LearningTrack scope. Hold the original session authority lock until
+            # the new stimulus/scope and retry acceptance commit together.
+            # Keep the existing conversation -> teaching-session lock order.
+            self._conn.execute(
+                "SELECT id FROM tutor_conversations WHERE id=%s AND user_id=%s FOR UPDATE",
+                (conversation_id, user_id),
+            ).fetchone()
+            source_teaching = self._conn.execute(
+                """SELECT scopes.*, stimuli.stimulus_kind
+                   FROM tutor_run_teaching_scopes AS scopes
+                   JOIN tutor_run_stimulus_events AS stimuli ON stimuli.id=scopes.stimulus_id
+                   WHERE scopes.run_id=%s AND scopes.user_id=%s AND scopes.conversation_id=%s""",
+                (turn_id, user_id, conversation_id),
+            ).fetchone()
+            if source_teaching is not None:
+                if str(source_teaching["stimulus_kind"]) != "learner_message":
+                    raise TutorPublicApiError(
+                        "TEACHING_NOT_READY", "请通过当前教学操作重新发起此类回合。", status_code=409,
+                    )
+                self._teaching_sessions.assert_run_scope_current(user_id=user_id, run_id=turn_id)
             catalog = compile_published_skill_catalog()
             self._repository.record_catalog_snapshot(catalog)
             turn, version = self._queue.retry(
@@ -1381,10 +1402,25 @@ class TutorPublicService:
                 expected_control_version=control, catalog_digest=catalog.digest,
                 policy=_interactive_policy(now, settings=self._settings), occurred_at=now,
             )
+            teaching_scope = None
+            if source_teaching is not None:
+                teaching_scope = self._teaching_sessions.bind_learner_message_run(
+                    user_id=user_id, run_id=turn.run.run_id, conversation_id=conversation_id,
+                    track_id=str(source_teaching["track_id"]), knowledge_key=str(source_teaching["knowledge_key"]),
+                    message_id=turn.acceptance.message_id, input_revision=turn.acceptance.input_revision,
+                )
+                if (str(teaching_scope["session_id"]), str(teaching_scope["checkpoint_id"])) != (
+                    str(source_teaching["teaching_session_id"]), str(source_teaching["checkpoint_id"]),
+                ):
+                    raise TeachingSessionConflict("retry teaching authority changed")
             state = self._repository.read_run_state(user_id=user_id, run_id=turn.run.run_id)
+        except (TeachingSessionConflict, TeachingSessionNotReady) as exc:
+            raise _teaching_not_ready() from exc
         except TutorInteractionRequestConflict as exc:
             raise self._queue_conflict(exc, conversation_id=conversation_id) from exc
         result = _turn_acceptance_payload(turn, state=state, references=(), first_turn=False)
+        if teaching_scope is not None:
+            result["teaching_scope"] = teaching_scope
         result["control_version"] = version
         return result
 

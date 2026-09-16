@@ -1949,7 +1949,7 @@ history can be reduced without erasing the learner's current intent.
 - Capability/effect values use bounded `{key,value}` arrays. Internal-only keys, duplicate keys, oversized lists, unsafe learner text, unknown action tags, and additional fields are rejected.
 - The provider never emits `request_id`, `effect_id`, `expected_input_revision`, checkpoint reason, input revision, or terminal outcome. The server deterministically derives action IDs from run/revision/model-call scope, copies the current revision into effects, and maps action type into the domain decision.
 - Skill-managed actions use a two-phase boundary: before selection, the prompt requests `select_skill`; after the server records exact reviewed evidence and returns `REBUILD_CONTEXT`, the provider may request the capability/effect with the selected instruction present. If the provider skips selection, the gate may recover only when descriptor/value validation passes and exactly one policy-eligible Skill manifest covers every action. Recovery records only selection and never dispatches the original action. Zero candidates remain `skill_selection_required`; multiple candidates are denied as `action_skill_ambiguous`.
-- Select exactly one protocol before the request: non-DeepSeek uses Responses; exact case-sensitive `deepseek-v4-flash` uses `/responses`; every other DeepSeek model uses `/chat/completions`. A request/retry failure never changes protocol/model/provider.
+- Select exactly one protocol before the request: non-DeepSeek uses Responses; exact case-sensitive `deepseek-flash` uses `/responses`; every other DeepSeek model uses `/chat/completions`. A request/retry failure never changes protocol/model/provider.
 - Responses accepts learner-visible content only from `output_text`; provider-native reasoning items, provider error objects, and arbitrary output items are never answer fallbacks. `public_thinking_steps` is parsed only from the validated final visible JSON object.
 - Non-DeepSeek Responses requests use the generated strict JSON Schema. DeepSeek remains JSON-object-compatible by default; JSON Schema for DeepSeek Responses is explicit opt-in for a verified gateway. The narrow decision output budget does not inherit the physical model output maximum.
 - A repairable rejection gets at most one fresh same-provider replacement request. It contains only safe field paths and bounded validation categories, never the rejected value/body or Pydantic/provider validation text.
@@ -1958,7 +1958,7 @@ history can be reduced without erasing the learner's current intent.
 
 ### 4. Validation & Error Matrix
 
-- Exact `deepseek-v4-flash` -> `/responses`; other DeepSeek model/casing -> `/chat/completions`; no fallback.
+- Exact `deepseek-flash` -> `/responses`; other DeepSeek model/casing -> `/chat/completions`; no fallback.
 - `response.incomplete`, `response.failed`, malformed envelope, HTTP 400, timeout, or transport failure -> bounded safe diagnostic, no repair/fallback. Missing visible content or non-object JSON -> at most one same-provider replacement.
 - Missing/extra/invalid-literal/type/value/action -> safe `TUTOR_PROVIDER_DECISION_*` diagnostic; one same-provider replacement; final public result remains `MODEL_UNAVAILABLE`.
 - Unsafe raw message/title/public-thinking/payload value -> `TUTOR_PROVIDER_OUTPUT_SAFETY_REJECTED`; raw text is not normalized into an accepted domain value first.
@@ -3189,7 +3189,7 @@ persist(
   `TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS`、
   `TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS`、四档 target、warning/critical ratio、
   `TUTOR_CONTEXT_MAX_EXPANSIONS` 与可选 `TUTOR_CONTEXT_FIXED_MODE`。
-- Exact registry：仅精确 `LLM_TYPE=deepseek` + `DEEPSEEK_MODEL=deepseek-v4-flash`
+- Exact registry：仅精确 `LLM_TYPE=deepseek` + `DEEPSEEK_MODEL=deepseek-flash`
   保留 `1_000_000` physical window；普通 provider request 使用独立的 `131_072`
   input hard limit 与 `61_440` output hard limit。Tutor capability 内部用 `192_512`
   表达输入加输出 reserve 的核算包络，不得把它投影成模型物理能力；相似名字走显式保守默认。
@@ -3204,7 +3204,7 @@ persist(
   JSON envelope，并额外加入 protocol reserve 与 safety margin。固定点 metadata 稳定过程
   必须把 required-only estimate 作为保守下界，不能因 prompt/metadata 长度变化让最终
   `estimated_total_input_tokens` 低于 required floor。只把剩余 optional budget 交给
-  builder；`131_072` 是 DeepSeek V4 Flash input hard limit，不是填满目标。
+  builder；`131_072` 是 DeepSeek Flash input hard limit，不是填满目标。
 - current input 永远 required 且先保留。optional priority 固定为：system/selected Skill
   policy、最新既往消息、直接相关 active plan/review、working summary、memory、activity、
   非必要 capability schema。达到预算时跳过 optional item，不能删除 current input。
@@ -3234,7 +3234,7 @@ persist(
   `TUTOR_CONTEXT_REQUIRED_OVERFLOW`，run `failed`，provider call 为零。
 - optional selection 后完整请求仍超过 hard limit -> planner 确定性收缩 optional budget；
   无法在有界 rebalance 内收敛 -> `TUTOR_CONTEXT_REQUEST_OVERFLOW`，不调用 provider。
-- 非精确 model 名（例如 `deepseek-v4-flash-preview`）-> 保守显式 capability，不能继承
+- 非精确 model 名（例如 `deepseek-flash-preview`）-> 保守显式 capability，不能继承
   1M registry entry。
 - 旧 persisted policy 无 `context_budget_policy` -> legacy builder path；不是损坏数据。
 - calibration 缺 estimated/actual input -> `ValueError`；missing usage 仍是 unavailable，
@@ -3612,7 +3612,7 @@ Changes to Lesson provider feedback, candidate validation, retry orchestration o
 - The second request preserves the original safe evidence and validated standard document when personalizing. Only the feedback is added; never attach the rejected candidate or switch provider/model/protocol.
 - Record each provider attempt after candidate identity and quality validation. A syntactically successful provider response is not a successful authoring attempt.
 - Keep transport retry separate. Final publication still revalidates current state and lease and atomically publishes complete documents and one assignment winner.
-- Exact DeepSeek V4 Flash Lesson authors request `reasoning.effort=none` through protocol-specific serialization and retain the 12,000 total output-token cap. Other model callers retain their own policies. Do not use Chat Completions `thinking.type` in a Responses request.
+- Exact DeepSeek Flash Lesson authors request `reasoning.effort=none` through protocol-specific serialization and retain the 12,000 total output-token cap. Other model callers retain their own policies. Do not use Chat Completions `thinking.type` in a Responses request.
 - Private response diagnostics retain only closed status/incomplete-cause enums, requested output cap/effort and visible character count. Native reasoning content and raw provider bodies never enter receipts, feedback or public exports. Reasoning tokens are a subset of output usage, not an additional billable total; unknown is null, not zero.
 - For Responses with safe metadata, only confirmed `max_output_tokens` incompleteness is content-repairable. Filter/context/unknown causes and missing terminal completion fail closed; legacy injected responses without metadata keep their existing compatibility behavior.
 

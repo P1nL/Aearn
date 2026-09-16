@@ -43,7 +43,10 @@ def test_codex_runtime_home_uses_one_exact_local_compaction_contract(tmp_path: P
     text = home.config_path.read_text(encoding="utf-8")
 
     assert f"model_context_window = {DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS}" in text
-    assert f"model_max_output_tokens = {DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS}" in text
+    # Codex 0.153.4 removed this key from its strict schema. Aearn still owns
+    # and validates the 61,440-token ceiling without emitting an unknown field.
+    assert "model_max_output_tokens" not in text
+    assert _config(tmp_path).model_max_output_tokens == DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
     assert f"model_auto_compact_token_limit = {DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS}" in text
     assert 'model_auto_compact_token_limit_scope = "total"' in text
     assert 'wire_api = "responses"' in text
@@ -55,5 +58,5 @@ def test_codex_runtime_home_rejects_remote_or_drifted_compaction(tmp_path: Path)
     config = _config(tmp_path)
     with pytest.raises(ValueError, match="remote compaction"):
         ensure_codex_runtime_home(replace(config, remote_compaction_supported=True))
-    with pytest.raises(ValueError, match="verified DeepSeek V4 Flash contract"):
+    with pytest.raises(ValueError, match="verified DeepSeek Flash contract"):
         ensure_codex_runtime_home(replace(config, model_auto_compact_token_limit=949_999))

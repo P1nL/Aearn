@@ -44,7 +44,7 @@ class LearningPlanToolServicePort(Protocol):
 @dataclass(frozen=True, slots=True)
 class LearningPlanToolBudget:
     max_calls: int = 6
-    max_repairs: int = 2
+    max_repairs: int = 5
     max_conflicts: int = 1
     max_payload_bytes: int = 32_000
     max_wall_seconds: float = 300.0
@@ -144,7 +144,9 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
                 description=(
                     "Submit 2..8 typed teaching modules only after an accepted "
                     "continue_mainline action and complete planning facts. The server owns "
-                    "the learner profile, language/source policy, persistence, and confirmation."
+                    "the learner profile, language/source policy, persistence, and confirmation. "
+                    "Keep stable_key as course-step identity; optional catalog_knowledge_key must copy an exact published "
+                    "key and capabilities from planning context, never a title-derived alias."
                 ),
                 input_schema=LearningPlanDraftToolInput.model_json_schema(),
             ),
@@ -215,7 +217,7 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         self._intake_mode = True
         self._budget = LearningPlanToolBudget(
             max_calls=min(self._budget.max_calls, 2),
-            max_repairs=min(self._budget.max_repairs, 1),
+            max_repairs=min(self._budget.max_repairs, 5),
             max_conflicts=0,
             max_payload_bytes=self._budget.max_payload_bytes,
             max_wall_seconds=min(self._budget.max_wall_seconds, max_wall_seconds),
@@ -256,9 +258,9 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         if self._clock() - self._started_at > self._budget.max_wall_seconds:
             self._direction_protocol_invalid = True
             return self._runtime_result(_fatal("tool_deadline_exhausted"))
-        # One wrong-order attempt consumes a repair, not a read/action slot.
-        # Total physical calls remain bounded by max_calls + one granted repair.
-        if self._calls >= self._budget.max_calls + int(self._order_repair_used):
+        # A repairable result grants exactly one bounded follow-up call without
+        # consuming another normal read/action slot.
+        if self._calls >= self._budget.max_calls + self._repairs:
             self._direction_protocol_invalid = True
             return self._runtime_result(_fatal("tool_call_budget_exhausted"))
         self._calls += 1
@@ -367,7 +369,7 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
                 if context_input.planning_intent_hint is not None
                 else None
             )
-        else:
+        elif result.status is not LearningPlanToolStatus.REPAIRABLE_INVALID:
             self._direction_protocol_invalid = True
         return result
 
@@ -394,9 +396,10 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         return result
 
     def _record_repair(self, result: LearningPlanAgentToolResult) -> RuntimeToolResult:
-        self._repairs += 1
-        if self._repairs > self._budget.max_repairs:
+        if self._repairs >= self._budget.max_repairs:
+            self._direction_protocol_invalid = True
             return self._runtime_result(_fatal("tool_repair_budget_exhausted"))
+        self._repairs += 1
         return self._runtime_result(
             result.model_copy(
                 update={

@@ -18,6 +18,7 @@ _TEXT_FIELDS = frozenset({
     "document_kind", "action_category", "field_path", "action_identifier",
     "catalog_digest", "skill_reference", "manifest_hash", "instruction_hash",
     "exception_class", "cause_class", "termination_reason",
+    "artifact_id", "capture_state", "provider_type", "model", "protocol", "expected_type",
 })
 _NUMBER_FIELDS = frozenset({
     "runtime_generation", "total_text_chars", "effective_max_reasoning_chars",
@@ -29,6 +30,8 @@ _NUMBER_FIELDS = frozenset({
     "iteration_count", "model_call_count", "capability_call_count", "effect_count",
     "required_fact_count", "required_fact_selected_count", "required_fact_missing_count",
     "confirmed_question_reasked_count", "summary_blocked_by_unprojected_fact",
+    "decision_iteration", "max_attempts", "repair_attempt", "remaining_repair_attempts",
+    "captured_bytes",
 })
 
 
@@ -45,7 +48,9 @@ def log_safe_event(
 ) -> None:
     """Emit one bounded JSON message under ordinary/Celery formatters.
 
-    Unknown keys and non-scalar values are discarded, not stringified. Exception
+    Unknown keys and non-scalar values are discarded except server-schema expectations.
+    expected_rule/expected_values MUST originate from local schema/rule constants, not
+    provider validation messages, rejected values, prompts or user input. Exception
     and explicit cause contribute class names only, never args/messages/frames.
     """
     data: dict[str, object] = {"event": safe_diagnostic_identifier(event)}
@@ -59,6 +64,16 @@ def log_safe_event(
             if isinstance(value, float) and not math.isfinite(value):
                 continue
             data[key] = round(min(max(value, 0), 1_000_000_000), 3)
+    for key in ("retry_allowed", "truncated"):
+        if type(fields.get(key)) is bool:
+            data[key] = fields[key]
+    rule = fields.get("expected_rule")
+    if isinstance(rule, str) and len(rule) <= 512 and not any(ord(c) < 32 for c in rule):
+        data["expected_rule"] = rule
+    values = fields.get("expected_values")
+    if isinstance(values, (tuple, list)) and len(values) <= 32:
+        if all(isinstance(value, str) and _IDENTIFIER.fullmatch(value) for value in values):
+            data["expected_values"] = list(values)
     if exception is not None:
         data["exception_class"] = safe_diagnostic_identifier(type(exception).__name__)
         if exception.__cause__ is not None:

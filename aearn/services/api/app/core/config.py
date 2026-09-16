@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, SecretStr, model_validator
 
 
-DEEPSEEK_V4_FLASH_MODEL = "deepseek-v4-flash"
+DEEPSEEK_FLASH_MODEL = "deepseek-flash"
+# Keep the V4-prefixed internal symbol and environment knobs as compatibility aliases.
+DEEPSEEK_V4_FLASH_MODEL = DEEPSEEK_FLASH_MODEL
 DEEPSEEK_V4_FLASH_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEEPSEEK_V4_FLASH_INPUT_CONTEXT_TOKENS = 128 * 1_024
 DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = 60 * 1_024
@@ -80,9 +82,10 @@ class Settings(BaseModel):
     codex_runtime_enabled: bool = Field(default_factory=lambda: _env_bool("CODEX_RUNTIME_ENABLED", "true"))
     codex_runtime_binary_path: str | None = Field(default_factory=lambda: _env_optional("CODEX_RUNTIME_BINARY_PATH"))
     codex_runtime_home_directory: str | None = Field(default_factory=lambda: _env_optional("CODEX_RUNTIME_HOME"))
-    codex_runtime_allowed_versions: str = Field(default_factory=lambda: _env_str("CODEX_RUNTIME_ALLOWED_VERSIONS", "0.142.0-cometix"))
+    codex_runtime_allowed_versions: str = Field(default_factory=lambda: _env_str("CODEX_RUNTIME_ALLOWED_VERSIONS", "0.153.4"))
     codex_runtime_startup_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_STARTUP_TIMEOUT_SECONDS", "15"), gt=0, le=120)
     codex_runtime_request_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_REQUEST_TIMEOUT_SECONDS", "15"), gt=0, le=300)
+    tutor_codex_intake_timeout_seconds: float = Field(default_factory=lambda: _env_float("TUTOR_CODEX_INTAKE_TIMEOUT_SECONDS", "180"), ge=45, le=600)
     codex_runtime_turn_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_TURN_TIMEOUT_SECONDS", "300"), gt=0, le=3600)
     codex_runtime_shutdown_timeout_seconds: float = Field(default_factory=lambda: _env_float("CODEX_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", "5"), gt=0, le=60)
     codex_runtime_notification_queue_size: int = Field(default_factory=lambda: _env_int("CODEX_RUNTIME_NOTIFICATION_QUEUE_SIZE", "256"), ge=16, le=4096)
@@ -157,6 +160,10 @@ class Settings(BaseModel):
     )
     tutor_provider_debug_capture_directory: str | None = Field(
         default_factory=lambda: _env_optional("TUTOR_PROVIDER_DEBUG_CAPTURE_DIRECTORY")
+    )
+    tutor_provider_debug_capture_key_file: str | None = Field(
+        default_factory=lambda: _env_optional("TUTOR_PROVIDER_DEBUG_CAPTURE_KEY_FILE"),
+        repr=False,
     )
     tutor_provider_debug_capture_max_bytes: int = Field(
         default_factory=lambda: _env_int(
@@ -400,24 +407,25 @@ class Settings(BaseModel):
         if (
             self.tutor_provider_debug_capture_mode == "rejected"
             and self.tutor_provider_debug_capture_key is None
+            and self.tutor_provider_debug_capture_key_file is None
         ):
             raise ValueError("Rejected provider capture requires an encryption key")
         if self.uses_deepseek_v4_flash_responses and (
             self.tutor_deepseek_v4_flash_max_output_tokens
             >= self.tutor_deepseek_v4_flash_context_window_tokens
         ):
-            raise ValueError("DeepSeek V4 Flash max output tokens must leave room within the context window")
+            raise ValueError("DeepSeek Flash max output tokens must leave room within the context window")
         if self.uses_deepseek_v4_flash_responses and (
             self.tutor_deepseek_v4_flash_input_limit_tokens
             + self.tutor_deepseek_v4_flash_max_output_tokens
             > self.tutor_deepseek_v4_flash_context_window_tokens
         ):
-            raise ValueError("DeepSeek V4 Flash request limits exceed the physical context window")
+            raise ValueError("DeepSeek Flash request limits exceed the physical context window")
         if (
             self.tutor_deepseek_v4_flash_decision_max_output_tokens
             > self.tutor_deepseek_v4_flash_max_output_tokens
         ):
-            raise ValueError("DeepSeek V4 Flash Tutor decision output exceeds the provider maximum")
+            raise ValueError("DeepSeek Flash Tutor decision output exceeds the provider maximum")
         if self.tutor_default_decision_max_output_tokens > self.tutor_default_output_reserve_tokens:
             raise ValueError("Tutor decision output exceeds the default output reserve")
         input_hard_limit = self.tutor_context_window_capacity_tokens - self.tutor_context_output_reserve_tokens

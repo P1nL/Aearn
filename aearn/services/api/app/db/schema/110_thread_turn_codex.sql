@@ -583,7 +583,7 @@ CREATE TABLE IF NOT EXISTS tutor_conversation_runtime_threads (
   runtime_kind text NOT NULL CHECK (runtime_kind = 'codex_sidecar_v1'),
   runtime_version text NOT NULL CHECK (char_length(runtime_version) BETWEEN 1 AND 120),
   protocol_version text NOT NULL CHECK (char_length(protocol_version) BETWEEN 1 AND 120),
-  model text NOT NULL CHECK (model = 'deepseek-v4-flash'),
+  model text NOT NULL CHECK (model = 'deepseek-flash'),
   model_provider text NOT NULL CHECK (model_provider = 'aearn_deepseek'),
   external_thread_id text NOT NULL UNIQUE CHECK (char_length(external_thread_id) BETWEEN 1 AND 240),
   state text NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'unavailable', 'retired')),
@@ -654,7 +654,7 @@ INSERT INTO tutor_conversation_runtime_threads (
 )
 SELECT legacy.user_id, legacy.conversation_id, 'codex_sidecar_v1',
        min(legacy.runtime_version), min(legacy.protocol_version),
-       'deepseek-v4-flash', 'aearn_deepseek', min(legacy.external_thread_id),
+       'deepseek-flash', 'aearn_deepseek', min(legacy.external_thread_id),
        'active', 'adopted_legacy', min(legacy.created_at), max(legacy.updated_at), max(legacy.updated_at)
 FROM tutor_run_runtime_bindings AS legacy
 WHERE NOT EXISTS (

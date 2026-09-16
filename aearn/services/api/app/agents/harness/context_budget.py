@@ -62,7 +62,7 @@ def resolve_tutor_provider_context_capability(
     """Resolve only exact registry evidence or explicit conservative Settings."""
 
     capability_version = (
-        "deepseek-v4-flash-responses-v2"
+        "deepseek-flash-responses-v2"
         if settings.uses_deepseek_v4_flash_responses
         else "configured-conservative-provider-v1"
     )

@@ -235,7 +235,7 @@ class PostgresTutorRuntimeProjectionRepository:
                   state, migration_mode, created_at, updated_at, last_resumed_at
                 ) VALUES (
                   %s, %s, 'codex_sidecar_v1', %s, %s,
-                  'deepseek-v4-flash', 'aearn_deepseek', %s,
+                  'deepseek-flash', 'aearn_deepseek', %s,
                   'active', %s, %s, %s, %s
                 )
                 RETURNING *
@@ -334,7 +334,7 @@ class PostgresTutorRuntimeProjectionRepository:
                           state, migration_mode, created_at, updated_at, last_resumed_at
                         ) VALUES (
                           %s, %s, 'codex_sidecar_v1', %s, %s,
-                          'deepseek-v4-flash', 'aearn_deepseek', %s,
+                          'deepseek-flash', 'aearn_deepseek', %s,
                           'active', 'native', %s, %s, %s
                         )
                         RETURNING *

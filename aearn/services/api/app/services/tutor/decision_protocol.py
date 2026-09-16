@@ -39,6 +39,7 @@ from app.services.learning.teaching_contracts import (
     TeachingMove,
     TeachingPauseReason,
     TeachingStepDecision,
+    teaching_response_mode_is_valid,
 )
 from app.services.llm.llm_client import LLMInvalidResponseError
 
@@ -72,8 +73,15 @@ _TEACHING_PUBLIC_MESSAGE_MISMATCH = "public_message_mismatch"
 _TEACHING_CHILD_FOCUS_REQUIRED = "child_focus_required"
 _TEACHING_COMPLETION_ACTION_REQUIRED = "completion_action_required"
 _TEACHING_INTERACTION_MODE_MISMATCH = "interaction_mode_mismatch"
+_TEACHING_RESPONSE_MODE_INVALID = "response_mode_invalid"
 
 _TEACHING_SEMANTIC_REPAIR_GUIDANCE: Mapping[str, str] = {
+    _TEACHING_RESPONSE_MODE_INVALID: (
+        "composer requires action=check_understanding or wait_for_input and at least one "
+        "prediction, error_detection, misconception_contrast, or micro_transfer move. "
+        "none cannot use either response action. Choose a semantically appropriate legal "
+        "combination; do not invent an artifact or change current server authority."
+    ),
     _TEACHING_PUBLIC_MESSAGE_MISMATCH: (
         "Set action.public_message exactly equal to message.text; author one fresh "
         "learner-visible message and place that same text in both fields."
@@ -704,6 +712,13 @@ def _teaching_step_semantic_issues(
     """Project exact server-known semantic failures without candidate values."""
 
     issues: list[TutorDecisionValidationIssue] = []
+    if action.interaction is not None and not teaching_response_mode_is_valid(
+        action=action.action, mode=action.interaction.mode,
+        teaching_moves=action.teaching_moves or (),
+    ):
+        issues.append(TutorDecisionValidationIssue(
+            path="action.interaction.mode", category=_TEACHING_RESPONSE_MODE_INVALID,
+        ))
     if action.public_message != message_text:
         issues.append(
             TutorDecisionValidationIssue(
@@ -859,6 +874,21 @@ def parse_tutor_provider_items(
             terminal_outcome=terminal_outcome,
             teaching_step=teaching_step,
         )
+    except ValidationError as exc:
+        # Domain assembly applies stronger identity/semantic validators than the
+        # provider wire schema. Preserve safe locations instead of losing them
+        # in the generic ValueError fallback (ValidationError is a ValueError).
+        issues = _sanitize_validation_issues(exc)
+        raise TutorDecisionValidationError(
+            "Tutor provider items failed authoritative assembly",
+            issues=tuple(
+                TutorDecisionValidationIssue(
+                    path=f"action.{issue.path}" if issue.path != "root" else "action",
+                    category=issue.category,
+                )
+                for issue in issues
+            ),
+        ) from exc
     except (TypeError, ValueError) as exc:
         raise TutorDecisionValidationError(
             "Tutor provider items failed authoritative assembly",
@@ -931,6 +961,7 @@ def validation_diagnostic_code(issues: Sequence[TutorDecisionValidationIssue]) -
         _TEACHING_CHILD_FOCUS_REQUIRED: "CHILD_FOCUS_REQUIRED",
         _TEACHING_COMPLETION_ACTION_REQUIRED: "COMPLETION_ACTION_REQUIRED",
         _TEACHING_INTERACTION_MODE_MISMATCH: "INTERACTION_MODE_MISMATCH",
+        _TEACHING_RESPONSE_MODE_INVALID: "RESPONSE_MODE_INVALID",
     }.get(category, "INVALID")
     return f"TUTOR_PROVIDER_DECISION_{suffix}"
 

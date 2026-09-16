@@ -271,12 +271,12 @@ for a retry or failure:
 - non-DeepSeek configurations retain the Responses path and receive the generated
   `TutorProviderItemsEnvelope` through strict `text.format=json_schema`;
 - DeepSeek uses the Responses path only when the configured model is the exact,
-  case-sensitive value `deepseek-v4-flash`; its normalized endpoint is
+  case-sensitive value `deepseek-flash`; its normalized endpoint is
   `/responses`, with `input`, optional `instructions`, `stream=true`, and a
   bounded Tutor-decision output budget. Official-compatible operation remains
   `text.format=json_object`; `TUTOR_DEEPSEEK_RESPONSES_JSON_SCHEMA_ENABLED=true`
   is an explicit opt-in only for a verified compatible gateway. The physical
-  The physical DeepSeek V4 Flash context remains `1_000_000`. Ordinary Aearn
+  The physical DeepSeek Flash context remains `1_000_000`. Ordinary Aearn
   provider calls admit at most `131_072` input tokens and `61_440` output
   tokens; Tutor's internal request-budget envelope is therefore `192_512`, not
   a replacement physical model window. The narrow decision task defaults to
@@ -341,7 +341,7 @@ Every new interactive TurnRun freezes a `TutorContextBudgetPolicy` in
 `policy_json` and its policy fingerprint. The policy contains explicit provider
 capability evidence, configurable `compact`/`normal`/`complex`/`extended`
 targets, warning/critical ratios, one bounded expansion count, and estimator and
-policy versions. The exact `deepseek-v4-flash` registry entry uses the verified
+policy versions. The exact `deepseek-flash` registry entry uses the verified
 1M/384K limits; every other model uses explicit conservative Settings and never
 gains a large window from a fuzzy model-name match. Older runs without the new
 policy continue to replay their persisted `context_token_budget`.
@@ -534,13 +534,25 @@ Raw provider response capture is a separate local operator boundary and defaults
 to `off`. The generic LLM client captures nothing unless the Tutor gateway
 explicitly calls it with `capture_provider_body=true` and injects the diagnostic
 store. When `TUTOR_PROVIDER_DEBUG_CAPTURE_MODE=rejected`, a valid random
-32-byte base64 key is mandatory. Each attempt buffers at most
+32-byte base64 key is mandatory, supplied by `KEY_BASE64` or an external
+`TUTOR_PROVIDER_DEBUG_CAPTURE_KEY_FILE` (direct value takes precedence). Each attempt buffers at most
 `TUTOR_PROVIDER_DEBUG_CAPTURE_MAX_BYTES`, accepted attempts zero/discard the
 buffer, and rejected attempts write an AES-GCM artifact under the configured
 local directory with a random 96-bit nonce and authenticated safe metadata.
 Artifacts are never database rows or API fields, use a 24-hour default retention,
 and are pruned only inside the configured directory. A capture/configuration
 failure never exposes the body or changes the learner-safe terminal projection.
+
+Operational logs may expose paths verified against the generated provider schema,
+schema-owned expected enum values and rule guidance, never rejected values or raw
+Pydantic messages. Unknown path segments remain hashed. Each rejected-attempt log
+and encrypted artifact identifies `(run_id, input_revision, decision_iteration,
+attempt)`; `decision_iteration` is the same `model_call_count + 1` used by durable
+attempt receipts. Logs link a saved capture by opaque `artifact_id` and distinguish
+saved/empty/not_captured/failed, with truncation and byte counts. Artifact IDs stay
+out of public API/SSE. The local `provider_debug_cli` lists metadata and requires
+`show <id> --body` to decrypt content; it never writes plaintext files. See the
+local diagnostic commands in the development environment guide.
 
 `event_sequence` is a run-local durable ordering key, not an acknowledgement
 store. API idempotency records bind an operation, user scope, request body hash,
@@ -869,7 +881,7 @@ The effective v2 runtime gate is the conjunction of `TUTOR_THREAD_TURN_V2_ENABLE
 
 ## Controlled Codex plan-drafting cutover (2026-08-18)
 
-Harness remains the default implementation for general, learning-track, proactive, historical, and feature-off traffic. The server freezes `runtime_kind` only when a fresh TurnRun is created. A new `plan_drafting` conversation may select `codex_sidecar_v1` only from fresh shared worker readiness matching the allowlisted Runtime version plus exact `deepseek-v4-flash` / `aearn_deepseek` / `responses`; an enabled cohort with failed readiness receives safe unavailable instead of Harness fallback. Existing conversations and retry roots inherit their original Runtime.
+Harness remains the default implementation for general, learning-track, proactive, historical, and feature-off traffic. The server freezes `runtime_kind` only when a fresh TurnRun is created. A new `plan_drafting` conversation may select `codex_sidecar_v1` only from fresh shared worker readiness matching the allowlisted Runtime version plus exact `deepseek-flash` / `aearn_deepseek` / `responses`; an enabled cohort with failed readiness receives safe unavailable instead of Harness fallback. Existing conversations and retry roots inherit their original Runtime.
 
 The durable interactive job table remains the authority. Harness and Codex workers claim it with disjoint Runtime filters, and `TutorRuntimeDispatchRouter` routes only from the persisted run snapshot. The Codex dispatcher does not wrap `TutorRunLoop`: it owns the Runtime thread/turn, typed LearningPlan tool registry, lease heartbeat, steer/interrupt monitor, and durable Runtime projector. LearningPlan confirmation and LearningTrack creation stay outside Codex in the existing Aearn HTTP/domain transaction.
 
@@ -925,7 +937,9 @@ Harness 在 effect commit、waiting result 和 terminal result 前重新验证 c
 
 exact `tutor.lesson-teaching@1.1.0` 使用 `tutor.teaching-step-decision.v2`。每个教学单元必须选择 2--4 个互不重复的 closed `teaching_moves`：`targeted_explanation`、`worked_example`、`counterexample`、`misconception_contrast`、`guided_derivation`、`prediction`、`error_detection`、`micro_transfer` 或 `learner_feedback`。`learner_response_mode=composer` 只允许搭配 `check_understanding | wait_for_input`，并且必须包含至少一个诊断性 move；`none` 不允许这两个 action。`change_example` 必须实际包含 `worked_example | counterexample`。
 
-下一次 teaching run 的 required projection 包含最近四个已提交 v2 单元的 action、focus、moves、response mode、public-message hash 与 schema version。投影主动删除重复 summary/UI 字段并保持既有 1,200 字符 required-section 上限，不通过提高全局 context budget 掩盖溢出。`continue` 若与最近单元 public-message hash 完全相同，或 objective/focus/moves/response mode 形成相同策略签名，decision gate 以 `teaching_unit_not_advanced` fail closed；改变例子、诊断策略、迁移练习或学习者反馈等真实推进可以继续提交。
+下一次 teaching run 的 required projection 包含最近四个已提交 v2/v3 单元的 action、focus、moves、response mode、public-message hash 与 schema version。投影主动删除重复 summary/UI 字段并保持既有 1,200 字符 required-section 上限，不通过提高全局 context budget 掩盖溢出。`continue` 若与最近单元 public-message hash 完全相同，decision gate 以 `teaching_unit_not_advanced` fail closed。普通 learner Continue 的同 focus/moves/response mode 策略签名重复也拒绝；只有 owner 通过 consumed intent、Artifact event 与 immutable response receipt 的 exact join 证明新知识检查结果时，反馈可以复用同一策略签名。此 server-only 证据标记不能由模型或 learner control 提供，不豁免 exact text、source handle、completion pause 或正式 Gate 规则。
+
+Teaching request 保留完整通用协议规则与 canonical teaching-step example，但不再重复附带该上下文不允许的普通 direct-reply / generic wait-for-input examples；非 teaching request 仍包含完整普通示例。此去重不截断 required authority/question/receipt，也不提高输入硬上限、输出预留或物理上下文容量。若完整 required request 仍超限，必须在调用 provider 前以 `TUTOR_CONTEXT_REQUIRED_OVERFLOW` 失败；无公开评价消息的早期失败不发布结果工件，也不能被二次发布错误改写成 `teaching_authority_stale`。
 
 checkpoint reducer 先尊重 session/evidence/completion/authority 状态，再解释 response mode。需要学习者作答时推荐 `respond_in_composer`；只有明确推荐继续才显示 Continue。这个决策只改变 server-owned projection，不增加新的客户端状态机、provider 控件或自动 next run。
 

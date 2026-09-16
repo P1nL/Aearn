@@ -28,6 +28,10 @@ SCHEMA_FRAGMENT_NAMES: tuple[str, ...] = (
     '180_knowledge_checks.sql',
     '190_model_review_artifacts.sql',
     '200_sql_learning_workspace.sql',
+    '210_tutor_branch_supersession.sql',
+    '220_plan_catalog_knowledge_scope.sql',
+    '230_artifact_authority_supersession.sql',
+    '240_deepseek_flash_runtime_cutover.sql',
 )
 
 

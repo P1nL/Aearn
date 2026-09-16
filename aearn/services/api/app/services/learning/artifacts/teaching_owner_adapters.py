@@ -352,9 +352,9 @@ def _validate_cancel_authority(
          AND publication.state_version = %s
          AND publication.state = 'published'
         WHERE versions.id = %s
-          AND versions.knowledge_key = %s
+          AND versions.knowledge_key = tutor_artifact_catalog_knowledge_key(%s)
         """,
-        (artifact.owner_version, artifact.owner_id, artifact.knowledge_key),
+        (artifact.owner_version, artifact.owner_id, artifact.id),
     ).fetchone()
     if item is None:
         raise ArtifactOwnerVersionConflict(

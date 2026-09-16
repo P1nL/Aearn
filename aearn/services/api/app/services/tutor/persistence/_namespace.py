@@ -66,6 +66,7 @@ __all__ = (
     'sanitize_summary_text',
     'TutorPublicArtifactItem',
     'TutorPublicBranchGroupV1',
+    'TutorPublicBranchGroup',
     'TeachingAuthoritySnapshot',
     'TeachingCheckpointState',
     'TeachingSessionMode',

@@ -110,8 +110,8 @@ export function readBranchExpanded(conversationId: string, branch: TutorPublicBr
   }
   const key = branchStateKey(conversationId, branch.branch_id);
   const current = branchUiStateCache.get(key);
-  if (!current || current.serverState === "active") {
-    branchUiStateCache.set(key, { expanded: false, serverState: "resolved" });
+  if (!current || current.serverState !== branch.state) {
+    branchUiStateCache.set(key, { expanded: false, serverState: branch.state });
     return false;
   }
   return current.expanded;

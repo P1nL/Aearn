@@ -108,6 +108,7 @@ class LearningPlanNode:
     is_core: bool
     prerequisite_keys: tuple[str, ...]
     required_capabilities: tuple[str, ...]
+    catalog_knowledge_key: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "knowledge_key", stable_key(self.knowledge_key, label="knowledge_key"))
@@ -125,6 +126,12 @@ class LearningPlanNode:
             raise ValueError("node required capabilities must be unique")
         object.__setattr__(self, "prerequisite_keys", prerequisites)
         object.__setattr__(self, "required_capabilities", capabilities)
+        if self.catalog_knowledge_key is not None:
+            object.__setattr__(self, "catalog_knowledge_key", stable_key(
+                self.catalog_knowledge_key, label="catalog_knowledge_key",
+            ))
+            if not capabilities:
+                raise ValueError("mapped plan node requires explicit capabilities")
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,10 +204,11 @@ class PlanImpact:
     reordered: tuple[str, ...]
     prerequisite_changed: tuple[str, ...]
     retained_progress: tuple[str, ...]
+    teaching_scope_changed: tuple[str, ...] = ()
 
     @property
     def has_changes(self) -> bool:
-        return any((self.added, self.removed, self.reordered, self.prerequisite_changed))
+        return any((self.added, self.removed, self.reordered, self.prerequisite_changed, self.teaching_scope_changed))
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -209,6 +217,7 @@ class PlanImpact:
             "reordered": list(self.reordered),
             "prerequisite_changed": list(self.prerequisite_changed),
             "retained_progress": list(self.retained_progress),
+            **({"teaching_scope_changed": list(self.teaching_scope_changed)} if self.teaching_scope_changed else {}),
         }
 
 
@@ -348,6 +357,8 @@ def canonical_plan_payload(plan: LearningPlan) -> dict[str, object]:
                         "is_core": node.is_core,
                         "prerequisite_keys": list(node.prerequisite_keys),
                         "required_capabilities": list(node.required_capabilities),
+                        **({"catalog_knowledge_key": node.catalog_knowledge_key}
+                           if node.catalog_knowledge_key is not None else {}),
                     }
                     for node in sorted(module.nodes, key=lambda item: item.order_index)
                 ],
@@ -381,4 +392,8 @@ def calculate_plan_impact(
             sorted(key for key in retained if current_nodes[key].prerequisite_keys != candidate_nodes[key].prerequisite_keys)
         ),
         retained_progress=tuple(sorted(retained & set(progress_keys))),
+        teaching_scope_changed=tuple(sorted(key for key in retained if (
+            current_nodes[key].required_capabilities != candidate_nodes[key].required_capabilities
+            or current_nodes[key].catalog_knowledge_key != candidate_nodes[key].catalog_knowledge_key
+        ))),
     )

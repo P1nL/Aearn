@@ -234,3 +234,8 @@ def test_real_transport_redirect_loop_is_bounded_without_provenance(monkeypatch)
     result = GroundingDocsFetcher().fetch("python-tutorial", URL)
     assert len(calls) == 6
     assert result.document is None and result.error_code == "HTTP_STATUS"
+
+
+@pytest.mark.parametrize("section", ["Navigation", "This page", "Table of Contents", "Quick search"])
+def test_navigation_is_not_admissible_lesson_evidence(real_chunk, section):
+    assert not is_admissible_lesson_source(replace(real_chunk, section_path=("Python Tutorial", section)))

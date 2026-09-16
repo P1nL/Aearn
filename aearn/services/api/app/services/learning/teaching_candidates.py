@@ -57,6 +57,7 @@ class TeachingArtifactCandidateBuilder:
         artifact_teaching_enabled: bool,
         required_handles: Sequence[str] = (),
         excluded_purposes: Sequence[str] = ("remediation", "transfer_check"),
+        catalog_knowledge_key: str | None = None,
     ) -> TeachingArtifactCandidateSet:
         feature_enabled = learning_artifacts_enabled and artifact_teaching_enabled
         if not feature_enabled:
@@ -65,16 +66,17 @@ class TeachingArtifactCandidateBuilder:
                 feature_enabled=False,
             )
 
+        content_knowledge_key = catalog_knowledge_key or scope.knowledge_key
         try:
             published = self._repository.published_candidates(
-                knowledge_key=scope.knowledge_key,
+                knowledge_key=content_knowledge_key,
                 available_capabilities=tuple(available_capabilities),
                 required_handles=tuple(required_handles),
                 excluded_purposes=tuple(excluded_purposes),
                 limit=8,
             )
             candidates = tuple(
-                _project_candidate(item=item, knowledge_key=scope.knowledge_key)
+                _project_candidate(item=item, knowledge_key=content_knowledge_key)
                 for item in published
             )
             return TeachingArtifactCandidateSet(

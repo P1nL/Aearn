@@ -17,6 +17,12 @@ from app.core.config import Settings, get_settings
 from app.core.teaching_safety import sanitize_summary_text
 from app.services.learning.artifacts.contracts import assert_public_artifact_safe
 from app.services.learning.item_bank.repository import PostgresLearningItemBankRepository
+from app.services.learning.item_bank.contracts import LearningItemPublicV1
+from app.services.learning.knowledge_check_grounding import (
+    KnowledgeCheckGroundingError,
+    build_knowledge_check_grounding,
+    build_knowledge_check_candidate_grounding,
+)
 from app.services.learning.teaching_candidates import (
     TeachingArtifactCandidateBuildError,
     TeachingArtifactCandidateBuilder,
@@ -185,6 +191,18 @@ class TeachingSessionRepository:
         ).fetchall())
 
     def open_or_resume(self, *, authority: TeachingAuthority, mode: TeachingSessionMode) -> tuple[Mapping[str, object], bool]:
+        # Match branch admission's conversation-first lock order. Keep the old
+        # checkpoint, successor and branch retirement atomic even if caught.
+        with self._conn.transaction():
+            conversation = self._conn.execute(
+                "SELECT id FROM tutor_conversations WHERE id=%s AND user_id=%s FOR UPDATE",
+                (authority.conversation_id, authority.user_id),
+            ).fetchone()
+            if conversation is None:
+                raise TeachingSessionNotFound("teaching conversation was not found")
+            return self._open_or_resume(authority=authority, mode=mode)
+
+    def _open_or_resume(self, *, authority: TeachingAuthority, mode: TeachingSessionMode) -> tuple[Mapping[str, object], bool]:
         existing = self._conn.execute(
             "SELECT * FROM tutor_teaching_sessions WHERE user_id=%s AND track_id=%s AND conversation_id=%s "
             "AND knowledge_key=%s AND status IN ('active','paused','completed') "
@@ -199,6 +217,9 @@ class TeachingSessionRepository:
             except TeachingSessionConflict:
                 predecessor_session_id = self._block_stale_session(existing)
             else:
+                # Reconcile historical supersessions too, through the same
+                # domain owner path; never rewrite the old session or score.
+                self._supersede_predecessor_artifacts(existing)
                 return existing, False
         session_id = str(uuid4())
         row = self._conn.execute(
@@ -231,7 +252,105 @@ class TeachingSessionRepository:
         ).fetchone()
         if updated is None:
             raise RuntimeError("teaching session checkpoint binding failed")
+        if predecessor_session_id is not None and existing is not None:
+            from app.services.tutor.branching import PostgresTutorBranchRepository, TutorBranchError
+
+            branches = self._conn.execute(
+                """SELECT id,version,current_event_id FROM tutor_conversation_branches
+                   WHERE user_id=%s AND conversation_id=%s AND learning_track_id=%s
+                     AND knowledge_key=%s AND teaching_session_id=%s AND state='active'
+                   ORDER BY id LIMIT 51 FOR UPDATE""",
+                (authority.user_id, authority.conversation_id, authority.track_id,
+                 authority.knowledge_key, predecessor_session_id),
+            ).fetchall()
+            if len(branches) > 50:
+                raise TeachingSessionConflict("teaching branch replacement bound exceeded")
+            branch_owner = PostgresTutorBranchRepository(self._conn)
+            try:
+                for branch in branches:
+                    branch_owner.supersede_authority(
+                        branch_id=str(branch["id"]), user_id=authority.user_id,
+                        conversation_id=authority.conversation_id, learning_track_id=authority.track_id,
+                        knowledge_key=authority.knowledge_key, teaching_session_id=predecessor_session_id,
+                        successor_session_id=session_id, expected_version=_int(branch["version"]),
+                        expected_event_id=str(branch["current_event_id"]),
+                        expected_session_version=_int(existing["version"]) + 1,
+                        expected_successor_version=_int(updated["version"]),
+                    )
+            except TutorBranchError as exc:
+                raise TeachingSessionConflict("teaching branch replacement conflicted") from exc
+        self._supersede_predecessor_artifacts(updated)
         return updated, True
+
+    def _supersede_predecessor_artifacts(self, session: Mapping[str, object]) -> None:
+        """Retire only proven, blocked ancestors of this exact teaching scope.
+
+        open_or_resume holds the conversation lock and the caller transaction.
+        Artifact terminal/CAS/event/SSE behavior remains in its repository owner.
+        """
+        from app.services.learning.artifacts.contracts import TutorArtifactState
+        from app.services.learning.artifacts.conversation_events import PostgresTutorArtifactConversationEventSink
+        from app.services.learning.artifacts.owner_adapters import ArtifactMutation
+        from app.services.learning.artifacts.repository import PostgresLearningArtifactRepository, LearningArtifactRepositoryError
+
+        predecessor = session.get("predecessor_session_id")
+        ancestors: list[str] = []
+        seen = {str(session["id"])}
+        while predecessor is not None:
+            parent_id = str(predecessor)
+            if parent_id in seen or len(ancestors) >= 32:
+                raise TeachingSessionConflict("teaching Artifact supersession lineage is invalid")
+            seen.add(parent_id)
+            parent = self._conn.execute(
+                """SELECT id,status,predecessor_session_id FROM tutor_teaching_sessions
+                   WHERE id=%s AND user_id=%s AND track_id=%s AND conversation_id=%s AND knowledge_key=%s
+                   FOR UPDATE""",
+                (parent_id, session["user_id"], session["track_id"], session["conversation_id"], session["knowledge_key"]),
+            ).fetchone()
+            if parent is None or parent["status"] != "blocked":
+                raise TeachingSessionConflict("teaching Artifact ancestor authority is not retired")
+            ancestors.append(parent_id)
+            predecessor = parent["predecessor_session_id"]
+        if not ancestors:
+            return
+        rows = self._conn.execute(
+            """SELECT * FROM tutor_learning_artifacts
+               WHERE user_id=%s AND conversation_id=%s AND learning_track_id=%s AND knowledge_key=%s
+                 AND teaching_session_id=ANY(%s::uuid[])
+                 AND state IN ('pending','ready','active','running')
+               ORDER BY id LIMIT 65 FOR UPDATE""",
+            (session["user_id"], session["conversation_id"], session["track_id"], session["knowledge_key"], ancestors),
+        ).fetchall()
+        if len(rows) > 64:
+            raise TeachingSessionConflict("teaching Artifact supersession bound exceeded")
+        owner = PostgresLearningArtifactRepository(
+            self._conn, conversation_events=PostgresTutorArtifactConversationEventSink(self._conn),
+        )
+        try:
+            context_versions = {str(row["id"]): _int(row["owner_context_version"]) for row in rows}
+            artifacts = [owner.read_artifact(
+                user_id=str(session["user_id"]), conversation_id=str(session["conversation_id"]), artifact_id=str(row["id"]),
+            ) for row in rows]
+            if any(artifact.state is TutorArtifactState.RUNNING or
+                   (artifact.active_attempt is not None and artifact.active_attempt.status != "terminal") for artifact in artifacts):
+                raise TeachingSessionConflict("running Artifact work must finish or be cancelled before supersession")
+            for artifact in artifacts:
+                owner.apply_owner_update(
+                    artifact_id=artifact.id, user_id=str(session["user_id"]),
+                    conversation_id=str(session["conversation_id"]), learning_track_id=str(session["track_id"]),
+                    teaching_session_id=artifact.teaching_session_id, expected_artifact_version=artifact.version,
+                    event_key=f"teaching-supersession:{session['id']}:{artifact.id}", event_kind="terminal",
+                    mutation=ArtifactMutation(
+                        state=TutorArtifactState.SUPERSEDED, owner_version=artifact.owner_version,
+                        owner_context_version=context_versions[artifact.id], presentation=artifact.presentation,
+                        allowed_actions=(), active_attempt=artifact.active_attempt,
+                        safe_event_payload={"reason_code": "teaching_authority_superseded", "successor_session_id": str(session["id"]),
+                                            "predecessor_session_id": artifact.teaching_session_id},
+                    ),
+                    occurred_at=datetime.now(UTC),
+                )
+        except LearningArtifactRepositoryError as exc:
+            raise TeachingSessionConflict("teaching Artifact supersession conflicted") from exc
 
     def _block_stale_session(self, session: Mapping[str, object]) -> str:
         active_run = self._conn.execute(
@@ -598,7 +717,8 @@ class TeachingSessionRepository:
                       stimuli.control_key, stimuli.client_action_id, stimuli.domain_event_kind, stimuli.source_id,
                       stimuli.source_version, stimuli.safe_payload_json,
                       progress.status AS progress_status,
-                      nodes.required_capabilities_json AS available_capabilities_json
+                      nodes.required_capabilities_json AS available_capabilities_json,
+                      nodes.catalog_knowledge_key
                FROM tutor_run_teaching_scopes AS scopes
                JOIN tutor_teaching_sessions AS sessions ON sessions.id=scopes.teaching_session_id
                  AND sessions.user_id=scopes.user_id AND sessions.conversation_id=scopes.conversation_id
@@ -662,7 +782,7 @@ class TeachingSessionRepository:
             handles.add(source_handle)
         elif knowledge_check_evaluation is not None:
             source_handle = str(safe_payload["source_handle"])
-            evaluation_summary, successor_handle = knowledge_check_evaluation
+            evaluation_summary, successor_handle, _grounding = knowledge_check_evaluation
             safe_payload = {
                 "reason_code": "knowledge_check_evaluation",
                 "source_handle": source_handle,
@@ -740,7 +860,10 @@ class TeachingSessionRepository:
             assignment_version=_int(row["assignment_version"]),
         )
         try:
-            artifact_evaluation = knowledge_check_evaluation or model_review_evaluation
+            artifact_evaluation = (
+                (knowledge_check_evaluation[0], knowledge_check_evaluation[1])
+                if knowledge_check_evaluation is not None else model_review_evaluation
+            )
             required_successor_handles = (
                 (artifact_evaluation[1],)
                 if artifact_evaluation is not None and artifact_evaluation[1] is not None
@@ -751,6 +874,8 @@ class TeachingSessionRepository:
                 available_capabilities=_string_list(row.get("available_capabilities_json")),
                 learning_artifacts_enabled=self._settings.tutor_learning_artifacts_enabled,
                 artifact_teaching_enabled=self._settings.tutor_artifact_teaching_mode_enabled,
+                **({"catalog_knowledge_key": str(row["catalog_knowledge_key"])}
+                   if row.get("catalog_knowledge_key") is not None else {}),
                 required_handles=required_successor_handles,
                 excluded_purposes=() if required_successor_handles else ("remediation", "transfer_check"),
             )
@@ -761,7 +886,10 @@ class TeachingSessionRepository:
                 update={"candidates": ()}
             )
         elif knowledge_check_evaluation is not None or model_review_evaluation is not None:
-            artifact_evaluation = knowledge_check_evaluation or model_review_evaluation
+            artifact_evaluation = (
+                (knowledge_check_evaluation[0], knowledge_check_evaluation[1])
+                if knowledge_check_evaluation is not None else model_review_evaluation
+            )
             assert artifact_evaluation is not None
             _summary, successor_handle = artifact_evaluation
             candidates = tuple(
@@ -808,7 +936,14 @@ class TeachingSessionRepository:
             "structured_summary": structured_summary,
             "related_historical_summaries": historical_summaries,
             "recent_teaching_units": recent_teaching_units,
+            # Server-only proof: _knowledge_check_evaluation joined the exact
+            # consumed intent, Artifact event and immutable response receipt.
+            # It cannot be supplied by a learner control or provider output.
+            "fresh_knowledge_check_evidence": knowledge_check_evaluation is not None,
             "artifact_candidates": artifact_candidates.model_dump(mode="json"),
+            # Not part of the 1,200-character TEACHING_SESSION authority block.
+            # InteractiveContextLoader promotes every piece to REQUIRED_FACTS.
+            "artifact_evidence": list(knowledge_check_evaluation[2]) if knowledge_check_evaluation is not None else [],
             "allowed_source_handles": sorted(handles),
             "action_policy": "lesson_teaching_v3",
         }
@@ -823,6 +958,30 @@ class TeachingSessionRepository:
                 "teaching artifact candidate projection is invalid"
             ) from exc
         context["artifact_candidates"] = bounded_candidates.model_dump(mode="json")
+        question_handles = tuple(item.handle for item in bounded_candidates.candidates if item.kind == "knowledge_check")
+        if question_handles:
+            rows = self._conn.execute(
+                """SELECT v.id,v.handle,p.public_json FROM tutor_learning_item_versions v
+                   JOIN tutor_learning_item_public_contents p ON p.version_id=v.id
+                   JOIN LATERAL (SELECT state FROM tutor_learning_item_publication_events e
+                     WHERE e.version_id=v.id ORDER BY state_version DESC LIMIT 1) publication ON publication.state='published'
+                   WHERE v.handle=ANY(%s) AND v.item_kind='knowledge_check'""",
+                (list(question_handles),),
+            ).fetchall()
+            by_handle = {str(item["handle"]): item for item in rows}
+            if len(by_handle) != len(question_handles):
+                raise TeachingSessionConflict("knowledge-check candidate question is unavailable")
+            candidate_grounding_sources = list(knowledge_check_evaluation[2]) if knowledge_check_evaluation is not None else []
+            try:
+                for handle in question_handles:
+                    question = by_handle[handle]
+                    candidate_grounding_sources.extend(build_knowledge_check_candidate_grounding(
+                        handle=handle, learning_item_version_id=str(question["id"]),
+                        public=LearningItemPublicV1.model_validate(question["public_json"]),
+                    ))
+            except (ValueError, TypeError) as exc:
+                raise TeachingSessionConflict("knowledge-check candidate question is invalid") from exc
+            context["artifact_evidence"] = candidate_grounding_sources
         return context
 
     def _result_evaluation_summary(
@@ -924,7 +1083,7 @@ class TeachingSessionRepository:
         *,
         row: Mapping[str, object],
         safe_payload: Mapping[str, object],
-    ) -> tuple[str, str | None] | None:
+    ) -> tuple[str, str | None, tuple[dict[str, object], ...]] | None:
         if safe_payload.get("reason_code") != "knowledge_check_evaluation":
             return None
         source_handle = str(safe_payload.get("source_handle") or "")
@@ -936,6 +1095,8 @@ class TeachingSessionRepository:
         rows = self._conn.execute(
             """
             SELECT artifacts.presentation_json,receipts.id::text AS receipt_id,
+                   receipts.learning_item_version_id,receipts.response_json,
+                   receipts.independent_mastery_eligible,
                    receipts.outcome,receipts.assistance_kind,receipts.result_hash
             FROM tutor_continuation_intents AS intents
             JOIN tutor_learning_artifacts AS artifacts
@@ -955,6 +1116,8 @@ class TeachingSessionRepository:
              AND receipts.conversation_id=artifacts.conversation_id
              AND receipts.teaching_session_id=artifacts.teaching_session_id
              AND receipts.learning_track_id=artifacts.learning_track_id
+             AND receipts.knowledge_key=artifacts.knowledge_key
+             AND receipts.learning_item_version_id=artifacts.owner_id
             WHERE intents.consumed_run_id=%s AND intents.user_id=%s
               AND intents.conversation_id=%s AND intents.teaching_session_id=%s
               AND intents.learning_track_id=%s AND intents.knowledge_key=%s
@@ -962,6 +1125,7 @@ class TeachingSessionRepository:
               AND intents.source_kind='explicit_artifact_action'
               AND intents.idempotency_key='knowledge-check-evaluation:' || intents.source_id
               AND artifacts.artifact_kind='knowledge_check'
+              AND artifacts.owner_kind='learning_item'
               AND artifacts.state='completed' AND artifacts.presentation_kind='knowledge_check_v1'
               AND artifacts.presentation_json->>'response_receipt_id'=receipts.id::text
               AND events.event_kind='action'
@@ -1026,7 +1190,22 @@ class TeachingSessionRepository:
             raise TeachingSessionConflict(
                 "knowledge-check evaluation summary is protected"
             ) from exc
-        return summary, successor_handle
+        response = result.get("response_json")
+        eligible = result.get("independent_mastery_eligible")
+        if not isinstance(response, Mapping) or not isinstance(eligible, bool):
+            raise TeachingSessionConflict("knowledge-check response evidence is invalid")
+        try:
+            grounding = build_knowledge_check_grounding(
+                artifact_id=artifact_id,
+                learning_item_version_id=str(result["learning_item_version_id"]),
+                receipt_id=str(result["receipt_id"]), presentation=presentation,
+                response=response, outcome=str(result["outcome"]),
+                assistance_kind=str(result["assistance_kind"]),
+                independent_mastery_eligible=eligible,
+            )
+        except KnowledgeCheckGroundingError as exc:
+            raise TeachingSessionConflict("knowledge-check response evidence is inconsistent") from exc
+        return summary, successor_handle, grounding
 
     def _model_review_evaluation(
         self,

@@ -57,6 +57,8 @@ Feature flag: `LEARNING_ITEM_BANK_AGENT_REVIEW_ENABLED=false` by default.
 
 ## 3. Contracts
 
+- Plan `knowledge_key` is the stable learner progress identity. Optional `catalog_knowledge_key` is a frozen revision-scoped content lookup only; null retains direct matching and legacy hashes. Resolve with exact user/track/revision/node (or the Artifact's frozen TeachingSession), not the latest plan, prose, titles, or fuzzy prefixes. Explicit mappings require nonempty granted capabilities and same-language, compatible published content; a failed catalog read must not authorize an explicit mapping. Keep Gate/Artifact/Attempt root scope on the original node and preserve immutable catalog version identities. Scope-only revisions must report `teaching_scope_changed`; activation must not manufacture completion evidence.
+
 - Source files are Git-owned UTF-8 JSON/YAML. Loading rejects duplicate keys, non-finite numbers, oversized files/catalogs, excessive depth/nodes, symlink/junction components, path escape, drive-qualified paths, unsafe suffixes, and empty source roots.
 - Compilation records exact source-byte hash, normalized source hash, canonical source/content hashes, deterministic UUID identities, and the stable `li:<sha256>` handle. Reordering files does not change the catalog digest.
 - Public and private content are separate strict `extra=forbid` contracts. Public data may contain learner-visible prompt, starter content, safe source references, difficulty, interactions, and H1-H3 hints; it never contains standard answers, hidden tests, private rubric, scorer evidence, reviewer/provider bodies, commands, paths, images, or secrets.

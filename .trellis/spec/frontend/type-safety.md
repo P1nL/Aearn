@@ -617,3 +617,7 @@ if (payload.active_runtime_output !== null && runtime === null) return null;
 
 - 错误：前端从 message content 推断 session，并把正文塞入 reference。
 - 正确：消费 server `turn_ids`，提交 exact IDs，公开 parser 拒绝任何完整历史正文。
+
+## Teaching input acceptance
+
+A successful Tutor input response can include optional `teaching_scope` (learner-message stimulus ID, session/checkpoint/version, track/knowledge and mode). Parse this explicit allowlisted structure, preserve it in the accepted response, and still reject malformed scopes and unknown fields. HTTP 202 already accepted the learner input; do not retry automatically because of projection parsing failures.

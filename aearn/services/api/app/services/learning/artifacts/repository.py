@@ -28,6 +28,7 @@ from .contracts import (
     TutorArtifactAttemptResultV2,
     TutorArtifactAttemptSummaryV1,
     TutorArtifactBranchSummaryV1,
+    TutorArtifactBranchSummaryV2,
     TutorArtifactDifficulty,
     TutorArtifactKind,
     TutorArtifactOwnerKind,
@@ -1583,7 +1584,7 @@ class PostgresLearningArtifactRepository:
         user_id: str,
         conversation_id: str,
         artifact_id: str,
-    ) -> TutorArtifactBranchSummaryV1 | None:
+    ) -> TutorArtifactBranchSummaryV1 | TutorArtifactBranchSummaryV2 | None:
         row = self._conn.execute(
             """
             SELECT branches.id, branches.state, branches.latest_disposition,
@@ -1611,14 +1612,15 @@ class PostgresLearningArtifactRepository:
                 "stored learning artifact branch has no item membership"
             )
         state = str(row["state"])
-        return TutorArtifactBranchSummaryV1.model_validate(
+        summary_type = TutorArtifactBranchSummaryV2 if state == "superseded" else TutorArtifactBranchSummaryV1
+        return summary_type.model_validate(
             {
                 "branch_id": str(row["id"]),
                 "state": state,
                 "disposition": row.get("latest_disposition"),
                 "round_count": _int(row.get("round_count"), "round_count"),
                 "item_count": item_count,
-                "collapsed": state == "resolved",
+                "collapsed": state != "active",
             }
         )
 

@@ -725,6 +725,7 @@ def _export_learning_track_nodes(
         SELECT nodes.id, nodes.track_id, nodes.revision_id, nodes.module_id,
                nodes.knowledge_key, nodes.title, nodes.description, nodes.order_index,
                nodes.is_core, nodes.prerequisite_keys_json, nodes.required_capabilities_json,
+               nodes.catalog_knowledge_key,
                progress.status AS progress_status, progress.version AS progress_version,
                mastery.confidence AS mastery_confidence,
                mastery.mastery_level, mastery.strengths_json, mastery.weaknesses_json,
@@ -991,7 +992,8 @@ def _export_clarification_branches(
                teaching_session_id, checkpoint_id, artifact_id,
                predecessor_branch_id, depth, state, version, round_count,
                latest_disposition, opened_turn_id, opened_input_revision,
-               resolved_turn_id, created_at, updated_at, resolved_at
+               resolved_turn_id, created_at, updated_at, resolved_at,
+               superseded_by_session_id, superseded_at
         FROM tutor_conversation_branches
         WHERE user_id = %s
         ORDER BY created_at, id
@@ -1012,7 +1014,7 @@ def _export_clarification_branch_events(
                message_classification, control_kind, disposition,
                source_turn_id, source_input_revision, response_message_id,
                assistance_kind, assistance_receipt_kind, assistance_receipt_id,
-               created_at
+               superseding_session_id, created_at
         FROM tutor_conversation_branch_events
         WHERE user_id = %s
         ORDER BY branch_id, branch_version

@@ -116,15 +116,11 @@ class TutorPublicBranchItemReferenceV1(_StrictBranchModel):
         return self
 
 
-class TutorPublicBranchGroupV1(_StrictBranchModel):
-    schema_version: Literal["tutor_conversation_branch_v1"] = (
-        "tutor_conversation_branch_v1"
-    )
+class _TutorPublicBranchGroup(_StrictBranchModel):
     branch_id: str = Field(min_length=1, max_length=160)
     anchor_artifact_id: str = Field(min_length=1, max_length=160)
     teaching_session_id: str = Field(min_length=1, max_length=160)
     checkpoint_id: str = Field(min_length=1, max_length=160)
-    state: Literal["active", "resolved"]
     disposition: BranchResponseDisposition | None = None
     round_count: int = Field(ge=1, le=100)
     item_count: int = Field(ge=1, le=400)
@@ -137,11 +133,7 @@ class TutorPublicBranchGroupV1(_StrictBranchModel):
     resolved_at: str | None = Field(default=None, min_length=1, max_length=80)
 
     @model_validator(mode="after")
-    def validate_group(self) -> "TutorPublicBranchGroupV1":
-        if (self.state == "resolved") != (self.resolved_at is not None):
-            raise ValueError("branch resolved timestamp is inconsistent")
-        if self.collapsed != (self.state == "resolved"):
-            raise ValueError("branch collapsed state is inconsistent")
+    def validate_membership(self) -> "_TutorPublicBranchGroup":
         if self.item_count != len(self.items):
             raise ValueError("branch item count is inconsistent")
         sequences = tuple(item.item_sequence for item in self.items)
@@ -149,9 +141,39 @@ class TutorPublicBranchGroupV1(_StrictBranchModel):
             raise ValueError("branch item membership must be contiguous and ordered")
         if any(item.branch_round > self.round_count for item in self.items):
             raise ValueError("branch item round exceeds branch round count")
+        return self
+
+
+class TutorPublicBranchGroupV1(_TutorPublicBranchGroup):
+    schema_version: Literal["tutor_conversation_branch_v1"] = "tutor_conversation_branch_v1"
+    state: Literal["active", "resolved"]
+
+    @model_validator(mode="after")
+    def validate_group(self) -> "TutorPublicBranchGroupV1":
+        if (self.state == "resolved") != (self.resolved_at is not None):
+            raise ValueError("branch resolved timestamp is inconsistent")
+        if self.collapsed != (self.state == "resolved"):
+            raise ValueError("branch collapsed state is inconsistent")
         if self.state == "resolved" and self.disposition is None:
             raise ValueError("resolved branch requires a disposition")
         return self
+
+
+class TutorPublicBranchGroupV2(_TutorPublicBranchGroup):
+    """Authority retirement, never interpreted as an answered clarification."""
+
+    schema_version: Literal["tutor_conversation_branch_v2"] = "tutor_conversation_branch_v2"
+    state: Literal["superseded"] = "superseded"
+    superseded_at: str = Field(min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def validate_supersession(self) -> "TutorPublicBranchGroupV2":
+        if self.resolved_at is not None or not self.collapsed:
+            raise ValueError("superseded branch must be collapsed without resolution")
+        return self
+
+
+TutorPublicBranchGroup = TutorPublicBranchGroupV1 | TutorPublicBranchGroupV2
 
 
 __all__ = (
@@ -162,6 +184,8 @@ __all__ = (
     "BranchMessageClassification",
     "BranchResponseDisposition",
     "TutorPublicBranchGroupV1",
+    "TutorPublicBranchGroupV2",
+    "TutorPublicBranchGroup",
     "TutorPublicBranchItemReferenceV1",
     "branch_response_policy",
     "classify_branch_message",

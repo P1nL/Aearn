@@ -23,6 +23,7 @@ from app.services.learning.teaching_candidates import (
 from app.services.learning.teaching_contracts import (
     TeachingArtifactCandidateSet,
     TeachingStepDecision,
+    teaching_response_mode_is_valid,
 )
 from app.services.tutor.capability_policy import CapabilityPolicyContext, CapabilityPolicyResolver
 from app.services.tutor.skill_selection import TutorSkillSelection, TutorSkillSelectionStore
@@ -344,13 +345,11 @@ class TeachingTutorDecisionGate:
         response_mode = interaction.mode.value
         if len(moves) < 2 or len(moves) > 4 or len(moves) != len(set(moves)):
             return _deny("teaching_step_v3_required")
-        diagnostic_moves = {"prediction", "error_detection", "misconception_contrast", "micro_transfer"}
-        if response_mode == "composer":
-            if step.action.value not in {"check_understanding", "wait_for_input"} or not diagnostic_moves.intersection(moves):
-                return _deny("teaching_response_mode_invalid")
-        elif response_mode == "none" and step.action.value in {"check_understanding", "wait_for_input"}:
+        if not teaching_response_mode_is_valid(
+            action=step.action, mode=interaction.mode, teaching_moves=step.teaching_moves or (),
+        ):
             return _deny("teaching_response_mode_invalid")
-        elif response_mode == "artifact":
+        if response_mode == "artifact":
             artifact_result = self._validate_artifact_interaction(
                 context=context,
                 session=session,
@@ -372,6 +371,15 @@ class TeachingTutorDecisionGate:
         if control_key == "change_example" and not {"worked_example", "counterexample"}.intersection(moves):
             return _deny("teaching_change_example_move_required")
         if control_key == "continue":
+            payload = stimulus.get("safe_payload") if isinstance(stimulus, dict) else None
+            source = payload.get("source_handle") if isinstance(payload, dict) else None
+            fresh_response = (
+                context.get("fresh_knowledge_check_evidence") is True
+                and isinstance(payload, dict)
+                and payload.get("reason_code") == "knowledge_check_evaluation"
+                and isinstance(source, str) and source.startswith("artifact:")
+                and source in allowed_handles
+            )
             recent_units = context.get("recent_teaching_units")
             if not isinstance(recent_units, list):
                 return _deny("teaching_context_invalid")
@@ -393,7 +401,11 @@ class TeachingTutorDecisionGate:
                     tuple(sorted(str(item) for item in recent_moves)),
                     str(unit.get("learner_response_mode") or ""),
                 )
-                if str(unit.get("focus_id") or "") == step.focus_id and recent_signature == candidate_signature:
+                # New receipt-backed feedback may reuse a teaching strategy.
+                # Exact repeated public text remains rejected above, and an
+                # ordinary learner Continue never supplies this owner proof.
+                if (not fresh_response and str(unit.get("focus_id") or "") == step.focus_id
+                        and recent_signature == candidate_signature):
                     return _deny("teaching_unit_not_advanced")
         progress_completed = str(session.get("progress_status") or "") == "completed"
         completion_pause = step.pause_kind.value == "completion_pause"

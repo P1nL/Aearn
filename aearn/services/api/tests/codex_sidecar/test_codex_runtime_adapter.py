@@ -34,7 +34,7 @@ def _config(tmp_path: Path, *, enabled: bool = True, allowed_versions: frozenset
     executable = resolve_codex_executable()
     if executable is None:
         pytest.skip("Codex executable is not installed")
-    return CodexRuntimeConfig(enabled=enabled, executable_path=executable, home_root=tmp_path / "codex-runtime", model="deepseek-v4-flash", model_provider="aearn_deepseek", base_url="https://api.deepseek.example", env_key=CODEX_ENV_KEY, allowed_versions=allowed_versions, startup_timeout_s=3, request_timeout_s=2, turn_timeout_s=10, shutdown_timeout_s=2, notification_queue_size=64)
+    return CodexRuntimeConfig(enabled=enabled, executable_path=executable, home_root=tmp_path / "codex-runtime", model="deepseek-flash", model_provider="aearn_deepseek", base_url="https://api.deepseek.example", env_key=CODEX_ENV_KEY, allowed_versions=allowed_versions, startup_timeout_s=3, request_timeout_s=2, turn_timeout_s=10, shutdown_timeout_s=2, notification_queue_size=64)
 
 
 def _factory(scenario: str):  # type: ignore[no-untyped-def]
@@ -73,7 +73,7 @@ async def test_supervisor_preflight_restart_generation_and_single_owner(tmp_path
     first_health = await first.start()
     assert first_health.status is RuntimeHealthStatus.READY
     assert first_health.generation == 1
-    assert first_health.model == "deepseek-v4-flash"
+    assert first_health.model == "deepseek-flash"
     assert "fixture-secret" not in json.dumps(first_health.metadata)
 
     conflict = await second.start()

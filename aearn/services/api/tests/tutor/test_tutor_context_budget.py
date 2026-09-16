@@ -91,7 +91,7 @@ def _context(*, current: str = "Help me understand this function.", source_count
 
 
 def test_capability_registry_uses_exact_deepseek_evidence_and_conservative_unknown_defaults() -> None:
-    deepseek = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash")
+    deepseek = Settings(llm_type="deepseek", deepseek_model="deepseek-flash")
     exact = resolve_tutor_provider_context_capability(deepseek)
 
     assert deepseek.tutor_deepseek_v4_flash_context_window_tokens == 1_000_000
@@ -100,10 +100,10 @@ def test_capability_registry_uses_exact_deepseek_evidence_and_conservative_unkno
     assert exact.max_output_reserve_tokens == 61_440
     assert exact.input_hard_limit == 131_072
     assert exact.maximum_dynamic_target_tokens == 130_688
-    assert exact.capability_version == "deepseek-v4-flash-responses-v2"
+    assert exact.capability_version == "deepseek-flash-responses-v2"
 
     unknown = resolve_tutor_provider_context_capability(
-        Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash-preview")
+        Settings(llm_type="deepseek", deepseek_model="deepseek-flash-preview")
     )
     assert unknown.input_hard_limit == 4_096
     assert unknown.maximum_dynamic_target_tokens == 512
@@ -293,7 +293,7 @@ def test_required_serialized_request_overflow_fails_before_any_provider_boundary
 
 def test_calibration_uses_provider_input_as_physical_total_without_adding_cached_tokens_again() -> None:
     policy = build_tutor_context_budget_policy(
-        Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash")
+        Settings(llm_type="deepseek", deepseek_model="deepseek-flash")
     )
     planner = TutorContextBudgetPlanner()
     selection = planner.build_context(

@@ -295,7 +295,7 @@ PostgreSQL 继续复用 user-owned append-only `tutor_message_context_references
 - 每个 v2 单元必须有 2--4 个互不重复的 closed moves：`targeted_explanation | worked_example | counterexample | misconception_contrast | guided_derivation | prediction | error_detection | micro_transfer | learner_feedback`。
 - `composer` 只允许 `check_understanding | wait_for_input`，且必须包含 `prediction | error_detection | micro_transfer | learner_feedback` 至少一种诊断 move；`none` 不允许这两个 action。`change_example` control 的 decision 必须包含 `worked_example | counterexample`。
 - recent-unit projection 不保存或复制消息正文；required projection 使用 compact authority subset并保持既有 1,200 字符上限。不能增加全局 budget 来掩盖重复字段造成的 overflow。
-- Continue 若与最近 v2 unit 的 public-message hash 相同，或 objective/focus/moves/response mode 的策略签名相同，必须在 durable commit 前拒绝 `teaching_unit_not_advanced`。
+- Continue 若与最近 v2/v3 unit 的 public-message hash 相同，必须在 durable commit 前拒绝 `teaching_unit_not_advanced`。普通 learner Continue 的同 focus/moves/response mode 策略签名重复也必须拒绝；仅 TeachingSession owner 通过 exact consumed intent、Artifact event 与 response receipt join 证明的新知识检查反馈可复用策略签名。server-only `fresh_knowledge_check_evidence` 不能来自 learner/provider payload，且不豁免 exact text 重复或其他 authority/Gate 检查。
 - reducer 先处理 runtime/request/evidence/session/completion/Free Reading authority，再解释 response mode。只有推荐 `continue` 才显示主 Continue；composer 显示 `respond_in_composer`；无 descriptor 时 shelf 为空。
 
 ### 4. Validation & Error Matrix
@@ -306,7 +306,7 @@ PostgreSQL 继续复用 user-owned append-only `tutor_message_context_references
 | composer 搭配非 check/wait，或没有诊断 move | policy denial；无 durable commit |
 | none 搭配 check/wait | policy denial；无 durable commit |
 | `change_example` 未实际改变为 worked/counterexample | policy denial |
-| Continue 重复 exact hash 或相同策略签名 | `teaching_unit_not_advanced`；无第二条 message/receipt |
+| Continue 重复 exact hash；或无新权威答题证据时重复策略签名 | `teaching_unit_not_advanced`；无第二条 message/receipt |
 | compact required projection 超过 1,200 字符 | `TUTOR_TEACHING_SESSION_UNREPRESENTABLE`；provider 不调用 |
 | empty shelf | `primary=null`、`secondary=[]`；Desktop 无 shelf DOM/placeholder |
 | same-authority `open` / reload 遇到 completed session | 返回原 completed session，`created=false`、`pending_run=null`；不得创建新 Turn 覆盖 completion shelf |

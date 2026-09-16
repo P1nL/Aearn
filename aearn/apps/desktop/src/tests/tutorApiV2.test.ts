@@ -1297,3 +1297,132 @@ describe("Tutor v2 API boundary", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("http://127.0.0.1:8001/api/tutor/capabilities/thread-turn-v2?user_id=user-1");
   });
 });
+
+
+describe("Tutor branch supersession wire contract", () => {
+  function supersededFixture(disposition: string | null = null) {
+    const snapshot = branchSnapshotFixture();
+    const group = (snapshot.branches as Array<Record<string, unknown>>)[0];
+    const artifact = (snapshot.timeline as Array<Record<string, unknown>>)[0];
+    const summary = artifact.branch_summary as Record<string, unknown>;
+    Object.assign(group, { schema_version: "tutor_conversation_branch_v2", state: "superseded", disposition,
+      collapsed: true, resolved_at: null, superseded_at: "2026-09-13T07:00:00.123456+00:00" });
+    Object.assign(summary, { schema_version: "tutor_artifact_branch_summary_v2", state: "superseded", disposition, collapsed: true });
+    snapshot.active_artifact = artifact;
+    return { snapshot, group, artifact, summary };
+  }
+  type Fixture = ReturnType<typeof supersededFixture>;
+  const read = () => fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" });
+  function serve(payload: unknown) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse(payload)));
+  }
+
+  it.each([null, "answer_and_refocus", "offer_switch", "confirmed_switch"])("accepts V2 superseded with disposition %s without inventing resolution", async (disposition) => {
+    const { snapshot, group, summary } = supersededFixture(disposition);
+    serve(snapshot);
+    const parsed = await read();
+    expect(parsed.branches[0]).toEqual(group);
+    expect(parsed.active_artifact?.branch_summary).toEqual(summary);
+    expect(parsed.active_artifact?.branch_summary).not.toHaveProperty("superseded_at");
+    expect(parsed.branches[0].resolved_at).toBeNull();
+  });
+
+  it("accepts an unanswered learner-only superseded branch on a retired historical Artifact", async () => {
+    const { snapshot, group, artifact, summary } = supersededFixture();
+    group.items = (group.items as unknown[]).slice(0, 1);
+    group.item_count = summary.item_count = 1;
+    Object.assign(artifact, { state: "superseded", blocking: false, allowed_actions: [], version: 2, terminal_at: group.superseded_at });
+    snapshot.active_artifact = null;
+    snapshot.timeline = (snapshot.timeline as unknown[]).slice(0, 2);
+    serve(snapshot);
+    const parsed = await read();
+    expect(parsed.branches[0]).toMatchObject({ state: "superseded", disposition: null, item_count: 1, resolved_at: null });
+    expect(parsed.branches[0].items).toHaveLength(1);
+    expect(parsed.active_artifact).toBeNull();
+  });
+
+  it.each(["2026-09-13T07:00:00Z", "2026-09-13T15:00:00+08:00"])("accepts an ISO supersession time %s without normalizing the wire value", async (supersededAt) => {
+    const { snapshot, group } = supersededFixture();
+    group.superseded_at = supersededAt;
+    serve(snapshot);
+    expect((await read()).branches[0]).toMatchObject({ superseded_at: supersededAt });
+  });
+
+  it.each(["active", "resolved"])("keeps ordinary %s groups and summaries on unchanged V1 shapes", async (state) => {
+    const snapshot = branchSnapshotFixture();
+    const group = (snapshot.branches as Array<Record<string, unknown>>)[0];
+    const artifact = (snapshot.timeline as Array<Record<string, unknown>>)[0];
+    const summary = artifact.branch_summary as Record<string, unknown>;
+    if (state === "active") {
+      Object.assign(group, { state, disposition: null, resolved_at: null, collapsed: false });
+      Object.assign(summary, { state, disposition: null, collapsed: false });
+    }
+    snapshot.active_artifact = artifact;
+    serve(snapshot);
+    const parsed = await read();
+    expect(parsed.branches[0]).toEqual(group);
+    expect(parsed.branches[0].schema_version).toBe("tutor_conversation_branch_v1");
+    expect(parsed.branches[0]).not.toHaveProperty("superseded_at");
+    expect(parsed.active_artifact?.branch_summary).toEqual(summary);
+    expect(parsed.active_artifact?.branch_summary).not.toHaveProperty("schema_version");
+  });
+
+  const invalid: Array<[string, (f: Fixture) => void]> = [
+    ["V1 superseded group", ({ group }) => { group.schema_version = "tutor_conversation_branch_v1"; delete group.superseded_at; }],
+    ["V2 active group with a valid active V1 summary", ({ group, summary }) => { Object.assign(group, { state: "active", collapsed: false }); Object.assign(summary, { state: "active", collapsed: false }); delete summary.schema_version; }],
+    ["V2 resolved group with a valid resolved V1 summary", ({ group, summary }) => { Object.assign(group, { state: "resolved", resolved_at: "2026-09-13T07:00:00Z", disposition: "answer_and_refocus" }); Object.assign(summary, { state: "resolved", disposition: "answer_and_refocus" }); delete summary.schema_version; }],
+    ["unknown group schema", ({ group }) => { group.schema_version = "tutor_conversation_branch_v3"; }],
+    ["extra group key", ({ group }) => { group.unexpected = true; }],
+    ["missing superseded_at", ({ group }) => { delete group.superseded_at; }],
+    ["null superseded_at", ({ group }) => { group.superseded_at = null; }],
+    ["empty superseded_at", ({ group }) => { group.superseded_at = ""; }],
+    ["whitespace superseded_at", ({ group }) => { group.superseded_at = " "; }],
+    ["non-string superseded_at", ({ group }) => { group.superseded_at = 123; }],
+    ["non-ISO superseded_at", ({ group }) => { group.superseded_at = "September 13, 2026"; }],
+    ["invalid calendar date", ({ group }) => { group.superseded_at = "2026-02-30T00:00:00Z"; }],
+    ["invalid clock", ({ group }) => { group.superseded_at = "2026-09-13T25:00:00Z"; }],
+    ["superseded with resolved_at", ({ group }) => { group.resolved_at = "2026-09-13T07:00:00Z"; }],
+    ["superseded group expanded", ({ group }) => { group.collapsed = false; }],
+    ["unknown disposition", ({ group, summary }) => { group.disposition = summary.disposition = "retired"; }],
+    ["missing nullable disposition", ({ group }) => { delete group.disposition; }],
+    ["unversioned superseded summary", ({ summary }) => { delete summary.schema_version; }],
+    ["unknown summary schema", ({ summary }) => { summary.schema_version = "tutor_artifact_branch_summary_v3"; }],
+    ["V2 active summary paired with valid V1 active group", ({ group, summary }) => { Object.assign(group, { schema_version: "tutor_conversation_branch_v1", state: "active", collapsed: false }); delete group.superseded_at; Object.assign(summary, { state: "active", collapsed: false }); }],
+    ["V2 resolved summary paired with valid V1 resolved group", ({ group, summary }) => { Object.assign(group, { schema_version: "tutor_conversation_branch_v1", state: "resolved", disposition: "answer_and_refocus", resolved_at: "2026-09-13T07:00:00Z" }); delete group.superseded_at; Object.assign(summary, { state: "resolved", disposition: "answer_and_refocus" }); }],
+    ["extra summary key", ({ summary }) => { summary.unexpected = true; }],
+    ["summary superseded_at is not a wire field", ({ summary }) => { summary.superseded_at = "2026-09-13T07:00:00Z"; }],
+    ["superseded summary expanded", ({ summary }) => { summary.collapsed = false; }],
+    ["group-summary state mismatch with individually valid versions", ({ summary }) => { delete summary.schema_version; Object.assign(summary, { state: "resolved", disposition: "answer_and_refocus" }); }],
+    ["group-summary disposition mismatch", ({ summary }) => { summary.disposition = "offer_switch"; }],
+    ["group-summary branch id mismatch", ({ summary }) => { summary.branch_id = "another-branch"; }],
+    ["group-summary round count mismatch", ({ summary }) => { summary.round_count = 2; }],
+    ["group-summary item count mismatch", ({ summary }) => { summary.item_count = 2; }],
+    ["missing anchor summary", ({ artifact }) => { artifact.branch_summary = null; }],
+    ["cross-session anchor", ({ group }) => { group.teaching_session_id = "other-session"; }],
+    ["cross-checkpoint anchor", ({ group }) => { group.checkpoint_id = "other-checkpoint"; }],
+    ["non-contiguous item sequence", ({ group }) => { (group.items as Array<Record<string, unknown>>)[1].item_sequence = 4; }],
+    ["duplicate item identity", ({ group }) => { const items = group.items as Array<Record<string, unknown>>; Object.assign(items[2], { ...items[0], item_sequence: 3 }); }],
+    ["item round exceeds round_count", ({ group }) => { (group.items as Array<Record<string, unknown>>)[1].branch_round = 2; }],
+    ["item-count mismatch after matching summary", ({ group, summary }) => { group.item_count = summary.item_count = 2; }],
+    ["empty members", ({ group, summary }) => { group.items = []; group.item_count = summary.item_count = 0; }],
+    ["unknown item field", ({ group }) => { (group.items as Array<Record<string, unknown>>)[0].unexpected = true; }],
+    ["timeline turn mismatch", ({ group }) => { (group.items as Array<Record<string, unknown>>)[0].turn_id = "other-turn"; }],
+    ["duplicate groups", ({ snapshot, group }) => { snapshot.branches = [group, structuredClone(group)]; }],
+  ];
+  it.each(invalid)("rejects %s", async (_, mutate) => {
+    const f = supersededFixture();
+    mutate(f);
+    serve(f.snapshot);
+    await expect(read()).rejects.toThrow("Tutor snapshot API returned an invalid payload");
+  });
+
+  it("keeps the original resolved-V1 non-null disposition requirement", async () => {
+    const snapshot = branchSnapshotFixture();
+    const group = (snapshot.branches as Array<Record<string, unknown>>)[0];
+    const artifact = (snapshot.timeline as Array<Record<string, unknown>>)[0];
+    group.disposition = (artifact.branch_summary as Record<string, unknown>).disposition = null;
+    snapshot.active_artifact = artifact;
+    serve(snapshot);
+    await expect(read()).rejects.toThrow("Tutor snapshot API returned an invalid payload");
+  });
+});

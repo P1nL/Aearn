@@ -80,6 +80,19 @@ describe("TrackLearningWorkspace teaching role swap", () => {
     api.mutateTeachingSession.mockResolvedValue({ teaching_session: session("free_reading", 2), pending_run: null, idempotent_replayed: false });
   });
 
+  it("does not reopen failed authority on rerenders; explicit refresh retries once", async () => {
+    const user = userEvent.setup();
+    api.openTeachingSession.mockRejectedValue(new Error("authority conflict"));
+    const rendered = render(<TrackLearningWorkspace user={userProfile} trackId={track.track_id} onBack={vi.fn()} />);
+    const retry = await screen.findByRole("button", { name: "刷新 authority" });
+    expect(api.openTeachingSession).toHaveBeenCalledTimes(1);
+    rendered.rerender(<TrackLearningWorkspace user={userProfile} trackId={track.track_id} onBack={vi.fn()} />);
+    await user.type(screen.getByRole("textbox", { name: "Tutor 草稿" }), "keep draft");
+    expect(api.openTeachingSession).toHaveBeenCalledTimes(1);
+    await user.click(retry);
+    await waitFor(() => expect(api.openTeachingSession).toHaveBeenCalledTimes(2));
+  });
+
   it("swaps CSS roles without remounting Tutor or Lesson state", async () => {
     const user = userEvent.setup();
     const rendered = render(<TrackLearningWorkspace user={userProfile} trackId={track.track_id} onBack={vi.fn()} />);

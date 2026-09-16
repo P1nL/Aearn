@@ -1,7 +1,9 @@
 """Server-owned handler for the exact learning.plan.draft capability."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from contextlib import nullcontext
+from collections.abc import Iterable, Mapping
 
 from psycopg import Connection
 
@@ -11,6 +13,7 @@ from app.agents.harness.capabilities import (
 )
 from app.agents.harness.contracts import TutorCapabilityStatus, TutorRunSnapshot
 from app.services.grounding.grounding_sources import GroundingSource, sources_for_language
+from app.services.learning.contracts import LearningPlanNode, stable_key
 from app.services.learning.plan_drafting import (
     CompactPlanModule,
     CompactPlanProfile,
@@ -32,6 +35,55 @@ from app.services.runners.language_capabilities import (
     capabilities_for_public_course_language,
     get_language_capability,
 )
+
+
+PLANNING_CATALOG_DESCRIPTOR_SCHEMA_VERSION = "learning-plan-catalog-descriptor-v1"
+PLANNING_CATALOG_DESCRIPTOR_LIMIT = 8
+
+_PLANNING_CATALOG_DESCRIPTOR_SQL = """
+WITH latest_published AS (
+  SELECT DISTINCT ON (versions.knowledge_key)
+         versions.knowledge_key,
+         versions.required_capabilities_json,
+         publication.occurred_at AS publication_occurred_at,
+         publication.state_version AS publication_state_version,
+         versions.created_at AS version_created_at,
+         versions.id AS version_id
+  FROM tutor_learning_item_versions AS versions
+  JOIN LATERAL (
+    SELECT publication.state, publication.state_version, publication.occurred_at
+    FROM tutor_learning_item_publication_events AS publication
+    WHERE publication.version_id = versions.id
+    ORDER BY publication.state_version DESC
+    LIMIT 1
+  ) AS publication ON publication.state = 'published'
+  WHERE versions.language_id = %s
+    AND versions.required_capabilities_json <@ %s::jsonb
+  ORDER BY versions.knowledge_key,
+           publication.occurred_at DESC,
+           publication.state_version DESC,
+           versions.created_at DESC,
+           versions.id DESC
+)
+SELECT knowledge_key, required_capabilities_json
+FROM latest_published
+ORDER BY knowledge_key
+LIMIT %s
+"""
+
+_PLANNING_CATALOG_VALIDATION_SQL = """
+SELECT versions.knowledge_key, versions.required_capabilities_json
+FROM tutor_learning_item_versions AS versions
+JOIN LATERAL (
+  SELECT publication.state
+  FROM tutor_learning_item_publication_events AS publication
+  WHERE publication.version_id = versions.id
+  ORDER BY publication.state_version DESC
+  LIMIT 1
+) AS publication ON publication.state = 'published'
+WHERE versions.language_id = %s
+  AND versions.knowledge_key = ANY(%s::text[])
+"""
 
 
 class LearningPlanDraftCapabilityError(ValueError):
@@ -140,11 +192,17 @@ class LearningPlanDraftCapabilityHandler:
         try:
             profile = decode_compact_profile(capability_input.profile_json)
             modules = decode_compact_modules(capability_input.module_values())
-            return build_validated_learning_plan_artifact(
+            artifact = build_validated_learning_plan_artifact(
                 session=session,
                 profile=profile,
                 modules=modules,
             )
+            validate_planning_catalog_mappings(
+                self._conn,
+                language_id=artifact.profile.language_id,
+                nodes=artifact.plan.nodes,
+            )
+            return artifact
         except LearningPlanDraftCapabilityError:
             raise
         except ValueError as exc:
@@ -195,6 +253,179 @@ def build_validated_learning_plan_artifact(
         canonical_language_id=canonical,
     )
     return artifact
+
+
+def _safe_catalog_rows(
+    conn: Connection[dict[str, object]],
+    query: str,
+    params: tuple[object, ...],
+) -> tuple[Mapping[str, object], ...] | None:
+    """Run optional catalog reads in a savepoint without poisoning the caller transaction."""
+
+    try:
+        transaction = getattr(conn, "transaction", None)
+        with transaction() if callable(transaction) else nullcontext():
+            return tuple(conn.execute(query, params).fetchall())
+    except Exception:
+        # Optional descriptor failure may omit guidance. Explicit mappings are
+        # separately rejected below; they never inherit this optional fallback.
+        return None
+
+
+def canonical_learning_language_id(value: str) -> str | None:
+    """Return the server canonical language id, or None for an unknown id."""
+
+    try:
+        canonical, _ = _language(value)
+    except LearningPlanDraftCapabilityError:
+        return None
+    return canonical
+
+
+def read_planning_catalog_descriptor(
+    conn: Connection[dict[str, object]],
+    *,
+    language_id: str,
+    limit: int = PLANNING_CATALOG_DESCRIPTOR_LIMIT,
+) -> dict[str, object] | None:
+    """Read only bounded, latest-published catalog metadata for planning context."""
+
+    if not 1 <= limit <= PLANNING_CATALOG_DESCRIPTOR_LIMIT:
+        raise ValueError("planning catalog descriptor limit is invalid")
+    canonical = canonical_learning_language_id(language_id)
+    if canonical is None:
+        return None
+    rows = _safe_catalog_rows(
+        conn,
+        _PLANNING_CATALOG_DESCRIPTOR_SQL,
+        (canonical, json.dumps(_allowed_planning_capabilities(canonical)), limit),
+    )
+    if rows is None:
+        # Legacy databases may not have the item-bank tables yet. The main
+        # plan-node database fence remains authoritative when a draft is used.
+        return None
+    return project_planning_catalog_descriptor(
+        rows,
+        language_id=canonical,
+        limit=limit,
+    )
+
+
+def project_planning_catalog_descriptor(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    language_id: str,
+    limit: int = PLANNING_CATALOG_DESCRIPTOR_LIMIT,
+) -> dict[str, object]:
+    """Project DB rows into the model-visible key/capability allowlist only."""
+
+    if not 1 <= limit <= PLANNING_CATALOG_DESCRIPTOR_LIMIT:
+        raise ValueError("planning catalog descriptor limit is invalid")
+    canonical = canonical_learning_language_id(language_id)
+    if canonical is None:
+        raise ValueError("planning catalog language is not selectable")
+    entries: dict[str, list[str]] = {}
+    allowed = set(_allowed_planning_capabilities(canonical))
+    for row in rows:
+        try:
+            key = stable_key(str(row.get("knowledge_key") or ""), label="catalog knowledge key")
+            capabilities = _catalog_capabilities(row.get("required_capabilities_json"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if set(capabilities).issubset(allowed):
+            entries.setdefault(key, list(capabilities))
+    return {
+        "schema_version": PLANNING_CATALOG_DESCRIPTOR_SCHEMA_VERSION,
+        "items": [
+            {
+                "knowledge_key": key,
+                "required_capabilities": entries[key],
+            }
+            for key in sorted(entries)[:limit]
+        ],
+    }
+
+
+def validate_planning_catalog_mappings(
+    conn: Connection[dict[str, object]],
+    *,
+    language_id: str,
+    nodes: Iterable[LearningPlanNode],
+) -> None:
+    """Preflight explicit mappings; PostgreSQL plan-node scope remains authoritative."""
+
+    mapped_nodes = tuple(node for node in nodes if node.catalog_knowledge_key is not None)
+    if not mapped_nodes:
+        return
+    canonical, _ = _language(language_id)
+    keys = tuple(dict.fromkeys(
+        stable_key(str(node.catalog_knowledge_key), label="catalog knowledge key")
+        for node in mapped_nodes
+    ))
+    rows = _safe_catalog_rows(
+        conn,
+        _PLANNING_CATALOG_VALIDATION_SQL,
+        (canonical, list(keys)),
+    )
+    if rows is None:
+        raise _catalog_mapping_invalid()
+    validate_planning_catalog_mapping_rows(rows, nodes=mapped_nodes)
+
+
+def validate_planning_catalog_mapping_rows(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    nodes: Iterable[LearningPlanNode],
+) -> None:
+    """Validate mapping rows using the same capability-subset rule as the DB fence."""
+
+    available: dict[str, list[tuple[str, ...]]] = {}
+    for row in rows:
+        try:
+            key = stable_key(str(row.get("knowledge_key") or ""), label="catalog knowledge key")
+            capabilities = _catalog_capabilities(row.get("required_capabilities_json"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        available.setdefault(key, []).append(capabilities)
+    for node in nodes:
+        node_key = node.catalog_knowledge_key
+        if node_key is None:
+            continue
+        candidates = available.get(node_key, ())
+        if not candidates or not any(
+            set(required).issubset(set(node.required_capabilities))
+            for required in candidates
+        ):
+            raise _catalog_mapping_invalid()
+
+
+def _catalog_capabilities(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, (list, tuple)) or isinstance(value, (bytes, bytearray)):
+        raise ValueError("stored catalog capabilities are invalid")
+    capabilities = tuple(stable_key(str(item), label="catalog capability") for item in value)
+    if not capabilities or len(capabilities) != len(set(capabilities)):
+        raise ValueError("stored catalog capabilities are invalid")
+    return capabilities
+
+
+def _catalog_mapping_invalid() -> LearningPlanDraftCapabilityError:
+    return LearningPlanDraftCapabilityError(
+        code="LEARNING_PLAN_DRAFT_INVALID",
+        diagnostic_code="learning_plan_catalog_mapping_invalid",
+        status=TutorCapabilityStatus.DENIED,
+    )
+
+
+def _allowed_planning_capabilities(language_id: str) -> tuple[str, ...]:
+    canonical, capabilities = _language(language_id)
+    allowed = {canonical}
+    for capability in capabilities:
+        allowed.add(capability.language_id)
+        if capability.runner_key != "none":
+            allowed.add(capability.runner_key)
+    return tuple(sorted(allowed))
 
 
 def _language(value: str) -> tuple[str, tuple[LanguageCapability, ...]]:

@@ -4,6 +4,7 @@ import base64
 import io
 import urllib.error
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
@@ -155,9 +156,20 @@ def test_provider_diagnostic_capture_is_bounded_and_marks_truncation(
     assert store.decrypt_artifact(artifact.path) == b"x" * 4096
 
 
+@pytest.mark.parametrize("diagnostics_fail", [False, True])
 def test_gateway_commits_rejected_provider_bodies_but_discards_accepted_body(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    diagnostics_fail: bool,
 ) -> None:
+    if diagnostics_fail:
+        from app.services.tutor import validation_diagnostics
+
+        def broken_schema():
+            raise RuntimeError("private diagnostic failure")
+
+        monkeypatch.setattr(validation_diagnostics, "_known_fields", broken_schema)
     _, key_base64 = _capture_key()
     settings = _settings(tmp_path, key_base64=key_base64)
     rejected_body = {
@@ -181,7 +193,7 @@ def test_gateway_commits_rejected_provider_bodies_but_discards_accepted_body(
             ),
             diagnostic_store=ProviderDiagnosticStore.from_settings(settings),
         ),
-    ).decide(run=_run(), context=_context())
+    ).decide(run=replace(_run(), model_call_count=2), context=_context())
 
     artifacts = sorted(tmp_path.glob("*.aearn-provider-debug"))
     assert rejected.terminal_outcome is not None
@@ -192,6 +204,18 @@ def test_gateway_commits_rejected_provider_bodies_but_discards_accepted_body(
     assert all(
         "private-token" not in path.read_text(encoding="utf-8") for path in artifacts
     )
+    captures = [json.loads(record.message) for record in caplog.records
+                if '"event":"tutor_provider_diagnostic_capture"' in record.message]
+    assert len(captures) == 2
+    for path in artifacts:
+        metadata = json.loads(path.read_text(encoding="utf-8"))["metadata"]
+        assert metadata["input_revision"] == 3
+        assert metadata["decision_iteration"] == 3
+        assert any(event.get("artifact_id") == metadata["artifact_id"] for event in captures)
+    assert {event["attempt"] for event in captures} == {1, 2}
+    assert "private-token" not in caplog.text
+    assert "private provider chain" not in caplog.text
+    assert "private diagnostic failure" not in caplog.text
 
     accepted_body = {
         "schema_version": "tutor_provider_items_v4",
@@ -265,6 +289,8 @@ def test_capture_configuration_is_fail_closed_and_secret_repr_is_masked(
     with pytest.raises(ValueError, match="requires an encryption key"):
         Settings(
             tutor_provider_debug_capture_mode="rejected",
+            tutor_provider_debug_capture_key=None,
+            tutor_provider_debug_capture_key_file=None,
             tutor_provider_debug_capture_directory=str(tmp_path),
         )
 
@@ -296,3 +322,45 @@ def test_capture_configuration_is_fail_closed_and_secret_repr_is_masked(
 
     assert key_base64 not in repr(settings)
     assert "**********" in repr(settings.tutor_provider_debug_capture_key)
+
+
+def test_capture_reads_external_key_file_and_rejects_missing_file(tmp_path: Path) -> None:
+    _, encoded = _capture_key()
+    key_file = tmp_path / "key.base64"
+    key_file.write_text(encoded, encoding="ascii")
+    settings = _settings(tmp_path / "diagnostics", key_base64=encoded).model_copy(update={
+        "tutor_provider_debug_capture_key": None,
+        "tutor_provider_debug_capture_key_file": str(key_file),
+    })
+    assert ProviderDiagnosticStore.from_settings(settings) is not None
+    assert encoded not in repr(settings)
+    key_file.unlink()
+    with pytest.raises(ValueError, match="key file is unavailable"):
+        ProviderDiagnosticStore.from_settings(settings)
+
+
+@pytest.mark.parametrize(("path", "category", "expected_path"), [
+    ("action.teaching_step.teaching_moves.2", "invalid_literal", "action.teaching_moves[2]"),
+    ("action.interaction.mode", "response_mode_invalid", "action.interaction.mode"),
+    ("action.wait_for_input.continuation_kind", "invalid_literal", "action.continuation_kind"),
+    ("action.wait_for_input.question_key", "invalid_literal", "action.question_key"),
+])
+def test_validation_paths_and_rules_are_schema_owned(path: str, category: str, expected_path: str) -> None:
+    from app.services.tutor.decision_protocol import TutorDecisionValidationIssue
+    from app.services.tutor.validation_diagnostics import validation_log_fields
+
+    fields = validation_log_fields(TutorDecisionValidationIssue(path=path, category=category))
+    assert fields["field_path"] == expected_path
+    assert fields["expected_values"]
+    assert fields["expected_rule"]
+    if category == "response_mode_invalid":
+        assert set(fields["expected_values"]) == {"none", "composer", "artifact"}
+    unknown = validation_log_fields(TutorDecisionValidationIssue(
+        path="action.teaching_step.private-credential-marker", category="extra",
+    ))
+    assert str(unknown["field_path"]).startswith("sha256:")
+    assert "private-credential-marker" not in json.dumps(unknown)
+    wildcard = validation_log_fields(TutorDecisionValidationIssue(
+        path="action.request_capability.arguments.*.key", category="extra",
+    ))
+    assert str(wildcard["field_path"]).startswith("sha256:")

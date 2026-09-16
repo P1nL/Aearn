@@ -60,6 +60,15 @@ class CompactPlanNode(_StrictModel):
     is_core: bool = True
     prerequisite_keys: list[str] = Field(default_factory=list, max_length=8)
     required_capabilities: list[str] = Field(default_factory=list, max_length=8)
+    catalog_knowledge_key: str | None = Field(
+        default=None, min_length=1, max_length=160,
+        description="Exact published catalog knowledge key; keeps the course step identity separate. Never infer an alias from a title.",
+    )
+
+    @field_validator("catalog_knowledge_key")
+    @classmethod
+    def normalize_catalog_key(cls, value: str | None) -> str | None:
+        return stable_key(value, label="catalog_knowledge_key") if value is not None else None
 
     @field_validator("knowledge_key")
     @classmethod
@@ -165,7 +174,8 @@ def build_plan_draft(
                     order_index=node_index,
                     is_core=node.is_core,
                     prerequisite_keys=tuple(node.prerequisite_keys),
-                    required_capabilities=tuple(node.required_capabilities),
+                    required_capabilities=tuple(node.required_capabilities) or (profile.language_id,),
+                    catalog_knowledge_key=node.catalog_knowledge_key,
                 )
                 for node_index, node in enumerate(module.nodes)
             ),

@@ -191,10 +191,20 @@ class PostgresTeachingArtifactMaterializer:
                 "selected teaching Artifact handle is no longer available"
             )
 
+        from app.services.learning.catalog_scope import (
+            LearningCatalogScopeError, resolve_session_catalog_knowledge_key,
+        )
+        try:
+            catalog_key = resolve_session_catalog_knowledge_key(
+                self._conn, user_id=user_id, track_id=learning_track_id,
+                teaching_session_id=teaching_session_id, knowledge_key=knowledge_key,
+            )
+        except LearningCatalogScopeError as exc:
+            raise TeachingArtifactCommitError("teaching Artifact catalog authority is missing") from exc
         public = self._validate_learning_item(
             row=row,
             expected_handle=interaction.artifact_handle,
-            expected_knowledge_key=knowledge_key,
+            expected_knowledge_key=catalog_key,
             available_capabilities=capabilities,
             intent=interaction.intent,
         )

@@ -368,6 +368,8 @@ class PostgresLearningTrackRepository:
         ).fetchone()
         if migration is None or str(migration["status"]) != "proposed" or _int(migration["expected_track_version"]) != current_version:
             raise LearningPlanActivationInvalid("plan migration is no longer activatable")
+        candidate_plan = _plan_from_row(candidate)
+        self._assert_plan_catalog_scope(user_id=user_id, track_id=track_id, plan=candidate_plan)
         now = datetime.now(UTC)
         self._conn.execute("UPDATE tutor_track_plan_revisions SET status = 'superseded' WHERE id = %s", (active["id"],))
         self._conn.execute(
@@ -378,7 +380,6 @@ class PostgresLearningTrackRepository:
             "UPDATE tutor_track_active_plans SET revision_id = %s WHERE track_id = %s AND user_id = %s",
             (revision_id, track_id, user_id),
         )
-        candidate_plan = _plan_from_row(candidate)
         retained_rows = self._conn.execute(
             "SELECT knowledge_key, status FROM tutor_track_node_progress WHERE track_id = %s AND user_id = %s",
             (track_id, user_id),
@@ -765,6 +766,7 @@ class PostgresLearningTrackRepository:
         user_id: str,
         plan: LearningPlan,
     ) -> None:
+        self._assert_plan_catalog_scope(user_id=user_id, track_id=track_id, plan=plan)
         for module in plan.modules:
             module_id = str(uuid4())
             self._conn.execute(
@@ -785,15 +787,34 @@ class PostgresLearningTrackRepository:
                     INSERT INTO tutor_track_plan_nodes (
                       module_id, revision_id, track_id, user_id, knowledge_key,
                       title, description, order_index, is_core,
-                      prerequisite_keys_json, required_capabilities_json
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                      prerequisite_keys_json, required_capabilities_json, catalog_knowledge_key
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
                     """,
                     (
                         module_id, revision_id, track_id, user_id, node.knowledge_key,
                         node.title, node.description, node.order_index, node.is_core,
                         _json(list(node.prerequisite_keys)), _json(list(node.required_capabilities)),
+                        node.catalog_knowledge_key,
                     ),
                 )
+
+    def _assert_plan_catalog_scope(self, *, user_id: str, track_id: str, plan: LearningPlan) -> None:
+        for node in plan.nodes:
+            if node.catalog_knowledge_key is None:
+                continue
+            available = self._conn.execute(
+                """SELECT versions.id FROM tutor_learning_item_versions versions
+                   JOIN tutor_learning_tracks tracks ON tracks.id=%s AND tracks.user_id=%s
+                     AND tracks.language_id=versions.language_id
+                   JOIN LATERAL (SELECT state FROM tutor_learning_item_publication_events pub
+                     WHERE pub.version_id=versions.id ORDER BY state_version DESC LIMIT 1) publication
+                     ON publication.state='published'
+                   WHERE versions.knowledge_key=%s AND versions.required_capabilities_json <@ %s::jsonb
+                   LIMIT 1""",
+                (track_id, user_id, node.catalog_knowledge_key, _json(list(node.required_capabilities))),
+            ).fetchone()
+            if available is None:
+                raise LearningPlanActivationInvalid("plan catalog mapping has no published compatible content")
 
     def _insert_initial_progress(
         self,
@@ -984,6 +1005,8 @@ def _plan_from_row(row: Mapping[str, object]) -> LearningPlan:
                 is_core=bool(raw_node.get("is_core", True)),
                 prerequisite_keys=tuple(_string_list(raw_node.get("prerequisite_keys"))),
                 required_capabilities=tuple(_string_list(raw_node.get("required_capabilities"))),
+                catalog_knowledge_key=(str(raw_node["catalog_knowledge_key"])
+                    if raw_node.get("catalog_knowledge_key") is not None else None),
             )
             for raw_node in raw_nodes if isinstance(raw_node, Mapping)
         )

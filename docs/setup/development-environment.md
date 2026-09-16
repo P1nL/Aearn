@@ -89,7 +89,7 @@ TUTOR_EXECUTOR_ENABLED=false
 provider/model fallback。真实 key 只存在本机 `.env`，不要把它放进文档、测试
 fixture、日志或 Git。
 
-对于精确的 `DEEPSEEK_MODEL=deepseek-v4-flash`，Tutor 默认使用官方上限；
+对于精确的 `DEEPSEEK_MODEL=deepseek-flash`，Tutor 默认使用官方上限；
 其他模型只使用显式保守配置，不根据相似模型名推断大窗口：
 
 ```env
@@ -112,7 +112,7 @@ TUTOR_CONTEXT_MAX_EXPANSIONS=1
 TUTOR_CONTEXT_FIXED_MODE=
 ```
 
-Aearn 保留 DeepSeek V4 Flash 的 1M（1,000,000 tokens）物理上下文能力，同时将
+Aearn 保留 DeepSeek Flash 的 1M（1,000,000 tokens）物理上下文能力，同时将
 普通单次模型请求的输入限制为 128K（131,072 tokens），输出限制为 60K
 （61,440 tokens）。Tutor 的预算 capability 为了复用“输入 + 输出 reserve”核算模型，
 内部记录 192,512；该值不是模型物理窗口。131,072 是普通请求输入能力上限，
@@ -121,7 +121,7 @@ serializer dry-build 完整请求，覆盖 system/teaching policy、严格 JSON 
 current input、context、metadata、JSON envelope、protocol reserve 与 safety margin，
 然后只把剩余 optional budget 交给 ContextBuilder。16K/64K/96K/130,688 是可配置
 档位目标，仍会被 provider hard limit 和 dynamic cap 裁剪。精确
-`deepseek-v4-flash` 使用 `TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS`；
+`deepseek-flash` 使用 `TUTOR_DEEPSEEK_V4_FLASH_MAX_DYNAMIC_TARGET_TOKENS`；
 其他模型默认使用保守的 `TUTOR_CONTEXT_MAX_DYNAMIC_TARGET_TOKENS=512`，但可以在
 同时显式扩大 generic window/output/reserve 后提高该值。将输出或其他 reserve
 配置到不再留下正的必需输入空间会在启动时被拒绝。
@@ -303,6 +303,45 @@ pnpm --dir .\aearn desktop:check
 ```
 
 fixture 覆盖 isolated strict config、manual/local compaction、reasoning/summary/commentary/final-answer phase、conversation thread resume、typed planning request、snapshot/SSE reconnect 与 history reducer。不要在该验证序列中设置真实 provider key 或启用 real smoke。
+
+## Local rejected-provider diagnostics
+
+Normal logs contain only server-schema field paths, expected enum values/rules,
+safe error codes, and `run_id + input_revision + decision_iteration + attempt`.
+Unknown fields stay hashed. Rejected values and full responses never enter logs,
+public API/SSE, or PostgreSQL diagnostic receipts.
+
+For local development, set `TUTOR_PROVIDER_DEBUG_CAPTURE_MODE=rejected` and supply
+either `TUTOR_PROVIDER_DEBUG_CAPTURE_KEY_BASE64` or
+`TUTOR_PROVIDER_DEBUG_CAPTURE_KEY_FILE` (an external file containing one base64
+32-byte random key; the direct key takes precedence). Keep the key outside Git
+and separate from the capture directory, with filesystem access restricted to
+the current operator. Production/template default remains `off`. Restart the
+relevant API/worker processes after changing environment configuration.
+
+Only rejected attempts are saved with AES-GCM authentication; accepted responses
+are discarded. Existing limits apply: 1 MiB per capture and 24-hour retention
+(expired files are pruned when the store opens/writes). A capture can be truncated;
+`truncated` and `captured_bytes` are recorded. `tutor_provider_diagnostic_capture`
+logs `saved`, `empty`, `not_captured`, or `failed`; saved captures include an
+`artifact_id`. Diagnostic failures never replace the original Tutor error.
+
+From the repository root in PowerShell 7:
+
+```powershell
+# List metadata only; replace the UUID with the run_id from the failure log.
+uv --directory .\aearn\services\api run python -m app.services.llm.provider_debug_cli list --run-id <RUN_ID>
+# Inspect metadata by artifact_id (32 hexadecimal characters).
+uv --directory .\aearn\services\api run python -m app.services.llm.provider_debug_cli show <ARTIFACT_ID>
+# Explicit local-only opt-in to decrypt the response body into this terminal.
+uv --directory .\aearn\services\api run python -m app.services.llm.provider_debug_cli show <ARTIFACT_ID> --body
+```
+
+`--body` output is sensitive: do not paste it into issues or commits. The CLI
+does not create plaintext files and there is no diagnostic HTTP endpoint.
+Enabling capture cannot recover responses discarded while capture was off.
+This facility covers Harness provider requests, not Codex Sidecar's private tool
+transcripts or every subsystem's logs.
 
 ## Course intent metadata checks
 

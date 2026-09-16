@@ -26,6 +26,7 @@ CONSTRAINTS = {
     "LESSON_BLOCK_ORDER_INVALID": "Use unique block IDs and continuous order_index values starting at zero.",
     "LESSON_CITATION_HANDLE_INVALID": "citation_ids must be a unique array containing only supplied evidence handles.",
     "LESSON_CANDIDATE_SCOPE_INVALID": "Preserve the requested language_id and knowledge_key exactly.",
+    "LESSON_GATE_CAPABILITY_SCOPE_INVALID": "Every exercise_gate must use only the exact supplied required_capabilities. Do not invent a .core capability.",
     "LESSON_HEADING_REQUIRED": "Include a heading block.",
     "LESSON_OBJECTIVES_REQUIRED": "Include a learning_objectives block.",
     "LESSON_CONCEPT_REQUIRED": "Include a concept block.",
@@ -55,6 +56,7 @@ REPAIRABLE = frozenset({
     "LESSON_PROVIDER_CONTENT_NOT_JSON_OBJECT", "LESSON_PROVIDER_RESPONSE_INCOMPLETE",
     "LESSON_DOCUMENT_FIELDS_INVALID", "LESSON_BLOCK_FIELDS_INVALID", "LESSON_BLOCK_TYPE_INVALID",
     "LESSON_BLOCK_ORDER_INVALID", "LESSON_CITATION_HANDLE_INVALID", "LESSON_CANDIDATE_SCOPE_INVALID",
+    "LESSON_GATE_CAPABILITY_SCOPE_INVALID",
     "LESSON_HEADING_REQUIRED", "LESSON_OBJECTIVES_REQUIRED", "LESSON_CONCEPT_REQUIRED",
     "LESSON_SUMMARY_REQUIRED", "LESSON_CITATION_NOT_FOUND", "LESSON_CITATION_REQUIRED",
     "LESSON_AUTHORITY_SOURCE_REQUIRED", "LESSON_CODE_LANGUAGE_MISMATCH", "LESSON_EXECUTION_CLAIM_FORBIDDEN",
@@ -63,7 +65,7 @@ REPAIRABLE = frozenset({
     "LESSON_PERSONALIZED_GATE_CHANGED",
 })
 STAGES = frozenset({"provider_response", "candidate_shape", "candidate_contract", "candidate_identity", "quality_gate"})
-_LOCATION = re.compile(r"(?:document|blocks(?:\[(?:[0-9]|[1-5][0-9]|6[0-3])\])?(?:\.(?:citation_ids|type|order_index))?|language_id|knowledge_key)")
+_LOCATION = re.compile(r"(?:document|blocks(?:\[(?:[0-9]|[1-5][0-9]|6[0-3])\])?(?:\.(?:citation_ids|type|order_index|block_id|title|subtitle|items|coverage_keys|paragraphs|statement|language_id|code|explanation|execution_claim|columns|rows|conclusion|steps|gate_key|gate_kind|assessment_contract_version|required_capabilities|learner_prompt|points))?|language_id|knowledge_key)")
 
 
 @dataclass(frozen=True, slots=True)

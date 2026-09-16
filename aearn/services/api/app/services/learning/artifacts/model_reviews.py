@@ -371,9 +371,10 @@ def _load_authority(
         JOIN tutor_learning_item_publication_events AS publication
           ON publication.version_id=versions.id AND publication.state_version=%s
          AND publication.state='published'
-        WHERE versions.id=%s AND versions.knowledge_key=%s AND versions.item_kind='model_review'
+        WHERE versions.id=%s AND versions.knowledge_key=tutor_artifact_catalog_knowledge_key(%s)
+          AND versions.item_kind='model_review'
         """,
-        (artifact.owner_version, artifact.owner_id, artifact.knowledge_key),
+        (artifact.owner_version, artifact.owner_id, artifact.id),
     ).fetchone()
     if row is None:
         raise ArtifactOwnerVersionConflict(
@@ -436,7 +437,8 @@ def _select_remediation(
           ON node.revision_id=active_plan.revision_id
          AND node.track_id=active_plan.track_id AND node.user_id=active_plan.user_id
          AND node.knowledge_key=%s
-        WHERE versions.knowledge_key=%s AND versions.item_kind='model_review'
+        WHERE versions.knowledge_key=COALESCE(node.catalog_knowledge_key,node.knowledge_key)
+          AND node.knowledge_key=%s AND versions.item_kind='model_review'
           AND versions.purpose='remediation' AND versions.difficulty=ANY(%s::text[])
           AND versions.required_capabilities_json <@ node.required_capabilities_json
           AND (%s::text IS NULL OR versions.item_key=%s)

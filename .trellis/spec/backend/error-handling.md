@@ -116,3 +116,7 @@ Prepared/missing/closed-session admission, idempotency replay, snapshot/history 
 
 - Wrong: drop every process from the UI while the backend publishes no terminal error; log only `extra={...}` and discard the actual dispatch exception class.
 - Correct: derive a stable safe terminal error on the server and emit explicit, bounded JSON diagnostic events at the failure boundary.
+
+## Tutor domain-assembly validation diagnostics
+
+Catch Pydantic `ValidationError` before the generic `ValueError` fallback during provider-to-domain decision assembly. Preserve sanitized field paths/categories in same-primary-model replacement feedback; do not serialize input values, validator exception text or provider bodies. `tutor_provider_validation_issue` logs bounded run/revision/attempt, diagnostic code and issue category; only a fixed set of server schema paths is readable, other locations are hashed. Existing durable attempt `diagnostic_code` remains schema-compatible. Maximum provider decision attempts remains two. Historical INVALID_ACTION receipts cannot be reconstructed into exact field failures.
