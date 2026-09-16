@@ -30,6 +30,8 @@ class ProviderDiagnosticMetadata:
     model: str
     diagnostic_code: str
     contract_hash: str
+    input_revision: int | None = None
+    decision_iteration: int | None = None
 
     def as_dict(self, *, artifact_id: str, created_at: datetime) -> dict[str, object]:
         return {
@@ -38,6 +40,8 @@ class ProviderDiagnosticMetadata:
             "created_at": created_at.astimezone(UTC).isoformat(),
             "run_id": _safe_metadata_token(self.run_id),
             "attempt_index": self.attempt_index,
+            "input_revision": self.input_revision,
+            "decision_iteration": self.decision_iteration,
             "provider_type": _safe_metadata_token(self.provider_type),
             "protocol": _safe_metadata_token(self.protocol),
             "model": _safe_metadata_token(self.model),
@@ -133,6 +137,7 @@ class ProviderDiagnosticStore:
         key: bytes,
         max_bytes: int,
         retention_hours: int,
+        read_only: bool = False,
     ) -> None:
         if len(key) != 32:
             raise ValueError("provider diagnostic key must decode to exactly 32 bytes")
@@ -140,20 +145,40 @@ class ProviderDiagnosticStore:
         self._aesgcm = AESGCM(key)
         self._max_bytes = max_bytes
         self._retention = timedelta(hours=retention_hours)
+        self._read_only = read_only
+        if read_only:
+            if not self._directory.is_dir():
+                raise ValueError("provider diagnostic store is unavailable")
+            return
         self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != "nt":
             self._directory.chmod(0o700)
         self._prune_expired(now=datetime.now(UTC))
 
     @classmethod
-    def from_settings(cls, settings: "Settings") -> "ProviderDiagnosticStore | None":
+    def from_settings(
+        cls, settings: "Settings", *, read_only: bool = False,
+    ) -> "ProviderDiagnosticStore | None":
         if settings.tutor_provider_debug_capture_mode == "off":
             return None
         secret = settings.tutor_provider_debug_capture_key
-        if secret is None:
+        key_file = settings.tutor_provider_debug_capture_key_file
+        if secret is None and key_file is None:
             raise ValueError("provider diagnostic capture requires an encryption key")
+        if secret is not None:
+            encoded_key = secret.get_secret_value()
+        else:
+            try:
+                # A key is only 44 base64 bytes. Bound reads; never echo its path/body.
+                with Path(str(key_file)).expanduser().open("rb") as handle:
+                    raw_key = handle.read(129)
+                if len(raw_key) > 128:
+                    raise ValueError("provider diagnostic key file is invalid")
+                encoded_key = raw_key.strip().decode("ascii")
+            except (OSError, UnicodeError) as exc:
+                raise ValueError("provider diagnostic key file is unavailable") from exc
         try:
-            key = base64.b64decode(secret.get_secret_value(), validate=True)
+            key = base64.b64decode(encoded_key, validate=True)
         except (ValueError, TypeError) as exc:
             raise ValueError("provider diagnostic key must be valid base64") from exc
         return cls(
@@ -161,6 +186,7 @@ class ProviderDiagnosticStore:
             key=key,
             max_bytes=settings.tutor_provider_debug_capture_max_bytes,
             retention_hours=settings.tutor_provider_debug_capture_retention_hours,
+            read_only=read_only,
         )
 
     def begin_capture(self) -> ProviderBodyCapture:
@@ -173,6 +199,8 @@ class ProviderDiagnosticStore:
         metadata: ProviderDiagnosticMetadata,
         truncated: bool,
     ) -> ProviderDiagnosticArtifact:
+        if self._read_only:
+            raise ValueError("provider diagnostic store is read-only")
         now = datetime.now(UTC)
         self._prune_expired(now=now)
         artifact_id = secrets.token_hex(16)
@@ -190,7 +218,8 @@ class ProviderDiagnosticStore:
         filename = (
             f"{int(now.timestamp() * 1000)}-"
             f"{_safe_filename_token(metadata.run_id)}-"
-            f"{metadata.attempt_index}-{artifact_id}{_PROVIDER_DEBUG_SUFFIX}"
+            f"r{metadata.input_revision}-d{metadata.decision_iteration}-"
+            f"a{metadata.attempt_index}-{artifact_id}{_PROVIDER_DEBUG_SUFFIX}"
         )
         target = self._directory / filename
         temporary = self._directory / f".{filename}.{secrets.token_hex(8)}.tmp"

@@ -571,7 +571,7 @@ export type TutorArtifactAttemptDetailV2 = TutorArtifactAttemptDetailBase & {
 
 export type TutorArtifactAttemptDetail = TutorArtifactAttemptDetailV1 | TutorArtifactAttemptDetailV2;
 
-export type TutorArtifactBranchSummary = {
+export type TutorArtifactBranchSummaryV1 = {
   branch_id: string;
   state: "active" | "resolved";
   disposition: TutorBranchResponseDisposition | null;
@@ -579,6 +579,14 @@ export type TutorArtifactBranchSummary = {
   item_count: number;
   collapsed: boolean;
 };
+
+export type TutorArtifactBranchSummaryV2 = Omit<TutorArtifactBranchSummaryV1, "state" | "collapsed"> & {
+  schema_version: "tutor_artifact_branch_summary_v2";
+  state: "superseded";
+  collapsed: true;
+};
+
+export type TutorArtifactBranchSummary = TutorArtifactBranchSummaryV1 | TutorArtifactBranchSummaryV2;
 
 export type TutorPublicArtifactItem = {
   kind: "artifact";
@@ -649,7 +657,7 @@ export type TutorPublicBranchItemReference = {
   item_role: "learner" | "tutor" | "process";
 };
 
-export type TutorPublicBranchGroup = {
+export type TutorPublicBranchGroupV1 = {
   schema_version: "tutor_conversation_branch_v1";
   branch_id: string;
   anchor_artifact_id: string;
@@ -664,6 +672,16 @@ export type TutorPublicBranchGroup = {
   created_at: string;
   resolved_at: string | null;
 };
+
+export type TutorPublicBranchGroupV2 = Omit<TutorPublicBranchGroupV1, "schema_version" | "state" | "collapsed" | "resolved_at"> & {
+  schema_version: "tutor_conversation_branch_v2";
+  state: "superseded";
+  collapsed: true;
+  resolved_at: null;
+  superseded_at: string;
+};
+
+export type TutorPublicBranchGroup = TutorPublicBranchGroupV1 | TutorPublicBranchGroupV2;
 
 export type TutorHistoryItem = TutorHistoryMessage | TutorPublicProcess | TutorInteractionRequestItem | TutorHistoryError | TutorPublicArtifactItem;
 
@@ -680,7 +698,19 @@ export type TutorConversationResponse = {
   idempotent_replayed: boolean;
 };
 
+export type TutorInputTeachingScope = {
+  stimulus_id: string;
+  stimulus_kind: "learner_message";
+  session_id: string;
+  checkpoint_id: string;
+  session_version: number;
+  track_id: string;
+  knowledge_key: string;
+  mode: "guided" | "free_reading";
+};
+
 export type TutorInputAcceptedResponse = {
+  teaching_scope?: TutorInputTeachingScope;
   conversation_id: string;
   run_id: string;
   input_revision: number;

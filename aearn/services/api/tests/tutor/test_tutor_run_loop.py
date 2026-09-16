@@ -702,7 +702,7 @@ def test_provider_attempt_receipts_persist_before_superseded_result_is_suppresse
                         outcome=TutorProviderAttemptOutcome.ACCEPTED,
                         provider_type="deepseek",
                         protocol="deepseek_responses",
-                        model="deepseek-v4-flash",
+                        model="deepseek-flash",
                         usage=LLMUsage(
                             input_tokens=175_420,
                             cached_input_tokens=170_368,

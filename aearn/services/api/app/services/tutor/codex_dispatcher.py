@@ -75,7 +75,6 @@ from app.services.tutor.runtime_projection import (
 
 logger = logging.getLogger(__name__)
 
-_DIRECTION_INTAKE_TIMEOUT_SECONDS = 45.0
 _DIRECTION_INTAKE_MAX_VISIBLE_TEXT_CHARS = 2_000
 _DIRECTION_INTAKE_MAX_REASONING_TEXT_CHARS = 16_000
 _DIRECTION_BOUND_CODES = frozenset(
@@ -241,7 +240,7 @@ class CodexTutorRunDispatcher:
             primed_context = registry.prime_context()
             if primed_context.status is LearningPlanToolStatus.AWAITING_USER:
                 registry.configure_direction_intake(
-                    max_wall_seconds=_DIRECTION_INTAKE_TIMEOUT_SECONDS,
+                    max_wall_seconds=self._settings.tutor_codex_intake_timeout_seconds,
                 )
             config = CodexRuntimeConfig.from_settings(self._settings)
             projection_repository = PostgresTutorRuntimeProjectionRepository(conn)
@@ -371,7 +370,7 @@ class CodexTutorRunDispatcher:
                         else None
                     ),
                     timeout_seconds=(
-                        _DIRECTION_INTAKE_TIMEOUT_SECONDS
+                        self._settings.tutor_codex_intake_timeout_seconds
                         if registry.intake_mode
                         else None
                     ),
@@ -391,7 +390,7 @@ class CodexTutorRunDispatcher:
                 event_observer=project_live_event,
                 poll_interval_s=0.2,
                 timeout_s=(
-                    _DIRECTION_INTAKE_TIMEOUT_SECONDS + 15
+                    self._settings.tutor_codex_intake_timeout_seconds + 15
                     if registry.intake_mode
                     else self._settings.codex_runtime_turn_timeout_seconds + 30
                 ),

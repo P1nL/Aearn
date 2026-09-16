@@ -654,7 +654,7 @@ def _bounded_max_output_tokens(
     if requested <= 0:
         raise ValueError("max_tokens must be positive")
     if requested > maximum:
-        raise ValueError("max_tokens exceeds the configured DeepSeek V4 Flash maximum")
+        raise ValueError("max_tokens exceeds the configured DeepSeek Flash maximum")
     return requested
 
 
@@ -679,7 +679,7 @@ def _enforce_request_input_limit(
     ).encode("utf-8")
     estimated_tokens = max(1, (len(encoded) + 3) // 4)
     if estimated_tokens > settings.tutor_deepseek_v4_flash_input_limit_tokens:
-        raise ValueError("LLM request input exceeds the configured DeepSeek V4 Flash maximum")
+        raise ValueError("LLM request input exceeds the configured DeepSeek Flash maximum")
 
 
 def _post_text_stream(

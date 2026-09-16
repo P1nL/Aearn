@@ -2,8 +2,31 @@
 # ruff: noqa: F403, F405
 from __future__ import annotations
 
+import logging
+from app.core.safe_diagnostics import log_safe_event, safe_diagnostic_identifier
+
 from ._namespace import *
 from .repository import PostgresTutorRepository
+
+
+def _log_teaching_terminal_conflict(error: BaseException, *, run_id: str) -> None:
+    """Correlate closed server errors without recording values or tracebacks."""
+    seen: set[int] = set()
+    cause: BaseException | None = error
+    for depth in range(6):
+        if cause is None or id(cause) in seen:
+            break
+        seen.add(id(cause))
+        diag = getattr(cause, "diag", None)
+        constraint = getattr(diag, "constraint_name", None)
+        field = constraint if isinstance(constraint, str) and constraint.startswith(("fk_tutor_", "chk_tutor_", "uq_tutor_")) else None
+        log_safe_event(
+            logging.getLogger(__name__), "tutor_teaching_terminal_conflict",
+            run_id=run_id, code="TUTOR_TEACHING_TERMINAL_CONFLICT", stage=f"cause_{depth}",
+            action_identifier=safe_diagnostic_identifier(str(cause), trusted=False),
+            field_path=field, exception=cause,
+        )
+        cause = cause.__cause__
 
 
 class PostgresTutorSkillSelectionStore:
@@ -263,6 +286,7 @@ class PostgresTutorLifecycle(TutorLifecyclePersistence):
             ).fetchone()
             if teaching is None:
                 raise TutorLifecycleConflict("Tutor terminal lifecycle lost ownership") from exc
+            _log_teaching_terminal_conflict(exc, run_id=snapshot.run_id)
             self._repository.request_cancellation(
                 user_id=snapshot.user_id, run_id=snapshot.run_id, now=checkpoint.created_at,
                 diagnostic_code="teaching_authority_stale",

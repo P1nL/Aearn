@@ -8,6 +8,7 @@ import {
 } from "../../api";
 import { getErrorInfo } from "../../lib/errorMessages";
 import type {
+  ExerciseAttemptState,
   LearningRoadmap,
   LearningScopeInput,
   LearningTrackDetail,
@@ -86,6 +87,10 @@ export function TrackLearningWorkspace({
   const [followState, setFollowState] = useState<LessonFollowState>("following");
   const [followConflict, setFollowConflict] = useState<string | null>(null);
   const [documentReference, setDocumentReference] = useState<LessonDocumentReferenceOpenRequest | null>(null);
+  const workspaceScopeRef = useRef({ userId: user.id, trackId, knowledgeKey });
+  workspaceScopeRef.current = { userId: user.id, trackId, knowledgeKey };
+  const routeRefreshRef = useRef<AbortController | null>(null);
+  const routeRefreshGenerationRef = useRef(0);
   const roadmapDrawerRef = useRef<HTMLElement | null>(null);
   const roadmapDrawerTriggerRef = useRef<HTMLButtonElement | null>(null);
   const roadmapDrawerCloseRef = useRef<HTMLButtonElement | null>(null);
@@ -95,6 +100,7 @@ export function TrackLearningWorkspace({
   const documentDrawerTriggerRef = useRef<HTMLElement | null>(null);
 
   const handleTeachingTransition = useCallback((next: TeachingSessionProjection) => {
+    workspaceScopeRef.current.knowledgeKey = next.knowledge_key;
     setKnowledgeKey(next.knowledge_key);
     setMode("lesson");
     setReviewSessionId(null);
@@ -166,6 +172,41 @@ export function TrackLearningWorkspace({
   }, [initialKnowledgeKey, initialReviewSessionId, trackId, user.id]);
   loadAuthorityRef.current = () => loadAuthority();
 
+  const refreshRouteSummary = useCallback(async () => {
+    const requestedScope = workspaceScopeRef.current;
+    if (requestedScope.userId !== user.id || requestedScope.trackId !== trackId) return;
+
+    routeRefreshRef.current?.abort();
+    const controller = new AbortController();
+    const generation = routeRefreshGenerationRef.current + 1;
+    routeRefreshGenerationRef.current = generation;
+    routeRefreshRef.current = controller;
+    try {
+      const [nextTrack, nextRoadmap, nextQueue] = await Promise.all([
+        fetchLearningTrackDetail(user.id, trackId, controller.signal),
+        fetchLearningRoadmap(user.id, trackId, controller.signal),
+        fetchReviewQueue(user.id, trackId, controller.signal),
+      ]);
+      const currentScope = workspaceScopeRef.current;
+      if (controller.signal.aborted || generation !== routeRefreshGenerationRef.current || currentScope.userId !== user.id || currentScope.trackId !== trackId) return;
+      if (nextTrack.track_id !== trackId || nextRoadmap.track_id !== trackId || nextQueue.track_id !== trackId) return;
+      setTrack(nextTrack);
+      setRoadmap(nextRoadmap);
+      setReviewQueue(nextQueue);
+    } catch (error) {
+      if (controller.signal.aborted || generation !== routeRefreshGenerationRef.current) return;
+      setErrorMessage(getErrorInfo(error).message);
+      throw error;
+    } finally {
+      if (routeRefreshRef.current === controller) routeRefreshRef.current = null;
+    }
+  }, [trackId, user.id]);
+
+  useEffect(() => () => {
+    routeRefreshGenerationRef.current += 1;
+    routeRefreshRef.current?.abort();
+  }, [trackId, user.id]);
+
   useEffect(() => {
     const controller = new AbortController();
     void loadAuthority(controller.signal);
@@ -208,11 +249,13 @@ export function TrackLearningWorkspace({
   }, [teaching.session]);
 
   const handleLessonAuthorityChange = useCallback((next: LessonDocumentState | null) => {
+    const scope = workspaceScopeRef.current;
+    if (next && (next.track_id !== scope.trackId || next.knowledge_key !== scope.knowledgeKey)) return;
     setLessonAuthority(next);
-    if (next?.status !== "ready" || !next.assignment || !conversationId || next.knowledge_key !== knowledgeKey) return;
+    if (next?.status !== "ready" || !next.assignment || !conversationId || next.knowledge_key !== scope.knowledgeKey) return;
     const authority: TeachingAuthorityInput = {
-      userId: user.id,
-      trackId,
+      userId: scope.userId,
+      trackId: scope.trackId,
       conversationId,
       knowledgeKey: next.knowledge_key,
       trackVersion: next.track_version,
@@ -226,7 +269,10 @@ export function TrackLearningWorkspace({
       current.assignment_version === next.assignment.assignment_version && current.document_id === next.assignment.document_id;
     if (currentMatches || openedAuthorityKeyRef.current === authorityKey) return;
     openedAuthorityKeyRef.current = authorityKey;
-    void teaching.open(authority).then((opened) => { if (!opened) openedAuthorityKeyRef.current = null; });
+    // A failed open must stay latched for this exact authority. Clearing here
+    // retriggers the child authority effect on every error-state render (409 storm).
+    // Explicit refresh remains available; a changed authority gets a new key.
+    void teaching.open(authority);
   }, [conversationId, knowledgeKey, teaching, trackId, user.id]);
 
   const tutorScope = useMemo<LearningScopeInput>(() => {
@@ -243,6 +289,13 @@ export function TrackLearningWorkspace({
   const followTarget = useMemo(() => teachingFollowTarget(teaching.session, lessonAuthority), [lessonAuthority, teaching.session]);
   const teachingMode = teaching.session?.mode ?? "guided";
   const teachingReady = mode === "lesson" && teaching.session !== null;
+
+  const handleLessonProgressChange = useCallback(async (attempt: ExerciseAttemptState) => {
+    const scope = workspaceScopeRef.current;
+    if (attempt.track_id !== scope.trackId || attempt.knowledge_key !== scope.knowledgeKey) return;
+    if (attempt.status !== "terminal" || (attempt.projected !== true && !attempt.route_changed)) return;
+    await refreshRouteSummary();
+  }, [refreshRouteSummary]);
 
   function addReference(
     draft: TutorContextReferenceDraft,
@@ -268,6 +321,7 @@ export function TrackLearningWorkspace({
 
   function openLesson(nextKnowledgeKey: string) {
     setMode("lesson");
+    workspaceScopeRef.current.knowledgeKey = nextKnowledgeKey;
     setKnowledgeKey(nextKnowledgeKey);
     setReviewSessionId(null);
     setLessonAuthority(null);
@@ -399,6 +453,7 @@ export function TrackLearningWorkspace({
             embedded
             onContextReference={addReference}
             onAuthorityChange={handleLessonAuthorityChange}
+            onProgressChange={handleLessonProgressChange}
             followTarget={followTarget}
             followEnabled={mode === "lesson" && teachingMode === "guided" && followState === "following"}
             onFollowPause={() => { if (mode === "lesson" && teachingMode === "guided") setFollowState("follow_paused"); }}

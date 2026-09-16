@@ -55,7 +55,7 @@ def main() -> int:
         sys.stderr.flush()
 
     thread_start = read()
-    response(thread_start, {"thread": {"id": "thr_fixture", "sessionId": "thr_fixture", "ephemeral": True}, "model": "deepseek-v4-flash", "modelProvider": "aearn_deepseek", "cwd": os.getcwd(), "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": {"type": "readOnly"}})
+    response(thread_start, {"thread": {"id": "thr_fixture", "sessionId": "thr_fixture", "ephemeral": True}, "model": "deepseek-flash", "modelProvider": "aearn_deepseek", "cwd": os.getcwd(), "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": {"type": "readOnly"}})
     send({"method": "thread/started", "params": {"thread": {"id": "thr_fixture"}}})
     send({"method": "fixture/unknown", "params": {"safe": True}})
     turn_start = read()

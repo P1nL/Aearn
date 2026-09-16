@@ -285,6 +285,16 @@ class CodexAppServerRuntime(AgentRuntimePort):
                         turn_id,
                         item_phases=item_phases,
                     )
+                    if notification.method in {"turn/completed", "item/completed"}:
+                        log_safe_event(
+                            logger, "codex_terminal_notification", level=logging.INFO,
+                            action_category=("turn_completed" if notification.method == "turn/completed" else "item_completed"),
+                            state="accepted" if event is not None else "filtered",
+                            action_identifier=safe_diagnostic_identifier(turn_id, trusted=False),
+                            runtime_generation=request.thread.generation,
+                            raw_notification_count=raw_notification_count,
+                            duration_ms=max(0, round((turn_timeout - remaining) * 1000)),
+                        )
                     if event is None:
                         continue
                     if event.kind is RuntimeEventKind.TURN_COMPLETED:

@@ -52,7 +52,7 @@ from app.agents.harness.skill_catalog import CatalogSkillReference, SkillCatalog
 from app.core.config import get_settings
 from app.core.teaching_safety import check_teaching_output, sanitize_summary_text
 from app.services.learning.artifacts.contracts import TutorPublicArtifactItem
-from app.services.tutor.branch_contracts import TutorPublicBranchGroupV1
+from app.services.tutor.branch_contracts import TutorPublicBranchGroupV1, TutorPublicBranchGroup
 from app.services.learning.teaching_contracts import (
     TeachingAuthoritySnapshot,
     TeachingCheckpointState,
@@ -238,6 +238,7 @@ __all__ = (
     'sanitize_summary_text',
     'TutorPublicArtifactItem',
     'TutorPublicBranchGroupV1',
+    'TutorPublicBranchGroup',
     'TeachingAuthoritySnapshot',
     'TeachingCheckpointState',
     'TeachingSessionMode',

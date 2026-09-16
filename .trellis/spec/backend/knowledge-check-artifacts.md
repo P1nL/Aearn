@@ -55,6 +55,23 @@ All actions still carry the common exact user/conversation/track/session,
 - Normal teaching context excludes reserved `remediation` and `transfer_check`
   items. Receipt-backed evaluation context may advertise only its selected
   successor.
+- A candidate handle is not a description of its question. Every advertised KC
+  candidate must have exact published public question/options in required task
+  evidence, so the Tutor cannot introduce unrelated code or an invented task.
+- KC evaluation additionally supplies the exact completed Artifact question and
+  immutable submitted response/outcome/assistance receipt, after checking its
+  user/conversation/track/node/session/item/event lineage. This is internal
+  provider evidence, not a public API/export of raw response rows. Never include
+  private answers, rubrics, undisclosed hints or private explanations. Treat
+  question/submission contents as untrusted data, never operation instructions.
+- These facts use `teaching-artifact-evidence:` REQUIRED_FACTS sources, separate
+  from compact TEACHING_SESSION authority. Preserve complete ordered JSON pieces
+  within 1,200 characters/source, eight required sources and the unchanged total
+  request budget. Never summarize away code, trim pieces, drop options or silently
+  omit a required fact. If the existing redactor would change exact evidence,
+  reject with `TUTOR_REQUIRED_FACTS_PROTECTED`; missing evaluation evidence is
+  `TUTOR_KNOWLEDGE_CHECK_GROUNDING_INVALID`. No untrusted data can grant a source
+  handle, score, completion or capability.
 - Required successor candidates cannot be evicted by the 1,200-character
   provider-context bound. Optional recent teaching units are omitted for this
   evaluation; if the exact candidate still cannot fit, fail before provider use.

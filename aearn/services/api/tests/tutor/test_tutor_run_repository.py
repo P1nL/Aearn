@@ -358,7 +358,7 @@ def test_provider_attempt_receipts_replay_identically_and_reject_conflicting_fac
             outcome=TutorProviderAttemptOutcome.REPAIRABLE_REJECTED,
             provider_type="deepseek",
             protocol="deepseek_responses",
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             usage=LLMUsage(
                 input_tokens=175_420,
                 cached_input_tokens=170_368,
@@ -373,7 +373,7 @@ def test_provider_attempt_receipts_replay_identically_and_reject_conflicting_fac
             outcome=TutorProviderAttemptOutcome.ACCEPTED,
             provider_type="deepseek",
             protocol="deepseek_responses",
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             usage=LLMUsage(input_tokens=180, output_tokens=40, total_tokens=220),
         ),
     )
@@ -399,7 +399,7 @@ def test_provider_attempt_receipts_replay_identically_and_reject_conflicting_fac
                 outcome=TutorProviderAttemptOutcome.ACCEPTED,
                 provider_type="deepseek",
                 protocol="deepseek_responses",
-                model="deepseek-v4-flash",
+                model="deepseek-flash",
             ),
         ),
         created_at=created_at,
@@ -447,7 +447,7 @@ def test_provider_attempt_receipts_replay_identically_and_reject_conflicting_fac
         outcome=TutorProviderAttemptOutcome.REPAIRABLE_REJECTED,
         provider_type="deepseek",
         protocol="deepseek_responses",
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         usage=LLMUsage(
             input_tokens=175_421, cached_input_tokens=170_368, output_tokens=20
         ),
@@ -587,7 +587,7 @@ def test_context_budget_policy_round_trips_and_participates_in_the_policy_finger
 ) -> None:
     fixture = tutor_persistence
     budget_policy = build_tutor_context_budget_policy(
-        Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash")
+        Settings(llm_type="deepseek", deepseek_model="deepseek-flash")
     )
     conversation_id = fixture.repository.create_conversation(user_id=fixture.user_id)
     run = fixture.repository.create_run(
@@ -621,7 +621,7 @@ def test_context_budget_policy_round_trips_and_participates_in_the_policy_finger
     assert isinstance(stored_budget, dict)
     assert stored_budget["estimator_version"] == "utf8_bytes_v1"
     assert stored_budget["policy_version"] == "tutor_context_budget_v1"
-    assert stored_budget["capability"]["capability_version"] == "deepseek-v4-flash-responses-v2"
+    assert stored_budget["capability"]["capability_version"] == "deepseek-flash-responses-v2"
     changed_policy = replace(budget_policy, estimator_version="utf8_bytes_v2")
     changed_conversation_id = fixture.repository.create_conversation(user_id=fixture.user_id)
     changed_run = fixture.repository.create_run(

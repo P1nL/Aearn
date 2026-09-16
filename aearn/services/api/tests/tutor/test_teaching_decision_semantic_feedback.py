@@ -177,3 +177,53 @@ def test_interaction_schema_remains_strict_while_returning_allowlisted_guidance(
     )
     assert "omit the legacy learner_response_mode field" in feedback
     assert _PRIVATE_MARKER not in feedback
+
+
+@pytest.mark.parametrize("field,value", [
+    ("objective_id", "not a stable identity PRIVATE_INPUT"),
+    ("focus_id", "not a stable identity PRIVATE_INPUT"),
+    ("source_handles", ["knowledge:python.variables", "knowledge:python.variables"]),
+])
+def test_domain_assembly_preserves_field_feedback_without_provider_values(field, value):
+    payload = _valid_teaching_payload()
+    payload["action"][field] = value
+    with pytest.raises(TutorDecisionValidationError) as caught:
+        parse_tutor_provider_items(payload, run=_run())
+    expected_path = f"action.teaching_step.{field}" if field == "source_handles" else f"action.{field}"
+    assert caught.value.issues == (TutorDecisionValidationIssue(path=expected_path, category="invalid_value"),)
+    assert validation_diagnostic_code(caught.value.issues) == "TUTOR_PROVIDER_DECISION_INVALID_VALUE"
+    feedback = build_tutor_replacement_message(caught.value.issues, teaching_policy="server policy")
+    assert f"{expected_path}:invalid_value" in feedback
+    assert "PRIVATE_INPUT" not in feedback
+
+
+def test_domain_error_reaches_same_model_repair_and_safe_log(caplog):
+    import logging
+    from app.core.config import Settings
+    from app.services.tutor.provider_gateway import PrimaryTutorProviderGateway
+    from tests.tutor.test_tutor_provider_gateway import SequencedJsonClient, _context
+    valid = _valid_teaching_payload()
+    valid["message"]["text"] = "Check the current value."
+    valid["action"]["public_message"] = "Check the current value."
+    invalid = deepcopy(valid)
+    invalid["action"]["focus_id"] = "PRIVATE_PAYLOAD invalid identity"
+    client = SequencedJsonClient([invalid, valid])
+    with caplog.at_level(logging.WARNING):
+        result = PrimaryTutorProviderGateway(settings=Settings(llm_type="openai", openai_api_key="test-key"), client=client).decide(run=_run(), context=_context())
+    assert result.decision is not None
+    assert client.calls == 2
+    assert result.attempts[0].diagnostic_code == "TUTOR_PROVIDER_DECISION_INVALID_VALUE"
+    assert "action.focus_id:invalid_value" in str(client.messages[1])
+    assert '"field_path":"action.focus_id"' in caplog.text
+    assert "PRIVATE_PAYLOAD" not in caplog.text
+    assert "PRIVATE_PAYLOAD" not in str(client.messages[1])
+
+
+@pytest.mark.parametrize("message", ["Question one.\n\nQuestion two.", "```python\nx = 5\nif x:\n    print(x)\n```", "Keep  two spaces."])
+def test_teaching_public_markdown_preserves_message_identity(message):
+    payload = _valid_teaching_payload()
+    payload["message"]["text"] = message
+    payload["action"]["public_message"] = message
+    decision = parse_tutor_provider_items(payload, run=_run())
+    assert decision.teaching_step is not None
+    assert decision.public_message == decision.teaching_step.public_message == message

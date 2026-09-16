@@ -18,6 +18,8 @@ from app.services.learning.contracts import stable_key
 from app.services.learning.plan_capability import (
     LearningPlanDraftCapabilityError,
     build_validated_learning_plan_artifact,
+    read_planning_catalog_descriptor,
+    validate_planning_catalog_mappings,
 )
 from app.services.learning.plan_drafting import (
     CompactPlanModule,
@@ -112,17 +114,41 @@ class PlanningContextReadInput(_ToolModel):
 
 
 class LearningPlanDraftNodeInput(_ToolModel):
-    stable_key: str = Field(min_length=1, max_length=160)
+    stable_key: str = Field(
+        min_length=1,
+        max_length=160,
+        description=(
+            "Plan-step/progress identity, kept independent from any published content "
+            "lookup key; arbitrary stable values such as n1_1 are allowed."
+        ),
+    )
     title: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=300)
     is_core: bool = True
     prerequisites: tuple[str, ...] = Field(default=(), max_length=8)
     required_capabilities: tuple[str, ...] = Field(default=(), max_length=8)
+    catalog_knowledge_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        description=(
+            "Optional exact published catalog knowledge key copied from the planning "
+            "context catalog_descriptor. knowledge_key is this plan step's progress "
+            "identity (for example n1_1); catalog_knowledge_key selects content only "
+            "and never renames that identity. Omit it for legacy direct matching; "
+            "never infer it from a title, alias, or prose."
+        ),
+    )
 
     @field_validator("stable_key")
     @classmethod
     def _normalize_stable_key(cls, value: str) -> str:
         return stable_key(value, label="node stable_key")
+
+    @field_validator("catalog_knowledge_key")
+    @classmethod
+    def _normalize_catalog_key(cls, value: str | None) -> str | None:
+        return stable_key(value, label="catalog_knowledge_key") if value is not None else None
 
     @field_validator("prerequisites", "required_capabilities")
     @classmethod
@@ -363,6 +389,26 @@ class LearningPlanToolService:
                 "nodes_per_module": {"minimum": 1, "maximum": 8},
             },
         }
+        context["planning_guidance"] = {
+            "step_identity": (
+                "knowledge_key is the learner-course step/progress identity and may be "
+                "an arbitrary stable key such as n1_1."
+            ),
+            "content_lookup": (
+                "catalog_knowledge_key is optional content lookup only. Copy it exactly "
+                "from catalog_descriptor.items[].knowledge_key and keep the advertised "
+                "required_capabilities, or omit it for legacy direct matching. Never "
+                "guess a mapping from a title, alias, or prose."
+            ),
+        }
+        language_value = values.get(PlanningFactField.LANGUAGE_ID)
+        if language_value is not None:
+            catalog_descriptor = read_planning_catalog_descriptor(
+                self._conn,
+                language_id=str(language_value),
+            )
+            if catalog_descriptor is not None:
+                context["catalog_descriptor"] = catalog_descriptor
         action = tool_input.direction_action if tool_input is not None else None
         if missing:
             next_missing = missing[0]
@@ -583,6 +629,11 @@ class LearningPlanToolService:
                         else None
                     ),
                 )
+                validate_planning_catalog_mappings(
+                    self._conn,
+                    language_id=artifact.profile.language_id,
+                    nodes=artifact.plan.nodes,
+                )
                 fenced = self._fence_result()
                 if fenced is not None:
                     return fenced
@@ -613,6 +664,12 @@ class LearningPlanToolService:
         except LearningPlanDraftCapabilityError as exc:
             if exc.diagnostic_code == "learning_plan_draft_quality_blocked":
                 return _repairable("modules", "plan_quality_invalid", "Use only selectable language capabilities and include core teaching coverage.")
+            if exc.diagnostic_code == "learning_plan_catalog_mapping_invalid":
+                return _repairable(
+                    "modules",
+                    "catalog_mapping_invalid",
+                    "Copy an exact key from catalog_descriptor and include its required capabilities; do not infer content from titles or aliases.",
+                )
             if exc.diagnostic_code == "learning_language_not_selectable":
                 return _result(LearningPlanToolStatus.POLICY_BLOCKED, "learning_language_not_selectable")
             if exc.diagnostic_code == "learning_plan_source_quality_blocked":
@@ -717,6 +774,7 @@ def _domain_module(module: LearningPlanDraftModuleInput) -> CompactPlanModule:
                 is_core=node.is_core,
                 prerequisite_keys=list(node.prerequisites),
                 required_capabilities=list(node.required_capabilities),
+                catalog_knowledge_key=node.catalog_knowledge_key,
             )
             for node in module.nodes
         ],

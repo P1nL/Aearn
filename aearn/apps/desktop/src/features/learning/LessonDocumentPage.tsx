@@ -41,6 +41,7 @@ type LessonDocumentPageProps = {
   embedded?: boolean;
   onContextReference?: (draft: TutorContextReferenceDraft, label: string, taskKind: NonNullable<LearningScopeInput["task_kind"]>) => void;
   onAuthorityChange?: (state: LessonDocumentState | null) => void;
+  onProgressChange?: (attempt: ExerciseAttemptState) => Promise<void> | void;
   followTarget?: LessonFollowTarget | null;
   followEnabled?: boolean;
   onFollowPause?: () => void;
@@ -56,7 +57,7 @@ type BusyGate = {
   action: GateAction;
 };
 
-export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embedded = false, onContextReference, onAuthorityChange, followTarget = null, followEnabled = false, onFollowPause, onFollowConflict, onOpenDocumentReference }: LessonDocumentPageProps) {
+export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embedded = false, onContextReference, onAuthorityChange, onProgressChange, followTarget = null, followEnabled = false, onFollowPause, onFollowConflict, onOpenDocumentReference }: LessonDocumentPageProps) {
   const [state, setState] = useState<LessonDocumentState | null>(null);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<LessonAction>("idle");
@@ -268,6 +269,7 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embe
         if (attempt.status === "pending") setGateError(block.gate_key, "受控执行仍在队列中，可以稍后刷新同一 Attempt 的结果。");
       }
       await Promise.all([load(), loadGates()]);
+      if (attemptChangesProgress(attempt)) await onProgressChange?.(attempt);
     } catch (error) {
       setGateError(block.gate_key, getErrorInfo(error).message);
     } finally {
@@ -306,6 +308,7 @@ export function LessonDocumentPage({ userId, trackId, knowledgeKey, onBack, embe
       setGateAttempts((current) => ({ ...current, [block.gate_key]: attempt }));
       if (attempt.status === "pending") setGateError(block.gate_key, "受控执行仍在队列中，稍后可继续刷新同一 Attempt。");
       await Promise.all([load(), loadGates()]);
+      if (attemptChangesProgress(attempt)) await onProgressChange?.(attempt);
     } catch (error) {
       setGateError(block.gate_key, getErrorInfo(error).message);
     } finally {
@@ -475,4 +478,8 @@ async function pollExerciseAttempt(input: { userId: string; trackId: string; kno
 function createLessonActionId(prefix: string): string {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}:${random}`;
+}
+
+function attemptChangesProgress(attempt: ExerciseAttemptState): boolean {
+  return attempt.status === "terminal" && (attempt.projected === true || attempt.route_changed);
 }

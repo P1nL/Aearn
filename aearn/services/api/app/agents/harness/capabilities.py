@@ -118,8 +118,8 @@ _LEARNING_PLAN_PROFILE_JSON_DESCRIPTION = (
     "experience_level, teaching_preferences, pace_summary, and title."
 )
 _LEARNING_PLAN_MODULE_JSON_DESCRIPTION = (
-    "Compact JSON object with module_key, title, description, is_core, is_skippable, and nodes; "
-    "each node uses knowledge_key, title, description, is_core, prerequisite_keys, and required_capabilities."
+    "JSON: module_key,title,description,is_core,is_skippable,nodes. Node: knowledge_key (step ID),title,description,"
+    "is_core,prerequisite_keys,required_capabilities; optional catalog_knowledge_key selects published content."
 )
 
 

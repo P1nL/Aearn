@@ -1,5 +1,9 @@
 # Teaching Artifact Orchestration and Branch Scheduling
 
+## Early result-evaluation failure
+
+A result-evaluation Turn that fails before producing a public evaluation message must keep its original terminal outcome and diagnostic (for example `FAILED / TUTOR_CONTEXT_REQUIRED_OVERFLOW`). It must not publish the result Artifact timeline item or reclassify that failure as stale teaching authority merely because no message exists. Successful completion still requires the message-first atomic publication contract; a provider-unavailable path with a safe server result summary may publish only with that actual message.
+
 ## 1. Scope / Trigger
 
 Apply this contract whenever code changes Tutor lesson-teaching decisions, provider-facing TeachingSession context, Learning Item candidate selection, atomic Tutor-message/checkpoint/Artifact persistence, clarification branches, continuation intents, timer/event continuation, or conversation snapshot branch projection.
@@ -68,6 +72,8 @@ tutor_continuation_intent_events
 - Candidate projection evicts oldest optional `recent_teaching_units` before dropping eligible candidates and also compacts an oversized base when no candidates exist. Preserve the established 1,200-character compact JSON section contract; UTF-8 bytes feed the existing token estimator and numeric diagnostics, not a silently stricter 1,200-byte multilingual cap. Required authority/evaluation handles either fit intact or fail closed. Never return a truncated JSON fragment as required teaching context.
 - Provider system-contract additions must fit the existing complete-request token budget, including serializer overhead and required TeachingSession authority. Compress redundant guidance rather than silently increasing policy limits or weakening tests. The current v5 provider action expresses response mode through `interaction.mode`; do not instruct it to emit the legacy top-level `learner_response_mode`. Guided artifact interaction requires `evidence_pause`.
 - Known teaching semantic violations receive finite server-authored field/category repair guidance through the existing bounded same-model retry. Never expose rejected provider values or raw validation messages. A successful protocol run does not prove pedagogical correctness: verify that feedback agrees with the actual authoritative Artifact result, and separately test automatic continuation and learner-message recovery.
+- KC introductions and result feedback must be grounded in exact public item/Artifact task evidence, not inferred from the Lesson title, old summaries or a generic correct/incorrect sentence. The loader emits candidate questions plus receipt-bound evaluation facts as required sources; use only validated public fields and an explicitly untrusted learner submission. The specialized exact-data serializer preserves all bounded JSON parts/options and fails if existing redaction changes them; it does not relax secret redaction, source-count or token-budget gates. Validate both initial introductions and wrong/remedial-result feedback in real runs.
+- Parser repair and final admission share `teaching_response_mode_is_valid`: composer accepts only `check_understanding`/`wait_for_input` with a prediction, error-detection, misconception-contrast, or micro-transfer move; none forbids those two actions. Invalid current-v5 units emit the safe `action.interaction.mode:response_mode_invalid` issue before final admission, so the existing one same-model replacement can act. Keep the final Gate diagnostic and rejection matrix unchanged; do not normalize actions, invent Artifact authority, or increase retries.
 - A v3 interaction has exactly one of these shapes: `none / none / null`, `composer / text_answer / null`, or `artifact / closed Artifact intent / exact li:<sha256> handle`. Unknown modes, intents, handles, extra fields, stale scope, or impossible pairings reject the entire public decision before a Tutor message is published.
 - The Decision Gate revalidates mode, intent, handle, scope, feature flags, publication state/version, capability set, Practice authority, and runtime profile. It never trusts a provider-selected kind, payload, exercise identity, owner version, or learner-visible content.
 - One caller-owned PostgreSQL transaction commits the accepted Tutor public message, next Teaching checkpoint/session CAS, teaching action receipt, Artifact row, Artifact event, conversation `item_added` reference, and source Turn terminalization. Any failure rolls back every public write.
@@ -97,6 +103,11 @@ tutor_continuation_intent_events
 | Topic-switch confirmation has no prior offer | reject typed transition |
 | Reconnect after branch creation | snapshot v5 contains the exact anchor, state, disposition, rounds, and item membership |
 | Reset/export/delete | no private payload in export; dependent branch/continuation rows are removed safely |
+| Session authority replacement with old active branches | atomically create successor, block old session, append authority_superseded and retire branches; keep items/rounds/progress unchanged |
+| Supersession without direct same-scope successor, changed authority, blocked old session, or with live old run | owner/SQL reject; no partial event, branch or session changes |
+| Supersession replay / stale CAS | exact original replay returns the same event; altered scope/version/event conflicts |
+
+Authority retirement uses `superseded`, never `resolved`. Schema fragment 210 is an incremental reentrant extension; retirement events have no learner/provider source input or response. Keep both active-branch guards unchanged. Public active/resolved groups remain V1; only superseded uses group V2 plus `superseded_at` and summary V2. Historical reconciliation requires a bounded proven predecessor chain, read-only dry-run, exact scope/version review and owner writes; it must not dispatch stale intents or reopen completed progress.
 
 ## 5. Good / Base / Bad Cases
 
@@ -162,3 +173,8 @@ The correct path advertises only server-proven handles, validates the exact deci
 - Static fallback duration is deterministic and 6-30 seconds per materialized step; oversized static source may be split within the descriptor bounds.
 - Completion is exactly-once and receipt-backed. Exact Preview event and visible-clock evidence are mutually exclusive; Preview nonce/generation/sequence must fit the native bridge and receipt columns, and an event payload must fit the shared bounded bridge shape.
 - Demonstration completion must not create Attempts, mastery evidence, or track progress. Continuation priority is expected-event for interactive and static-timer for static, always below learner input.
+
+## Learner teaching Retry binding
+
+Retry must not only inherit LearningTrack scope. Before admitting a retry of a learner-message teaching run, lock conversation then verify the original session/checkpoint/track/assignment/document authority remains current. Bind the new input message and revision to a new learner stimulus and teaching scope in the same API idempotency transaction as the new run and queue control event; return teaching_scope. Stale authority or binding failure rolls back all new records. Non-learner control/domain stimuli must be reissued via current teaching controls rather than masquerading as learner messages. Historical unbound retries are not rewritten.
+- 2026-09-10: Preserve TeachingStepDecision.public_message whitespace/Markdown exactly (after outer trim). Collapsing spaces/newlines made equal provider message fields unequal during TutorDecision assembly. Regression includes multiline paragraphs and indented code. No weakening of exact-message validation.

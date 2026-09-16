@@ -24,6 +24,8 @@ import type {
   TutorContextReferenceDraft,
 } from "../../types";
 import { ModelCodeReviewFindingEditor } from "./lesson/ModelCodeReviewFindingEditor";
+import { supportedKnowledgePrompt, type SupportedKnowledgePrompt } from "./lesson/knowledgeCheckPrompt";
+import { SafeMarkdown } from "../tutor/artifacts/SafeMarkdown";
 
 type ReviewSessionPanelProps = {
   userId: string;
@@ -103,6 +105,8 @@ export function ReviewSessionPanel({
     setLatestAttempt(null);
   }, [currentItem?.exercise.exercise_version_id]);
 
+  const knowledgePromptMismatch = currentItem !== null && reviewKnowledgePrompt(currentItem).kind === "unsupported";
+
   async function refreshSession(): Promise<ReviewSession | null> {
     if (!session) return null;
     const next = await fetchReviewSession(userId, track.track_id, session.session_id);
@@ -148,7 +152,7 @@ export function ReviewSessionPanel({
   }
 
   async function requestHint() {
-    if (!session || !currentItem || busy) return;
+    if (!session || !currentItem || busy || knowledgePromptMismatch) return;
     setBusy("hint");
     setErrorMessage(null);
     try {
@@ -170,8 +174,7 @@ export function ReviewSessionPanel({
     if (!session || !currentItem || busy || currentItem.attempt?.status === "terminal") return;
     const exercise = currentItem.exercise;
     const modelReview = exercise.exercise_type === "model_code_review";
-    if (exercise.exercise_type === "model_code_review" && reviewSubmissionErrors(reviewDraft, exercise.starter_artifact.line_count).length > 0) return;
-    if (exercise.exercise_type !== "model_code_review" && !submission.trim()) return;
+    if (!canSubmit(currentItem, submission, reviewDraft)) return;
     setBusy("attempt");
     setErrorMessage(null);
     try {
@@ -298,7 +301,7 @@ export function ReviewSessionPanel({
       {currentItem ? <ReviewExerciseForm item={currentItem} submission={submission} reviewDraft={reviewDraft} disabled={busy !== null || currentItem.attempt?.status === "terminal"} onSubmissionChange={setSubmission} onReviewDraftChange={setReviewDraft} /> : null}
       {hint ? <aside className="lesson-gate-hint review-hint" aria-live="polite"><span>提示 {hint.hint_level}</span><p>{safeText(hint.safe_hint, "服务器已提供一条有界提示。")}</p></aside> : null}
       <div className="review-session-actions">
-        {currentItem && currentItem.attempt?.status !== "terminal" ? <button className="tutor-compact-button quiet" type="button" disabled={busy !== null || (hint?.hint_level ?? 0) >= 3} onClick={() => void requestHint()}>{busy === "hint" ? "正在请求……" : "渐进提示"}</button> : null}
+        {currentItem && currentItem.attempt?.status !== "terminal" ? <button className="tutor-compact-button quiet" type="button" disabled={busy !== null || knowledgePromptMismatch || (hint?.hint_level ?? 0) >= 3} onClick={() => void requestHint()}>{busy === "hint" ? "正在请求……" : "渐进提示"}</button> : null}
         {currentItem && !currentItem.attempt ? <button className="tutor-primary-button" type="button" disabled={busy !== null || !canSubmit(currentItem, submission, reviewDraft)} onClick={() => void submitAttempt()}>{busy === "attempt" ? "正在提交……" : "提交复习答案"}</button> : null}
         {currentItem?.attempt?.status === "pending" || latestAttempt?.status === "pending" ? <button className="tutor-primary-button" type="button" disabled={busy !== null} onClick={() => void pollCurrentAttempt()}>{busy === "poll" ? "正在刷新……" : "刷新同一 Attempt"}</button> : null}
         {session.state === "ready_to_finalize" ? <button className="tutor-primary-button" type="button" disabled={busy !== null} onClick={() => void finalize()}>{busy === "finalize" ? "正在完成……" : "完成本次复习"}</button> : null}
@@ -321,7 +324,32 @@ export function ReviewSessionPanel({
 function ReviewExerciseForm({ item, submission, reviewDraft, disabled, onSubmissionChange, onReviewDraftChange }: { item: ReviewSessionItem; submission: string; reviewDraft: ModelCodeReviewSubmission; disabled: boolean; onSubmissionChange: (value: string) => void; onReviewDraftChange: (draft: ModelCodeReviewSubmission) => void }) {
   const exercise = item.exercise;
   if (exercise.exercise_type !== "model_code_review") {
-    return <div className="review-exercise"><div className="review-exercise-brief"><p>{safeText(exercise.learner_prompt, "请完成当前复习练习。")}</p><small>{exercise.execution_disclosure}</small></div><label><span>你的回答</span><textarea rows={Math.max(7, Math.min(16, submission.split("\n").length + 2))} value={submission} disabled={disabled} spellCheck={false} onChange={(event) => onSubmissionChange(event.target.value)} /></label></div>;
+    const state = reviewKnowledgePrompt(item);
+    const prompt = state.kind === "supported" ? state.prompt : null;
+    const answerLabel = prompt?.responseKind === "prediction" ? "你的预测" : "你的回答";
+    return (
+      <div className="review-exercise">
+        <div className="review-exercise-brief">
+          {prompt ? <SafeMarkdown markdown={prompt.promptMarkdown} surface="artifact" /> : state.kind === "legacy" ? <p>{safeText(exercise.learner_prompt, "请完成当前复习练习。")}</p> : null}
+          <small>{exercise.execution_disclosure}</small>
+        </div>
+        {state.kind === "unsupported" ? (
+          <p className="lesson-gate-boundary" role="alert">当前知识检查的公开回答格式暂不受支持，已停止本地作答、提示与提交。</p>
+        ) : prompt?.responseKind === "single_select" ? (
+          <fieldset className="knowledge-check-options" disabled={disabled}>
+            <legend className="sr-only">请选择一个答案</legend>
+            {prompt.options.map((option) => (
+              <label key={option.optionId}>
+                <input type="radio" name={`review-answer-${item.item_id}`} value={option.optionId} checked={submission === option.optionId} onChange={() => onSubmissionChange(option.optionId)} />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </fieldset>
+        ) : (
+          <label><span>{answerLabel}</span><textarea rows={Math.max(7, Math.min(16, submission.split("\n").length + 2))} value={submission} disabled={disabled} spellCheck={false} onChange={(event) => onSubmissionChange(event.target.value)} /></label>
+        )}
+      </div>
+    );
   }
   const artifact = exercise.starter_artifact;
   const errors = reviewSubmissionErrors(reviewDraft, artifact.line_count);
@@ -358,7 +386,26 @@ function starterText(item: ReviewSessionItem | null): string {
   return typeof value === "string" ? value : "";
 }
 function safeText(payload: Record<string, unknown>, fallback: string): string { const value = payload.message ?? payload.text ?? payload.summary; return typeof value === "string" && value.trim() ? value : fallback; }
-function canSubmit(item: ReviewSessionItem, submission: string, draft: ModelCodeReviewSubmission): boolean { return item.exercise.exercise_type === "model_code_review" ? reviewSubmissionErrors(draft, item.exercise.starter_artifact.line_count).length === 0 : submission.trim().length > 0; }
+type ReviewKnowledgePrompt = { kind: "legacy" } | { kind: "unsupported" } | { kind: "supported"; prompt: SupportedKnowledgePrompt };
+function reviewKnowledgePrompt(item: ReviewSessionItem): ReviewKnowledgePrompt {
+  const exercise = item.exercise;
+  if (exercise.exercise_type !== "static_code_reasoning") return { kind: "legacy" };
+  // A tagged or structured knowledge prompt must not fall back to a legacy textarea.
+  const candidate = [exercise.learner_prompt, exercise.starter_artifact].some((value) =>
+    (typeof value.schema_version === "string" && value.schema_version.startsWith("knowledge_check_"))
+    || ["prompt_markdown", "response_kind", "options"].some((key) => Object.hasOwn(value, key)),
+  );
+  if (!candidate) return { kind: "legacy" };
+  const prompt = supportedKnowledgePrompt(exercise.learner_prompt, exercise.starter_artifact);
+  return prompt ? { kind: "supported", prompt } : { kind: "unsupported" };
+}
+function canSubmit(item: ReviewSessionItem, submission: string, draft: ModelCodeReviewSubmission): boolean {
+  if (item.exercise.exercise_type === "model_code_review") return reviewSubmissionErrors(draft, item.exercise.starter_artifact.line_count).length === 0;
+  const state = reviewKnowledgePrompt(item);
+  if (state.kind === "unsupported") return false;
+  if (state.kind === "supported" && state.prompt.responseKind === "single_select") return state.prompt.options.some((option) => option.optionId === submission);
+  return submission.trim().length > 0;
+}
 function emptyReviewDraft(): ModelCodeReviewSubmission { return { schema_version: "model_code_review_submission_v1", verdict: "uncertain", findings: [], supplemental_note: null }; }
 function createFinding(lineCount: number): ModelReviewFinding { return { client_finding_id: `finding-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`, finding_kind: "correctness", start_line: 1, end_line: Math.min(1, lineCount), category: "correctness", severity: "medium", trigger_condition: "", principle: "", impact: "", validation_method: "", suggested_fix: "", supplemental_note: null }; }
 function validateFinding(finding: ModelReviewFinding, lineCount: number): string[] { const errors: string[] = []; if (!Number.isInteger(finding.start_line) || finding.start_line < 1 || finding.start_line > lineCount) errors.push("起始行超出代码范围。"); if (!Number.isInteger(finding.end_line) || finding.end_line < finding.start_line || finding.end_line > lineCount) errors.push("结束行必须位于起始行之后且不超过代码范围。"); if (!/^[A-Za-z0-9][A-Za-z0-9._:@-]{0,119}$/.test(finding.category)) errors.push("分类键格式不合法。"); for (const [label, value] of [["触发条件", finding.trigger_condition], ["违反原则", finding.principle], ["可能影响", finding.impact], ["验证方法", finding.validation_method], ["建议修复", finding.suggested_fix]] as const) if (!value.trim()) errors.push(`${label}不能为空。`); if (finding.finding_kind === "improvement" && !["info", "low"].includes(finding.severity)) errors.push("改进建议的严重程度只能是提示或低。"); return errors; }

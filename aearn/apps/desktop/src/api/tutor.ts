@@ -1963,6 +1963,15 @@ function isSafeTableResultCell(value: unknown): value is string | number | boole
 }
 
 function toTutorArtifactBranchSummary(payload: unknown): TutorArtifactBranchSummary | null {
+  if (isRecord(payload) && payload.schema_version === "tutor_artifact_branch_summary_v2") {
+    if (!hasExactKeys(payload, [
+      "schema_version", "branch_id", "state", "disposition", "round_count", "item_count", "collapsed",
+    ]) || payload.state !== "superseded" || payload.collapsed !== true) return null;
+    const { schema_version: _schemaVersion, ...fields } = payload;
+    // Reuse unchanged V1 common-field checks; V2 retirement is not a resolved answer.
+    const common = toTutorArtifactBranchSummary({ ...fields, state: "active", collapsed: false });
+    return common ? { ...common, schema_version: "tutor_artifact_branch_summary_v2", state: "superseded", collapsed: true } : null;
+  }
   if (!isRecord(payload) || !hasExactKeys(payload, [
     "branch_id", "state", "disposition", "round_count", "item_count", "collapsed",
   ]) || !isArtifactBoundedString(payload.branch_id, 160) || (payload.state !== "active" && payload.state !== "resolved") ||
@@ -1974,6 +1983,18 @@ function toTutorArtifactBranchSummary(payload: unknown): TutorArtifactBranchSumm
 }
 
 function toTutorPublicBranchGroup(payload: unknown): TutorPublicBranchGroup | null {
+  if (isRecord(payload) && payload.schema_version === "tutor_conversation_branch_v2") {
+    if (!hasExactKeys(payload, [
+      "schema_version", "branch_id", "anchor_artifact_id", "teaching_session_id", "checkpoint_id", "state",
+      "disposition", "round_count", "item_count", "collapsed", "items", "created_at", "resolved_at", "superseded_at",
+    ]) || payload.state !== "superseded" || payload.collapsed !== true || payload.resolved_at !== null ||
+        !isTutorBranchSupersededTimestamp(payload.superseded_at)) return null;
+    const { superseded_at, ...fields } = payload;
+    // Validate the shared fields/membership with V1, then return only the V2 lifecycle.
+    const common = toTutorPublicBranchGroup({ ...fields, schema_version: "tutor_conversation_branch_v1", state: "active", collapsed: false });
+    return common ? { ...common, schema_version: "tutor_conversation_branch_v2", state: "superseded",
+      collapsed: true, resolved_at: null, superseded_at } : null;
+  }
   if (!isRecord(payload) || !hasExactKeys(payload, [
     "schema_version", "branch_id", "anchor_artifact_id", "teaching_session_id", "checkpoint_id", "state",
     "disposition", "round_count", "item_count", "collapsed", "items", "created_at", "resolved_at",
@@ -1999,6 +2020,15 @@ function toTutorPublicBranchGroup(payload: unknown): TutorPublicBranchGroup | nu
     checkpoint_id: payload.checkpoint_id, state: payload.state, disposition: payload.disposition,
     round_count: payload.round_count, item_count: payload.item_count, collapsed: payload.collapsed,
     items: parsedItems, created_at: payload.created_at, resolved_at: payload.resolved_at };
+}
+
+function isTutorBranchSupersededTimestamp(value: unknown): value is string {
+  if (!isArtifactBoundedString(value, 80) ||
+      !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?$/.test(value) ||
+      !Number.isFinite(Date.parse(value))) return false;
+  const date = value.slice(0, 10);
+  const parsedDate = Date.parse(`${date}T00:00:00Z`);
+  return Number.isFinite(parsedDate) && new Date(parsedDate).toISOString().slice(0, 10) === date;
 }
 
 function toTutorPublicBranchItemReference(payload: unknown): TutorPublicBranchItemReference | null {
@@ -2065,16 +2095,31 @@ function toTutorPublicProcessStep(payload: unknown): TutorPublicProcessStep | nu
   return { key: payload.key, state: payload.state, label: payload.label };
 }
 
+function toInputTeachingScope(payload: unknown): NonNullable<TutorInputAcceptedResponse["teaching_scope"]> | null {
+  if (!isRecord(payload) || !hasExactKeys(payload, [
+    "stimulus_id", "stimulus_kind", "session_id", "checkpoint_id", "session_version", "track_id", "knowledge_key", "mode",
+  ]) || payload.stimulus_kind !== "learner_message" || !isPositiveSafeInteger(payload.session_version) ||
+      !isTeachingSessionMode(payload.mode)) return null;
+  if (!isString(payload.stimulus_id) || !payload.stimulus_id || !isString(payload.session_id) || !payload.session_id ||
+      !isString(payload.checkpoint_id) || !payload.checkpoint_id || !isString(payload.track_id) || !payload.track_id ||
+      !isString(payload.knowledge_key) || !payload.knowledge_key) return null;
+  return { stimulus_id: payload.stimulus_id, stimulus_kind: payload.stimulus_kind,
+    session_id: payload.session_id, checkpoint_id: payload.checkpoint_id, session_version: payload.session_version,
+    track_id: payload.track_id, knowledge_key: payload.knowledge_key, mode: payload.mode };
+}
+
 function toTutorInputAcceptedResponse(payload: unknown): TutorInputAcceptedResponse | null {
   if (
-    !isRecord(payload) || !hasExactKeys(payload, [
+    !isRecord(payload) || !hasRequiredAndOptionalKeys(payload, [
       "conversation_id", "run_id", "input_revision", "message_id", "event_cursor", "dispatch_job_id", "merged", "input_replayed",
       "idempotent_replayed", "run", "process", "replaced_run_id", "replaced_process", "context_references",
-    ]) || !isString(payload.conversation_id) || !isString(payload.run_id) ||
+    ], ["teaching_scope"]) || !isString(payload.conversation_id) || !isString(payload.run_id) ||
     !isPositiveSafeInteger(payload.input_revision) || !isString(payload.message_id) ||
     !isNonNegativeSafeInteger(payload.event_cursor) || !isNullableString(payload.dispatch_job_id) || typeof payload.merged !== "boolean" ||
     typeof payload.input_replayed !== "boolean" || typeof payload.idempotent_replayed !== "boolean"
   ) return null;
+  const teachingScope = payload.teaching_scope === undefined ? undefined : toInputTeachingScope(payload.teaching_scope);
+  if (teachingScope === null) return null;
   const run = toTutorRunState(payload.run);
   const process = payload.process === null ? null : toTutorPublicProcess(payload.process);
   const replacedProcess = payload.replaced_process === null ? null : toTutorPublicProcess(payload.replaced_process);
@@ -2087,6 +2132,7 @@ function toTutorInputAcceptedResponse(payload: unknown): TutorInputAcceptedRespo
     input_replayed: payload.input_replayed, idempotent_replayed: payload.idempotent_replayed, run, process,
     replaced_run_id: payload.replaced_run_id, replaced_process: replacedProcess,
     context_references: contextReferences,
+    ...(teachingScope ? { teaching_scope: teachingScope } : {}),
   };
 }
 
@@ -2188,13 +2234,14 @@ function toTutorControlledTurnResponse(
   requireQueueItem: boolean,
 ): { turn: TutorControlledTurnResponse; queue_item: TutorQueuedInput | null } | null {
   if (!isRecord(payload) || !isPositiveSafeInteger(payload.control_version)) return null;
-  const allowedExtra = new Set(["control_version", ...(requireQueueItem ? ["queue_item"] : [])]);
+  const allowedExtra = new Set(["control_version", "teaching_scope", ...(requireQueueItem ? ["queue_item"] : [])]);
   const turnKeys = [
     "conversation_id", "run_id", "input_revision", "message_id", "event_cursor", "dispatch_job_id", "merged",
     "input_replayed", "idempotent_replayed", "run", "process", "replaced_run_id", "replaced_process", "context_references",
   ];
   if (Object.keys(payload).some((key) => !turnKeys.includes(key) && !allowedExtra.has(key))) return null;
   const projected = Object.fromEntries(turnKeys.map((key) => [key, payload[key]]));
+  if ("teaching_scope" in payload) projected.teaching_scope = payload.teaching_scope;
   const accepted = toTutorInputAcceptedResponse(projected);
   const queueItem = requireQueueItem ? toTutorQueuedInput(payload.queue_item) : null;
   if (!accepted || (requireQueueItem && !queueItem)) return null;

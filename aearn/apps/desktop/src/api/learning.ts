@@ -1653,7 +1653,9 @@ export function toLearningPlanNode(payload: unknown): LearningPlanNode | null {
     !isNonNegativeSafeInteger(payload.order_index) ||
     typeof payload.is_core !== "boolean" ||
     !isStringArray(payload.prerequisite_keys) ||
-    !isStringArray(payload.required_capabilities)
+    !isStringArray(payload.required_capabilities) ||
+    (payload.catalog_knowledge_key !== undefined && payload.catalog_knowledge_key !== null &&
+      (typeof payload.catalog_knowledge_key !== "string" || !/^[a-z0-9][a-z0-9._:-]{0,159}$/.test(payload.catalog_knowledge_key)))
   ) return null;
   return payload as LearningPlanNode;
 }

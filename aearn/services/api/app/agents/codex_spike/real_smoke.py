@@ -1,4 +1,4 @@
-"""Explicitly approved real deepseek-v4-flash Responses smoke."""
+"""Explicitly approved real deepseek-flash Responses smoke."""
 from __future__ import annotations
 
 import asyncio
@@ -46,7 +46,7 @@ class RealDeepSeekSmokeResult:
 async def run_real_deepseek_smoke(*, approved: bool, root: Path, base_url: str, executable: str | Path | None = None, total_timeout_s: float = 90.0) -> RealDeepSeekSmokeResult:
     """Run one isolated turn only after the caller supplies explicit approval."""
     if not approved:
-        raise PermissionError("real deepseek-v4-flash smoke requires explicit approval")
+        raise PermissionError("real deepseek-flash smoke requires explicit approval")
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         raise RealDeepSeekSmokeError("DEEPSEEK_API_KEY is not present in the process environment")

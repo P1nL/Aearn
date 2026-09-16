@@ -461,6 +461,19 @@ class TutorContextBuilder:
         section: TutorContextSection,
         source: TutorContextSource,
     ) -> tuple[str, bool]:
+        if section is TutorContextSection.REQUIRED_FACTS and source.source_id.startswith("teaching-artifact-evidence:"):
+            # This server-authenticated task evidence is not a working summary.
+            # Summary sanitization can trim ordered JSON pieces, drop options
+            # after index 12, or paraphrase a learner's answer. Keep exact data,
+            # but fail closed if the existing secret redactor would change it.
+            if not isinstance(source.content, Mapping) or source.content.get("kind") not in {"knowledge_check_grounding", "knowledge_check_grounding_part"}:
+                raise TutorContextError("TUTOR_REQUIRED_FACTS_UNREPRESENTABLE")
+            redacted = _redact_harness_sensitive_fields(redact_value(source.content))
+            serialized = json.dumps(source.content, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            safe_serialized = json.dumps(redacted, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            if serialized != safe_serialized:
+                raise TutorContextError("TUTOR_REQUIRED_FACTS_PROTECTED")
+            return serialized, len(serialized) > self._config.max_source_characters
         safe_value = _sanitize_source_value(
             section=section,
             value=source.content,

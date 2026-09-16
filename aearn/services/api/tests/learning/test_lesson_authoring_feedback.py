@@ -50,7 +50,7 @@ def test_primary_adapter_preserves_safe_invalid_metadata(kind, repairable):
             raise LLMInvalidResponseError("SECRET RAW PROVIDER BODY", kind=kind, usage=usage, model="safe-model")
     # Explicit real fields keep this injected-client test independent of LLM_TYPE.
     settings = Settings(
-        llm_type="deepseek", deepseek_model="deepseek-v4-flash",
+        llm_type="deepseek", deepseek_model="deepseek-flash",
         deepseek_api_key="fake-test-key", deepseek_base_url="https://provider.invalid",
     )
     from app.services.learning.lesson_authoring import LessonAuthoringEvidence
@@ -125,7 +125,7 @@ def test_private_diagnostic_v2_is_closed_and_preserves_unknown_usage():
         validate_attempt_diagnostic({**value, "provider_response": {**value["provider_response"], "raw_body": "secret"}})
 
 
-@pytest.mark.parametrize("model,expected", [("deepseek-v4-flash", "disabled"), ("deepseek-chat", None)])
+@pytest.mark.parametrize("model,expected", [("deepseek-flash", "disabled"), ("deepseek-chat", None)])
 def test_lesson_thinking_override_is_scoped_to_exact_responses_model(model, expected):
     from types import SimpleNamespace
     from app.services.learning.lesson_authoring import LessonAuthoringEvidence
@@ -152,7 +152,7 @@ def test_incomplete_diagnostic_cause_controls_lesson_repair(reason, repairable):
         def complete_json(self, *args, **kwargs):
             raise LLMInvalidResponseError("PRIVATE BODY", kind=LLMInvalidResponseKind.RESPONSE_INCOMPLETE,
                                           response_diagnostics=metadata)
-    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash",
+    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-flash",
                         deepseek_api_key="test", deepseek_base_url="https://provider.invalid")
     evidence = LessonAuthoringEvidence("S1", "Python", "Python", "official", "3", "rolling", (), "Evidence")
     request = LessonAuthoringRequest("standard", "python", "python.variables", "Variables", "Learn", "beginner", (), "unseen", 0, (evidence,))
@@ -171,7 +171,7 @@ def test_nonterminal_envelope_never_consumes_content_repair(status):
         def complete_json(self, *args, **kwargs):
             raise LLMInvalidResponseError("PRIVATE BODY", kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
                                           response_diagnostics=metadata)
-    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-v4-flash",
+    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-flash",
                         deepseek_api_key="test", deepseek_base_url="https://provider.invalid")
     evidence = LessonAuthoringEvidence("S1", "Python", "Python", "official", "3", "rolling", (), "Evidence")
     request = LessonAuthoringRequest("standard", "python", "python.variables", "Variables", "Learn", "beginner", (), "unseen", 0, (evidence,))

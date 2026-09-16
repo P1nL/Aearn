@@ -36,6 +36,10 @@ EXPECTED_SCHEMA_FRAGMENT_NAMES = (
     "180_knowledge_checks.sql",
     "190_model_review_artifacts.sql",
     "200_sql_learning_workspace.sql",
+    "210_tutor_branch_supersession.sql",
+    "220_plan_catalog_knowledge_scope.sql",
+    "230_artifact_authority_supersession.sql",
+    "240_deepseek_flash_runtime_cutover.sql",
 )
 
 
@@ -60,7 +64,11 @@ def test_schema_combined_view_and_apply_order_match_the_manifest() -> None:
     assert tuple(fragment.name for fragment in fragments) == EXPECTED_SCHEMA_FRAGMENT_NAMES
     assert load_schema_text() == "".join(fragment.sql for fragment in fragments)
     assert fragments[0].sql.startswith("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    assert "Child 09 conversation-native SQL workspace" in fragments[-1].sql
+    assert "Child 09 conversation-native SQL workspace" in fragments[-5].sql
+    assert "tutor_branch_authority_replacement_valid" in fragments[-4].sql
+    assert "tutor_plan_catalog_knowledge_key" in fragments[-3].sql
+    assert "tutor_artifact_supersession_successor" in fragments[-2].sql
+    assert "deepseek-flash" in fragments[-1].sql
 
     recorder = RecordingConnection()
     apply_schema(cast(Connection[dict[str, object]], recorder))

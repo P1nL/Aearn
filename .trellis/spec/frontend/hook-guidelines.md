@@ -236,3 +236,7 @@ setDisplayed(graphemes.slice(0, visibleCount + 1).join(""));
 - `tutor_runtime_item_stream_v1.chunk_sequence` is a projection sequence. A single append may represent many private source deltas; Desktop never expects one event per provider delta.
 - Source range/count/hash are private receipt fields and must be rejected if they appear in public SSE/snapshot payloads.
 - Duplicate/older projection events remain idempotent; projection gaps still trigger `onResetRequired` and fresh snapshot without changing the model turn outcome.
+
+## Teaching authority open failure
+
+Latch the attempted authority identity across failed open requests. Do not clear the identity on failure: parent/child authority callbacks run again after error-state renders and otherwise cause an unbounded POST/409 loop. Permit a different authoritative version to open, and keep the explicit user refresh action available for the same version. A conflict must not force server state or automatic model retries.

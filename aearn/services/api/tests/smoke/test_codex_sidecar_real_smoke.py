@@ -24,7 +24,7 @@ async def test_real_deepseek_v4_flash_tool_repair_smoke(tmp_path: Path) -> None:
         pytest.fail("Codex executable is required after approval")
     result = await run_real_deepseek_smoke(approved=True, root=tmp_path / "real-smoke", base_url=base_url, executable=executable)
     assert result.status == "completed"
-    assert result.model == "deepseek-v4-flash"
+    assert result.model == "deepseek-flash"
     assert result.model_provider == "aearn_deepseek"
     assert result.endpoint.endswith("/responses")
     assert result.tool_attempts == (1, 2)

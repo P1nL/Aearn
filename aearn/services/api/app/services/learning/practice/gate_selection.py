@@ -242,7 +242,7 @@ def _knowledge_binding_is_compatible(row: Mapping[str, object]) -> bool:
         and str(row.get("item_purpose") or "")
         == LearningItemPurpose.KNOWLEDGE_CHECK.value
         and str(row.get("item_knowledge_key") or "")
-        == str(row.get("scope_knowledge_key") or "")
+        == _scope_catalog_knowledge_key(row)
         and str(row.get("item_language_id") or "")
         == str(row.get("scope_language_id") or "")
         and _capabilities(row.get("item_capabilities_json"))
@@ -279,6 +279,11 @@ def _model_review_binding_is_compatible(row: Mapping[str, object]) -> bool:
         and str(row.get("execution_requirement") or "")
         == ExecutionRequirement.FORBIDDEN.value
     )
+
+
+def _scope_catalog_knowledge_key(row: Mapping[str, object]) -> str:
+    catalog_key = row.get("scope_catalog_knowledge_key")
+    return str(catalog_key) if catalog_key is not None else str(row.get("scope_knowledge_key") or "")
 
 
 def _base_scope_is_compatible(row: Mapping[str, object]) -> bool:

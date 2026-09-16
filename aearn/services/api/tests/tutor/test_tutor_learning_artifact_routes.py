@@ -556,11 +556,28 @@ def test_learning_artifact_setting_defaults_off_and_reads_remain_available(
     assert row == {"version": 1, "state": "active"}
 
 
+@pytest.mark.parametrize("early_overflow", [False, True], ids=["provider-unavailable", "required-overflow"])
 def test_terminal_attempt_read_projects_one_result_and_dispatches_one_evaluation(
     monkeypatch: pytest.MonkeyPatch,
     artifact_route_fixture: _ArtifactRouteFixture,
+    early_overflow: bool,
 ) -> None:
     _configure_artifact_routes(monkeypatch, enabled=True)
+    # Before irrelevant example deduplication, measured required=4,152 and
+    # total=4,822 tokens. This fallback test explicitly uses an 8,192 input.
+    # Freeze the selected TEST capability at admission, not just dispatch.
+    # The 2,048-input variant deliberately exercises the real overflow gate.
+    settings = Settings(
+        llm_type="disabled",
+        tutor_learning_artifacts_enabled=True,
+        tutor_artifact_teaching_mode_enabled=True,
+        tutor_thread_turn_v2_enabled=True,
+        tutor_default_context_window_tokens=3_248 if early_overflow else 9_392,
+        tutor_default_output_reserve_tokens=1_200,
+        tutor_context_protocol_reserve_tokens=128,
+        tutor_context_safety_margin_tokens=256,
+    )
+    monkeypatch.setattr(artifact_routes, "get_settings", lambda: settings)
     dispatched_jobs: list[tuple[str, str]] = []
 
     def record_dispatch(job_id: str, *, runtime_kind: str) -> None:
@@ -634,15 +651,7 @@ def test_terminal_attempt_read_projects_one_result_and_dispatches_one_evaluation
             "SELECT count(*)::int AS count FROM tutor_runs WHERE user_id = %s",
             (artifact_route_fixture.user_id,),
         ).fetchone() == {"count": 1}
-        context = TeachingSessionRepository(
-            conn,
-            settings=Settings(
-                llm_type="disabled",
-                tutor_learning_artifacts_enabled=True,
-                tutor_artifact_teaching_mode_enabled=True,
-                tutor_thread_turn_v2_enabled=True,
-            ),
-        ).teaching_context(
+        context = TeachingSessionRepository(conn, settings=settings).teaching_context(
             user_id=artifact_route_fixture.user_id,
             run_id=run_id,
         )
@@ -688,17 +697,34 @@ def test_terminal_attempt_read_projects_one_result_and_dispatches_one_evaluation
 
     provider = SequenceTutorProvider([TutorProviderResult.model_unavailable()])
     evaluation = TutorInteractiveRunDispatcher(
-        settings=Settings(
-            llm_type="disabled",
-            tutor_learning_artifacts_enabled=True,
-            tutor_artifact_teaching_mode_enabled=True,
-            tutor_thread_turn_v2_enabled=True,
-        ),
+        settings=settings,
         provider_factory=lambda _settings: provider,
     ).dispatch(
         user_id=artifact_route_fixture.user_id,
         run_id=run_id,
     )
+    if early_overflow:
+        assert evaluation.terminal_outcome is TutorTerminalOutcome.FAILED
+        assert evaluation.diagnostic_code == "TUTOR_CONTEXT_REQUIRED_OVERFLOW"
+        assert evaluation.public_message is None
+        assert len(provider.calls) == 0
+        with connect() as conn:
+            assert conn.execute(
+                "SELECT terminal_outcome,terminal_diagnostic_code,model_call_count FROM tutor_runs WHERE id=%s",
+                (run_id,),
+            ).fetchone() == {
+                "terminal_outcome": "failed", "terminal_diagnostic_code": "TUTOR_CONTEXT_REQUIRED_OVERFLOW",
+                "model_call_count": 0,
+            }
+            assert conn.execute(
+                "SELECT count(*)::int AS count FROM tutor_messages WHERE conversation_id=%s AND role='tutor'",
+                (artifact_route_fixture.conversation_id,),
+            ).fetchone() == {"count": 0}
+            assert conn.execute(
+                "SELECT count(*)::int AS count FROM tutor_conversation_events WHERE conversation_id=%s AND item_id=%s AND kind='item_added'",
+                (artifact_route_fixture.conversation_id, result_artifacts[0]["id"]),
+            ).fetchone() == {"count": 0}
+        return
     assert evaluation.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
     assert evaluation.public_message == (
         "**运行评价**\n\n"

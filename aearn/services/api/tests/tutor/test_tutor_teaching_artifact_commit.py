@@ -198,9 +198,14 @@ def _advertised_artifact_handles(
     ]
 
 
-def _artifact_settings() -> Settings:
+def _artifact_settings(*, input_limit: int = 12_288) -> Settings:
+    # This synthetic provider exercises commit/owner semantics, not the unknown
+    # provider's 4K fallback. Declare its finite capacity explicitly; separate
+    # overflow tests retain the small-capacity fail-closed contract.
     return Settings(
         llm_type="disabled",
+        tutor_default_context_window_tokens=input_limit + 4_096,
+        tutor_default_output_reserve_tokens=4_096,
         tutor_thread_turn_v2_enabled=True,
         tutor_learning_artifacts_enabled=True,
         tutor_artifact_teaching_mode_enabled=True,
@@ -1031,9 +1036,36 @@ def test_knowledge_check_receipts_replay_and_evaluation_continuation_are_authori
             run_id=dispatched.run_id,
         )
         assert context is not None
+        assert context["fresh_knowledge_check_evidence"] is True
         candidates = context["artifact_candidates"]
         assert isinstance(candidates, dict)
         assert [item["handle"] for item in candidates["candidates"]] == [transfer_handle]
+        # Evaluation feedback must see this exact question and submitted action,
+        # not infer a misconception from the lesson objective or generic summary.
+        grounding = context["artifact_evidence"]
+        assert len(grounding) == 3
+        question, scored_submission, successor_question = grounding
+        assert question["prompt_markdown"] == answered.artifact.presentation.prompt_markdown
+        assert question["source_handle"] == f"artifact:{artifact_id}"
+        assert scored_submission["receipt_id"] == response["id"]
+        assert scored_submission["learner_submission"] == {"kind": "direct_answer", "submitted_answer": False}
+        assert scored_submission["outcome"] == response["outcome"]
+        assert scored_submission["independent_mastery_eligible"] is False
+        assert successor_question["component"] == "candidate_question"
+        assert successor_question["source_handle"] == transfer_handle
+        assert "The assignment binds 42." not in json.dumps(grounding)
+
+        from app.services.tutor.interactive import PostgresTutorLearningContextLoader, PostgresTutorContextLoader
+        from app.services.tutor.learner_state import TutorLearnerStateRepository
+
+        snapshot = PostgresTutorRepository(conn).load_snapshot(run_id=dispatched.run_id, user_id=str(scope["user_id"]))
+        context_input = PostgresTutorLearningContextLoader(
+            conn=conn,
+            base_loader=PostgresTutorContextLoader(conn=conn, learner_state=TutorLearnerStateRepository(conn)),
+            settings=settings,
+        ).load_context(snapshot, input_revision=0)
+        evidence_sources = [source for source in context_input.required_facts if source.source_id.startswith("teaching-artifact-evidence:")]
+        assert [source.content for source in evidence_sources] == grounding
         assert conn.execute(
             "SELECT count(*)::int AS count FROM tutor_mastery_evidence WHERE user_id=%s",
             (scope["user_id"],),

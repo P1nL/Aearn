@@ -34,7 +34,7 @@ def _request():
 
 def _primary(client):
     settings = Settings(
-        llm_type="deepseek", deepseek_model="deepseek-v4-flash",
+        llm_type="deepseek", deepseek_model="deepseek-flash",
         deepseek_api_key="offline-test-key", deepseek_base_url="https://provider.invalid",
     )
     return authoring.PrimaryLessonDocumentAuthor(settings, client=client)

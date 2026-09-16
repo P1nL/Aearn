@@ -407,3 +407,69 @@ async def test_wrong_order_never_gets_a_second_repair(repairs: int) -> None:
     assert registry.direction_protocol_invalid
     assert registry.repair_count == repairs
     assert registry.planning_direction_action is None
+
+
+@pytest.mark.asyncio
+async def test_direction_intake_allows_five_bounded_repair_calls(monkeypatch) -> None:
+    service = FakeService(
+        _result(
+            LearningPlanToolStatus.AWAITING_USER,
+            "planning_facts_missing",
+            data=_awaiting_data("language_id"),
+        ),
+        _result(LearningPlanToolStatus.COMPLETED, "unused"),
+    )
+    original_read_context = service.read_context
+    direction_attempts = 0
+
+    def repair_then_accept(tool_input=None):  # type: ignore[no-untyped-def]
+        nonlocal direction_attempts
+        if tool_input is not None and tool_input.direction_action is not None:
+            direction_attempts += 1
+            if direction_attempts <= 5:
+                return _result(
+                    LearningPlanToolStatus.REPAIRABLE_INVALID,
+                    "planning_language_hint_invalid",
+                    data=_awaiting_data("language_id"),
+                )
+        return original_read_context(tool_input)
+
+    monkeypatch.setattr(service, "read_context", repair_then_accept)
+    registry = LearningPlanRuntimeToolRegistry(service)
+    registry.configure_direction_intake()
+
+    assert (await registry.invoke(_call(PLANNING_CONTEXT_TOOL_NAME, {}))).success
+    for expected_remaining in (4, 3, 2, 1, 0):
+        repair = await registry.invoke(
+            _call(
+                PLANNING_CONTEXT_TOOL_NAME,
+                {"direction_action": "continue_mainline"},
+            )
+        )
+        payload = json.loads(repair.content)
+        assert repair.success
+        assert payload["status"] == "repairable_invalid"
+        assert payload["remaining_repair_attempts"] == expected_remaining
+        assert not registry.direction_protocol_invalid
+
+    accepted = await registry.invoke(
+        _call(
+            PLANNING_CONTEXT_TOOL_NAME,
+            {"direction_action": "continue_mainline"},
+        )
+    )
+    assert accepted.success
+    assert registry.call_count == 7
+    assert registry.repair_count == 5
+    assert registry.planning_direction_action is not None
+
+
+def test_intake_timeout_is_configurable_and_bounded(monkeypatch):
+    from app.core.config import Settings
+    from pydantic import ValidationError
+    monkeypatch.delenv("TUTOR_CODEX_INTAKE_TIMEOUT_SECONDS", raising=False)
+    assert Settings().tutor_codex_intake_timeout_seconds == 180
+    monkeypatch.setenv("TUTOR_CODEX_INTAKE_TIMEOUT_SECONDS", "240")
+    assert Settings().tutor_codex_intake_timeout_seconds == 240
+    with pytest.raises(ValidationError):
+        Settings(tutor_codex_intake_timeout_seconds=601)

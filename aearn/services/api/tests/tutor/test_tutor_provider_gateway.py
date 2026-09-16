@@ -303,7 +303,7 @@ def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without
         return {
             "type": "response.completed",
             "response": {
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "output": [
                     {
                         "type": "message",
@@ -324,7 +324,7 @@ def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without
         llm_type="deepseek",
         deepseek_api_key="test-key",
         deepseek_base_url="https://api.deepseek.com/v1",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
     )
     gateway = PrimaryTutorProviderGateway(
         settings=settings,
@@ -339,7 +339,7 @@ def test_primary_gateway_uses_exact_deepseek_v4_flash_responses_contract_without
     assert captured["url"] == "https://api.deepseek.com/responses"
     payload = captured["payload"]
     assert isinstance(payload, Mapping)
-    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["model"] == "deepseek-flash"
     assert payload["stream"] is True
     assert payload["text"] == {"format": {"type": "json_object"}}
     assert payload["max_output_tokens"] == 16_384
@@ -384,7 +384,7 @@ def test_deepseek_repair_disables_thinking_only_for_the_replacement_attempt() ->
         return {
             "type": "response.completed",
             "response": {
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "output": [
                     {
                         "type": "message",
@@ -403,7 +403,7 @@ def test_deepseek_repair_disables_thinking_only_for_the_replacement_attempt() ->
         llm_type="deepseek",
         deepseek_api_key="test-key",
         deepseek_base_url="https://api.deepseek.com/v1",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
     )
     result = PrimaryTutorProviderGateway(
         settings=settings,
@@ -435,7 +435,7 @@ def test_visible_thinking_complete_is_emitted_only_after_decision_validation() -
         return {
             "type": "response.completed",
             "response": {
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "output": [
                     {
                         "type": "message",
@@ -454,7 +454,7 @@ def test_visible_thinking_complete_is_emitted_only_after_decision_validation() -
         llm_type="deepseek",
         deepseek_api_key="test-key",
         deepseek_base_url="https://api.deepseek.com/v1",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
     )
     sink = RecordingThinkingSink()
     result = PrimaryTutorProviderGateway(
@@ -488,7 +488,7 @@ def test_deepseek_responses_json_schema_requires_explicit_verified_gateway_opt_i
         return {
             "type": "response.completed",
             "response": {
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "output": [
                     {
                         "type": "message",
@@ -507,7 +507,7 @@ def test_deepseek_responses_json_schema_requires_explicit_verified_gateway_opt_i
         llm_type="deepseek",
         deepseek_api_key="test-key",
         deepseek_base_url="https://verified-gateway.example/v1",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
         tutor_deepseek_responses_json_schema_enabled=True,
     )
     result = PrimaryTutorProviderGateway(
@@ -527,7 +527,7 @@ def test_deepseek_responses_json_schema_requires_explicit_verified_gateway_opt_i
 def test_deepseek_v4_flash_token_limits_reserve_output_capacity_within_the_context_window() -> None:
     settings = Settings(
         llm_type="deepseek",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
         tutor_deepseek_v4_flash_context_window_tokens=1_000_000,
         tutor_deepseek_v4_flash_input_limit_tokens=131_072,
         tutor_deepseek_v4_flash_max_output_tokens=61_440,
@@ -543,18 +543,18 @@ def test_deepseek_v4_flash_token_limits_reserve_output_capacity_within_the_conte
     with pytest.raises(ValueError, match="must leave room within the context window"):
         Settings(
             llm_type="deepseek",
-            deepseek_model="deepseek-v4-flash",
+            deepseek_model="deepseek-flash",
             tutor_deepseek_v4_flash_context_window_tokens=61_440,
             tutor_deepseek_v4_flash_max_output_tokens=61_440,
         )
 
-    with pytest.raises(ValueError, match="configured DeepSeek V4 Flash maximum"):
+    with pytest.raises(ValueError, match="configured DeepSeek Flash maximum"):
         PrimaryTutorProviderGateway(settings=settings, max_output_tokens=61_441)
 
     with pytest.raises(ValueError, match="request limits exceed"):
         Settings(
             llm_type="deepseek",
-            deepseek_model="deepseek-v4-flash",
+            deepseek_model="deepseek-flash",
             tutor_deepseek_v4_flash_context_window_tokens=192_511,
             tutor_deepseek_v4_flash_input_limit_tokens=131_072,
             tutor_deepseek_v4_flash_max_output_tokens=61_440,
@@ -686,7 +686,7 @@ def test_primary_gateway_classifies_deepseek_responses_terminal_shapes_without_r
         llm_type="deepseek",
         deepseek_api_key="test-key",
         deepseek_base_url="https://provider.example",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
     )
     gateway = PrimaryTutorProviderGateway(
         settings=settings,
@@ -788,7 +788,7 @@ def test_deepseek_responses_sse_visible_text_delta_finishes_as_completed_output(
                     "type": "response.completed",
                     "response": {
                         "id": "resp-safe",
-                        "model": "deepseek-v4-flash",
+                        "model": "deepseek-flash",
                         "status": "completed",
                         "output": [
                             {
@@ -881,7 +881,7 @@ def test_primary_gateway_does_not_retry_or_fallback_after_selected_provider_requ
         llm_type="deepseek",
         deepseek_api_key="test-key",
         deepseek_base_url="https://api.deepseek.com/v1",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
     )
     gateway = PrimaryTutorProviderGateway(
         settings=settings,
@@ -1523,7 +1523,7 @@ def test_primary_gateway_maps_selected_provider_error_without_cross_provider_fal
         llm_type="deepseek",
         deepseek_api_key="test-key",
         deepseek_base_url="https://api.deepseek.com",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
     )
     gateway = PrimaryTutorProviderGateway(settings=settings, client=fake)
 
@@ -1892,7 +1892,7 @@ def test_gateway_preserves_completed_envelope_usage_when_visible_content_is_reje
             "type": "response.failed",
             "response": {
                 "status": "failed",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "usage": {
                     "input_tokens": 60,
                     "input_tokens_details": {"cached_tokens": 50},
@@ -1907,7 +1907,7 @@ def test_gateway_preserves_completed_envelope_usage_when_visible_content_is_reje
         llm_type="deepseek",
         deepseek_api_key="test-key",
         deepseek_base_url="https://provider.example",
-        deepseek_model="deepseek-v4-flash",
+        deepseek_model="deepseek-flash",
     )
     result = PrimaryTutorProviderGateway(
         settings=settings,

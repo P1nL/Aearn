@@ -249,3 +249,57 @@ def test_planning_preflight_is_unaffected(monkeypatch):  # type: ignore[no-untyp
         user_id=str(uuid4()), conversation_id=None,
         learning_scope=LearningScope(scope_kind=LearningScopeKind.PLAN_DRAFTING),
     )
+
+
+def _failed_teaching_input(conn):
+    data = _fixture(conn)
+    _open(conn, data)
+    service = TutorPublicService(conn)
+    accepted = _accept(service, data)
+    conn.execute("UPDATE tutor_runs SET status='model_unavailable', terminal_outcome='model_unavailable', terminal_at=now() WHERE id=%s", (accepted["run_id"],))
+    control = conn.execute("SELECT control_version FROM tutor_conversations WHERE id=%s", (data["conversation_id"],)).fetchone()["control_version"]
+    return data, service, accepted, control
+
+
+def test_retry_preserves_teaching_stimulus_scope_and_replays(admission_conn):
+    data, service, accepted, control = _failed_teaching_input(admission_conn)
+    args = dict(user_id=str(data["user_id"]), conversation_id=str(data["conversation_id"]),
+                turn_id=accepted["run_id"], expected_control_version=control, idempotency_key="bound-retry")
+    retried = service.retry_turn(**args)
+    assert retried["run_id"] != accepted["run_id"]
+    for key in ("session_id", "checkpoint_id", "session_version", "track_id", "knowledge_key", "mode"):
+        assert retried["teaching_scope"][key] == accepted["teaching_scope"][key]
+    assert retried["teaching_scope"]["stimulus_id"] != accepted["teaching_scope"]["stimulus_id"]
+    row = admission_conn.execute("SELECT message_id,input_revision FROM tutor_run_stimulus_events WHERE run_id=%s", (retried["run_id"],)).fetchone()
+    assert str(row["message_id"]) == retried["message_id"]
+    assert row["input_revision"] == retried["input_revision"]
+    before = _counts(admission_conn)
+    replay = service.retry_turn(**args)
+    assert replay["idempotent_replayed"] is True
+    assert replay["teaching_scope"] == retried["teaching_scope"]
+    assert _counts(admission_conn) == before
+
+
+def test_stale_teaching_retry_rejected_without_new_run(admission_conn):
+    data, service, accepted, control = _failed_teaching_input(admission_conn)
+    admission_conn.execute("UPDATE tutor_teaching_sessions SET version=version+1 WHERE id=%s", (accepted["teaching_scope"]["session_id"],))
+    before = _counts(admission_conn)
+    with pytest.raises(TutorPublicApiError) as caught:
+        service.retry_turn(user_id=str(data["user_id"]), conversation_id=str(data["conversation_id"]),
+                           turn_id=accepted["run_id"], expected_control_version=control, idempotency_key="stale-retry")
+    assert caught.value.code == "TEACHING_NOT_READY"
+    assert _counts(admission_conn) == before
+
+
+def test_retry_binding_failure_rolls_back_new_run_and_control(admission_conn, monkeypatch):
+    data, service, accepted, control = _failed_teaching_input(admission_conn)
+    before = _counts(admission_conn)
+    def fail_binding(**kwargs):
+        raise TeachingSessionConflict("injected bind conflict")
+    monkeypatch.setattr(service._teaching_sessions, "bind_learner_message_run", fail_binding)
+    with pytest.raises(TutorPublicApiError) as caught:
+        service.retry_turn(user_id=str(data["user_id"]), conversation_id=str(data["conversation_id"]),
+                           turn_id=accepted["run_id"], expected_control_version=control, idempotency_key="rollback-retry")
+    assert caught.value.code == "TEACHING_NOT_READY"
+    assert _counts(admission_conn) == before
+    assert admission_conn.execute("SELECT control_version FROM tutor_conversations WHERE id=%s", (data["conversation_id"],)).fetchone()["control_version"] == control

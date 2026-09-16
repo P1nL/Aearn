@@ -793,11 +793,17 @@ class RunPersistenceMixin(PersistenceMixin):
                 result=result,
                 created_at=checkpoint.created_at,
             )
-            self._publish_result_evaluation_artifact_locked(
-                run=run,
-                terminal_message_id=terminal_message_id,
-                occurred_at=checkpoint.created_at,
-            )
+            # A context/provider preflight failure can legitimately have no
+            # evaluation message. Preserve its original terminal diagnosis;
+            # do not turn it into a false authority conflict or publish a
+            # result without evaluation. Successful completion still requires
+            # the publisher's message-first invariant.
+            if terminal_message_id is not None or result.terminal_outcome is TutorTerminalOutcome.COMPLETED:
+                self._publish_result_evaluation_artifact_locked(
+                    run=run,
+                    terminal_message_id=terminal_message_id,
+                    occurred_at=checkpoint.created_at,
+                )
             if teaching_commit is not None and terminal_message_id is None:
                 raise TutorTerminalStateConflict(
                     "teaching step did not produce its required Tutor message"

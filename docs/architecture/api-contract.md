@@ -410,6 +410,18 @@ version；冲突返回 `409 LEARNING_PLAN_VERSION_CONFLICT` 或
 `LEARNING_PLAN_ACTIVATION_INVALID`。计划结构的输入错误返回统一 validation envelope；
 track root 的 language/goal/target 不一致返回 `LEARNING_PLAN_INVALID`。
 
+### 2026-09-13：路线节点与内容目录的显式映射
+
+节点可携带 `catalog_knowledge_key: string | null`：`knowledge_key` 仍是路线、
+prerequisite、progress、Gate binding、Artifact 与 Attempt 的节点身份；新字段只用于
+Lesson 检索及已发布 Learning Item 的内容查找。省略或 null 保留旧的直接匹配行为，
+不加入 legacy canonical payload，因此不改变旧计划 hash。显式映射必须是稳定 key，
+携带非空 `required_capabilities`，并命中同语言、能力兼容的最新 publication 状态为
+published 的目录内容；目录不可用时不得放行显式映射。计划生成时省略的能力默认取
+规范语言 ID，不得凭空生成 `python.core` 一类能力。既有计划需正常 proposal/activation，
+不得原地改写 frozen plan/session；只有映射或能力变化时 impact 也必须报告
+`teaching_scope_changed`，但不抹除同节点的历史进度。此字段不保证每个节点已有独立题库覆盖。
+
 Track public projection 不返回 `plan_json`、mastery evidence body、source receipt hash、
 provider、image lock fingerprint 或 executor health detail。`execution_tier` 只能是
 `teaching_local | container_verified | static_only | unavailable`：development 可声明
@@ -728,6 +740,19 @@ Snapshot/history 为未产生既有 dead-dispatch/runtime error 的失败 Harnes
 
 ## 2026-08-23：内部 teaching domain event 与 summary context
 
+### 2026-09-15：Knowledge Check 的精确任务上下文
+
+出题阶段为已授权、当前 published 的 KC candidate 提供精确公开题干和选项；
+`knowledge_check_evaluation` 还必须提供同 Artifact/item/session/track/node 的不可变
+提交与评分回执。它们进入内部 `teaching-artifact-evidence:` REQUIRED_FACTS，
+不进入 public Artifact response/export，不包含私有答案、rubric、未展示 Hint 或私有解释。
+题干/提交文本是 untrusted task data，不是执行指令或课程完成授权。模型介绍必须与
+所选 candidate 的实际题目一致；反馈必须依据实际问题、作答、outcome/assistance，
+不能依据 Lesson 标题或旧总结猜测错误。长 JSON 只可完整分片，所有分片均为必需；
+保留每 source 1,200 字符、最多八个 required sources 与既有总 token budget。
+现有脱敏若会改变证据内容，则 `TUTOR_REQUIRED_FACTS_PROTECTED` 拒绝发送；
+缺失评价证据为 `TUTOR_KNOWLEDGE_CHECK_GROUNDING_INVALID`，不得静默退回泛化摘要。
+
 本轮不新增 public HTTP route。Gate、Review 与 Lesson migration 的现有 mutation 在 owner transaction 内完成业务 authority 后，调用统一 adapter 尝试 admission 一个 learner-safe `domain_event` Turn。没有 open teaching session、source version stale、重复 source 或竞争 foreground run 时，owner mutation 仍按自身 contract 完成；adapter 返回内部 ignored/replayed receipt，不把完整提交、rubric、provider body 或内部原因加入 public response。
 
 `domain_event` 仍是 exact-one stimulus，不创建 learner message、不使用 proactive origin。Gate completion coalesce 为一个 `progress_changed` Turn并保留 gate safe handle；非 completion Gate、Review finalization与 assignment migration分别使用 `gate_terminal | review_terminal | assignment_changed`。Free Reading 对普通 learner input 仍是 reactive-only；typed domain event 可以执行 bounded evidence/completion action，但不会隐式改变 session mode。
@@ -748,6 +773,12 @@ decision v3 的 learner interaction 是 strict closed union：`none + none + nul
 
 Artifact action、expected demo event、timer 与 background producer 只持久化 continuation intent。调度器按 learner message > explicit Artifact action > expected event > timer > background 选择一条 eligible intent；active foreground、pending learner input、active branch、Free Reading automatic intent 或 stale claim/authority 都不会创建 provider Turn。没有新增 timer-triggered HTTP provider route，SSE 仍只投影已提交的 conversation events。
 
+
+### 2026-09-13：Superseded branch history
+
+正常 `active/resolved` branch 继续返回严格的 `tutor_conversation_branch_v1`；仅权威退役返回 `tutor_conversation_branch_v2`：保留 V1 全部字段，`state=superseded`、`collapsed=true`、`resolved_at=null`，新增必填非空 `superseded_at`。退役不要求 disposition，已有 disposition 仅保留为历史；round 与 explicit items 不变。Artifact 的对应 summary 使用 `schema_version=tutor_artifact_branch_summary_v2` 加原 summary 字段，`state=superseded,collapsed=true`；active/resolved summary 的无 schema V1 shape 不变。
+
+升级 Desktop 同时接受这两个封闭 shape；V1 不可携带 superseded，V2 不可冒充 active/resolved。所有范围、counts、references、summary/group 一致性与额外字段拒绝规则保持。退役分支默认折叠，可只读展开历史，明确显示“教学会话已更新，此答疑分支已退役”，不能显示“已解决”或继续此分支的操作。旧严格客户端不兼容新增终态，需与 API 一起升级；不能靠未知状态 fallback 伪造兼容。snapshot 外层仍为 v5；未新增客户端关闭分支的 mutation API。
 
 ## 2026-09-01：Desktop Artifact detail/action 与 snapshot v4/v5 consumer contract
 

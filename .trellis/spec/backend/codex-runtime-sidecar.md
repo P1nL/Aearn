@@ -41,7 +41,7 @@ Environment keys:
 CODEX_RUNTIME_ENABLED=true
 CODEX_RUNTIME_BINARY_PATH=
 CODEX_RUNTIME_HOME=
-CODEX_RUNTIME_ALLOWED_VERSIONS=0.142.0-cometix
+CODEX_RUNTIME_ALLOWED_VERSIONS=0.153.4
 CODEX_RUNTIME_STARTUP_TIMEOUT_SECONDS=15
 CODEX_RUNTIME_REQUEST_TIMEOUT_SECONDS=15
 CODEX_RUNTIME_TURN_TIMEOUT_SECONDS=300
@@ -53,7 +53,7 @@ TUTOR_CODEX_RUNTIME_HEALTH_MAX_AGE_SECONDS=90
 
 Required behavior:
 
-- Use exact model `deepseek-v4-flash`, provider `aearn_deepseek`, and `wire_api = "responses"`.
+- Use exact model `deepseek-flash`, provider `aearn_deepseek`, and `wire_api = "responses"`.
 - Use an isolated Aearn Codex Home; never read or write the user's global `~/.codex` state.
 - Keep Codex JSON-RPC methods and wire item/status shapes inside the adapter.
 - Preserve a monotonic connection generation. Old thread handles cannot write after restart.
@@ -460,7 +460,7 @@ TutorRuntimeSelectionPolicy.select(scope_kind, inherited_runtime_kind,
 ### 3. Contracts
 
 - Only a brand-new `plan_drafting` conversation without a frozen Runtime may enter `codex_sidecar_v1`.
-- Exact admission requires feature enabled, `CODEX_RUNTIME_ENABLED=true`, a fresh `ready` row, generation >= 1, an allowlisted Runtime version, model `deepseek-v4-flash`, provider `aearn_deepseek`, and protocol `responses`.
+- Exact admission requires feature enabled, `CODEX_RUNTIME_ENABLED=true`, a fresh `ready` row, generation >= 1, an allowlisted Runtime version, model `deepseek-flash`, provider `aearn_deepseek`, and protocol `responses`.
 - Feature disabled routes new plan-drafting work to Harness. Feature enabled with missing, stale, unhealthy, or mismatched readiness fails closed with `TUTOR_RUNTIME_UNAVAILABLE`; general/track/proactive scopes remain Harness and unaffected.
 - One `TutorConversation` owns one persistent Codex App Server thread. Every fresh `TutorRun`—including a typed-request response—starts a new turn inside that same thread. The first interactive Runtime kind is inherited; Retry copies the failed root Runtime kind. Clients, models, queued metadata, and public DTOs cannot select or mutate it.
 - Harness and Codex workers claim the same durable job table with an exact Runtime filter. `TutorRuntimeDispatchRouter` reads only the immutable run snapshot; it never re-evaluates feature or health.
@@ -613,9 +613,9 @@ for projected in coalescer.push(source_event, now=clock()):
 
 ## Scenario: 1M physical context, 128K ordinary request input, 60K output, and 950K Codex compaction (2026-09-09)
 
-- Preserve the exact `deepseek-v4-flash` physical `model_context_window=1_000_000`. Ordinary `OpenAICompatibleClient` calls admit at most 131,072 input tokens and 61,440 generated-output tokens. Tutor's shared budget capability stores a 192,512 input-plus-output envelope for request planning only; it is not physical model metadata.
-- `OpenAICompatibleClient` explicitly serializes the 61,440 hard cap when an exact DeepSeek V4 Flash caller omits `max_tokens`, rejects a larger or non-positive request before transport, and preserves any smaller caller-owned budget. Tutor decisions (16,384), lesson authoring (12,000), model review (6,000), and adaptive exercise authoring (5,000) remain narrower policies.
-- Isolated Codex config writes `model_context_window=1000000`, `model_max_output_tokens=61440`, and `model_auto_compact_token_limit=950000` with total scope. Codex persistent App Server threads do not inherit the ordinary-client 128K per-request input limit. Since only 50K remains between 950K and 1M, the 60K value is a global maximum, not guaranteed remaining generation capacity at the trigger. Capability snapshots use `deepseek-v4-flash-responses-v2`; historical runs retain their persisted prior policy.
+- Preserve the exact `deepseek-flash` physical `model_context_window=1_000_000`. Ordinary `OpenAICompatibleClient` calls admit at most 131,072 input tokens and 61,440 generated-output tokens. Tutor's shared budget capability stores a 192,512 input-plus-output envelope for request planning only; it is not physical model metadata.
+- `OpenAICompatibleClient` explicitly serializes the 61,440 hard cap when an exact DeepSeek Flash caller omits `max_tokens`, rejects a larger or non-positive request before transport, and preserves any smaller caller-owned budget. Tutor decisions (16,384), lesson authoring (12,000), model review (6,000), and adaptive exercise authoring (5,000) remain narrower policies.
+- Isolated Codex 0.153.4 config writes `model_context_window=1000000` and `model_auto_compact_token_limit=950000` with total scope. `model_max_output_tokens` is no longer accepted by the 0.153.4 strict config schema, so Aearn retains and validates the 61,440 ceiling as server-owned request policy rather than emitting that removed Codex key. Codex persistent App Server threads do not inherit the ordinary-client 128K per-request input limit. Since only 50K remains between 950K and 1M, the 60K value is a global maximum, not guaranteed remaining generation capacity at the trigger. Capability snapshots use `deepseek-flash-responses-v2`; historical runs retain their persisted prior policy.
 
 ## Scenario: Bounded stop confirmation (2026-09-08)
 
@@ -640,6 +640,7 @@ Close the tool callback entry before cleanup. Issue a bounded `turn/interrupt`, 
 | Foreign thread/turn terminal | Ignore for stop confirmation |
 | Runtime shutdown failure | Future reuse rejected |
 | Wrong-order direction action | One repair within existing allowance; still one accepted action |
+| Repairable direction result | Permit at most five bounded repair calls; each repair grants one follow-up physical call, then fail closed |
 
 ### 5. Good / Base / Bad Cases
 
@@ -647,8 +648,15 @@ Good: confirm an exact interrupted terminal before reusing the thread. Base: nor
 
 ### 6. Tests Required
 
-`test_planning_runtime_limits.py` plus adapter, tool and cutover tests cover separate/legacy counters, calibration, ACK-only/foreign terminal, cleanup timeout/failure, cancellation, callback fencing, one repair and no budget-to-clarification conversion. Offline App Server tests do not prove upstream billing cancellation.
+`test_planning_runtime_limits.py` plus adapter, tool and cutover tests cover separate/legacy counters, calibration, ACK-only/foreign terminal, cleanup timeout/failure, cancellation, callback fencing, one wrong-order repair, five bounded direction repairs and no budget-to-clarification conversion. Offline App Server tests do not prove upstream billing cancellation.
 
 ### 7. Wrong vs Correct
 
 Wrong: budget exception -> synthesize terminal -> unregister. Correct: fence tools -> bounded interrupt -> exact terminal confirmation or owned runtime shutdown -> expose safe outcome.
+
+## 2026-09-09 intake terminal diagnostics
+
+`TUTOR_CODEX_INTAKE_TIMEOUT_SECONDS` defaults to 180 seconds, bounded to 45–600.
+The same setting feeds the intake tool wall budget, Runtime turn deadline and host wait (plus 15 seconds cleanup allowance).
+Only formal `turn/completed` ends a turn successfully; `item/completed` does not.
+`codex_terminal_notification` logs only accepted/filtered classification, item/turn category, hashed expected turn ID, generation, elapsed milliseconds and notification count. Never log notification payloads, text, reasoning, credentials or provider errors.

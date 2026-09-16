@@ -140,7 +140,7 @@ def main() -> int:
                 thread_id = f"thr_runtime_{thread_count}"
             else:
                 thread_id = str((request.get("params") or {}).get("threadId") or "")
-            reply(request, {"thread": {"id": thread_id, "sessionId": thread_id, "ephemeral": False}, "model": "deepseek-v4-flash", "modelProvider": "aearn_deepseek", "cwd": os.getcwd(), "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": {"type": "readOnly"}})
+            reply(request, {"thread": {"id": thread_id, "sessionId": thread_id, "ephemeral": False}, "model": "deepseek-flash", "modelProvider": "aearn_deepseek", "cwd": os.getcwd(), "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": {"type": "readOnly"}})
             send({"method": "thread/started", "params": {"thread": {"id": thread_id}}})
             continue
         if method == "turn/start":

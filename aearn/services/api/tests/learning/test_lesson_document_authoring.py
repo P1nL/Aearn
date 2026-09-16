@@ -301,7 +301,7 @@ def test_provider_invalid_metadata_reaches_receipt_and_repairs(authoring_scope):
     client = Client()
     # Override stored fields, not computed properties; the injected client stays offline.
     settings = get_settings().model_copy(update={
-        "llm_type": "deepseek", "deepseek_model": "deepseek-v4-flash",
+        "llm_type": "deepseek", "deepseek_model": "deepseek-flash",
         "deepseek_api_key": "test-only", "deepseek_base_url": "https://provider.invalid",
     })
     dispatch_lesson_authoring_run(run_id, author=PrimaryLessonDocumentAuthor(settings, client=client))

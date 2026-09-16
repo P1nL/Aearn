@@ -24,6 +24,7 @@ from app.services.learning.lesson_contracts import (
     LESSON_CONTENT_STANDARD_VERSION,
     LESSON_POLICY_VERSION,
     LessonDocumentDraft,
+    ExerciseGateBlock,
     LessonSourceSnapshot,
     calculate_lesson_impact,
     canonical_lesson_author_example,
@@ -35,6 +36,7 @@ from app.services.learning.lesson_contracts import (
     parse_lesson_document_candidate,
 )
 from app.services.learning.lesson_quality import LessonQualityError, LessonQualityReport, require_lesson_quality
+from app.services.learning.catalog_scope import resolve_catalog_knowledge_key
 from app.services.learning.lesson_authoring_feedback import (
     CONSTRAINTS, REPAIRABLE, LessonAuthorFeedback, LessonFeedbackIssue, attempt_diagnostic,
 )
@@ -150,7 +152,7 @@ class PrimaryLessonDocumentAuthor:
                 schema_name="lesson_document_v1",
                 thinking_mode="disabled" if (
                     self._settings.llm_provider_type == "deepseek"
-                    and self._settings.llm_model == "deepseek-v4-flash"
+                    and self._settings.llm_model == "deepseek-flash"
                 ) else None,
             )
         except LLMConfigurationError as exc:
@@ -218,7 +220,11 @@ def dispatch_lesson_authoring_run(
             scope = repository.read_scope(
                 user_id=running.user_id, track_id=running.track_id, knowledge_key=running.knowledge_key,
             )
-            snapshots = _load_evidence_snapshots(conn, scope.language_id, scope.knowledge_key, scope.node_title, clock())
+            catalog_key = resolve_catalog_knowledge_key(
+                conn, user_id=scope.user_id, track_id=scope.track_id,
+                plan_revision_id=scope.active_plan_revision_id, knowledge_key=scope.knowledge_key,
+            )
+            snapshots = _load_evidence_snapshots(conn, scope.language_id, catalog_key, scope.node_title, clock())
             current_state = repository.read_lesson_state(
                 user_id=running.user_id, track_id=running.track_id, knowledge_key=running.knowledge_key,
             )
@@ -505,6 +511,9 @@ def _parse_author_candidate(payload: Mapping[str, object], handles: Mapping[str,
             raise _candidate_failure("LESSON_BLOCK_TYPE_INVALID", "candidate_contract", location + ".type")
         example = examples[block_type]
         if isinstance(example, Mapping) and set(block) != set(example):
+            missing = sorted(set(example) - set(block))
+            if missing:
+                location += f".{missing[0]}"
             raise _candidate_failure("LESSON_BLOCK_FIELDS_INVALID", "candidate_contract", location)
         citations = block.get("citation_ids")
         if not isinstance(citations, list) or any(not isinstance(item, str) or item not in handles for item in citations):
@@ -514,7 +523,20 @@ def _parse_author_candidate(payload: Mapping[str, object], handles: Mapping[str,
         from app.services.learning.lesson_contracts import _parse_block
         try:
             _parse_block(block)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
+            # Parse only trusted labels from our strict parser. Never expose
+            # candidate field names, values or the original exception text.
+            aliases = {"coverage_keys": ("coverage key",), "items": ("learning objectives", "next steps"),
+                       "rows": ("comparison row", "comparison rows"), "required_capabilities": ("required capability",)}
+            text = str(exc)
+            matched_labels: list[tuple[int, str]] = []
+            for field in (example if isinstance(example, Mapping) else ()):
+                prefixes = (str(field), str(field).replace("_", " "), f"{block_type} {field}",
+                            f"{block_type.replace('_', ' ')} {field}", *aliases.get(str(field), ()))
+                matched_labels.extend((len(prefix), str(field)) for prefix in prefixes if text.startswith(prefix + " "))
+            if matched_labels:
+                # "code example execution_claim" outranks the broad "code".
+                location += f".{max(matched_labels)[1]}"
             raise _candidate_failure("LESSON_BLOCK_FIELDS_INVALID", "candidate_contract", location) from None
         if block.get("order_index") != index:
             raise _candidate_failure("LESSON_BLOCK_ORDER_INVALID", "candidate_contract", location + ".order_index")
@@ -531,6 +553,17 @@ def _assert_candidate_identity(document: LessonDocumentDraft, request: LessonAut
         raise _candidate_failure("LESSON_CANDIDATE_SCOPE_INVALID", "candidate_identity", "language_id")
     if document.knowledge_key != request.knowledge_key:
         raise _candidate_failure("LESSON_CANDIDATE_SCOPE_INVALID", "candidate_identity", "knowledge_key")
+    if request.required_capabilities:
+        authorized = set(request.required_capabilities)
+        # Existing Gate scope permits the exact step capability when its
+        # language capability is granted. Do not break that legacy contract.
+        if request.language_id in authorized:
+            authorized.add(request.knowledge_key)
+        for block in document.blocks:
+            if isinstance(block, ExerciseGateBlock) and (
+                not block.required_capabilities or not set(block.required_capabilities).issubset(authorized)
+            ):
+                raise _candidate_failure("LESSON_GATE_CAPABILITY_SCOPE_INVALID", "candidate_identity")
 
 
 def _safe_fail(
@@ -579,6 +612,7 @@ def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], .
         "exercise_gate, summary, next_steps. block_id values are stable lowercase keys; order_index starts at zero and is continuous. "
         "Every factual block uses at least one supplied evidence handle. code_example.execution_claim is exactly not_run. "
         "exercise_gate only contains gate_key, gate_kind, assessment_contract_version, required_capabilities, learner_prompt. "
+        "Every exercise_gate uses only the exact required_capabilities supplied in the request; never invent a .core capability. "
         "Return JSON only with exact document and block fields. Exact compact document example: "
         + json.dumps(
             canonical_lesson_author_example(
@@ -596,6 +630,7 @@ def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], .
             lesson_author_block_examples(
                 language_id=request.language_id,
                 citation_handle=citation_handle,
+                required_capabilities=request.required_capabilities,
             ),
             ensure_ascii=False,
             sort_keys=True,

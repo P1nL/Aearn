@@ -613,7 +613,21 @@ class PostgresTutorLearningContextLoader:
             )
             for reference in reference_items
         )
-        required_facts = (*authoritative.required_facts, *reference_sources)
+        artifact_evidence = teaching_context.get("artifact_evidence", ()) if teaching_context is not None else ()
+        if not isinstance(artifact_evidence, (tuple, list)) or any(not isinstance(item, Mapping) for item in artifact_evidence):
+            raise TutorContextError("TUTOR_KNOWLEDGE_CHECK_GROUNDING_INVALID")
+        stimulus = teaching_context.get("stimulus") if teaching_context is not None else None
+        safe_payload = stimulus.get("safe_payload") if isinstance(stimulus, Mapping) else None
+        if isinstance(safe_payload, Mapping) and safe_payload.get("reason_code") == "knowledge_check_evaluation" and not artifact_evidence:
+            raise TutorContextError("TUTOR_KNOWLEDGE_CHECK_GROUNDING_INVALID")
+        evidence_sources = tuple(
+            TutorContextSource(
+                source_id=f"teaching-artifact-evidence:{snapshot.run_id}:{index}",
+                content=dict(evidence), semantic_class="confirmed_fact_source",
+            )
+            for index, evidence in enumerate(artifact_evidence)
+        )
+        required_facts = (*authoritative.required_facts, *reference_sources, *evidence_sources)
         recent_messages = base.recent_messages
         compaction_plan = base.compaction_plan
         summary_blocked = 0

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -332,6 +333,21 @@ class TeachingLearnerResponseMode(StrEnum):
     ARTIFACT = "artifact"
 
 
+def teaching_response_mode_is_valid(
+    *, action: TeachingAction, mode: TeachingLearnerResponseMode,
+    teaching_moves: Sequence[TeachingMove],
+) -> bool:
+    """Share the existing response-mode policy between parsing and final admission."""
+    response_actions = {TeachingAction.CHECK_UNDERSTANDING, TeachingAction.WAIT_FOR_INPUT}
+    if mode is TeachingLearnerResponseMode.COMPOSER:
+        diagnostic_moves = {
+            TeachingMove.PREDICTION, TeachingMove.ERROR_DETECTION,
+            TeachingMove.MISCONCEPTION_CONTRAST, TeachingMove.MICRO_TRANSFER,
+        }
+        return action in response_actions and bool(diagnostic_moves.intersection(teaching_moves))
+    return mode is not TeachingLearnerResponseMode.NONE or action not in response_actions
+
+
 class TeachingInteractionIntent(StrEnum):
     NONE = "none"
     TEXT_ANSWER = "text_answer"
@@ -499,7 +515,12 @@ class TeachingStepDecision(_Strict):
     @field_validator("public_message")
     @classmethod
     def bounded_message(cls, value: str) -> str:
-        return text(value, 4000, "public_message")
+        # Public Markdown/code is not a summary: collapsing whitespace changes
+        # code semantics and breaks exact equality with the provider message.
+        normalized = value.strip()
+        if not normalized or len(normalized) > 4000:
+            raise ValueError("public_message must contain 1..4000 characters")
+        return normalized
 
     @field_validator("escalation_hint")
     @classmethod
