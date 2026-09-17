@@ -1,6 +1,6 @@
 # Aearn Tutor Harness 验收计划
 
-**状态：** 当前 integration/QA 契约，2026-09-02。
+**状态：** 当前 integration/QA 契约，2026-09-16。
 **范围：** 当前 Tutor runtime、cutover、provider attempt 计量、LearningTrack、
 Desktop、background scheduler、executor boundary、legacy retirement 与文档一致性。
 **权威来源：** 当前代码/测试/schema；实测命令结果进入
@@ -564,3 +564,17 @@ The default final matrix uses LLM_TYPE=disabled, fake/deterministic provider sea
 | RT-DIR-06 | P0 | Reasoning retraction | Positive Runtime projection, snapshot/history/SSE parsing, and live/history Desktop `think` rendering accept the owner-scoped reasoning channel; commentary and unknown channels remain rejected | Runtime projection and Desktop Tutor tests |
 
 Routine validation uses fake App Server/local PostgreSQL only. No real-provider latency or semantic-stability claim is authorized by this addendum.
+
+## 2026-09-16 Artifact platform current verification matrix
+
+The **Parent AC1-AC20 evidence map** in the September 2 section remains the requirements index, not a current green certificate. Current cross-layer checks use exact `tutor.lesson-teaching@1.2.1`, decision v3, and the manifest's ordered 120-240 platform segment; the complete manifest currently has 25 fragments. All public union/action/default-off/route/privacy/recovery checks remain in force.
+
+| Current check | Required evidence |
+| --- | --- |
+| Manifest / platform segment | Complete explicit manifest/file inventory; 110 precedes 120-240; missing/reorder/duplicate reject; future append-only additions do not fail an obsolete total-count assertion |
+| Documentation | Current markers occur in their own dated current section, not only in an old historical paragraph; schema count is derived from the actual manifest |
+| Model-review scoring | Deterministic prerequisites plus exact request-bound pre-commit semantic gate; VERIFIED/REJECTED/UNCERTAIN/unavailable behavior pinned; later Tutor feedback cannot rewrite persisted score/receipt |
+| Regression scope | Explicit isolated database, real provider excluded, no real-data bootstrap or queue wakeup; record exact modules/counts and failures |
+| Usability coverage | Distinguish single-select/remediation/new independent check from transfer_check; Preview from explicit Run; local SQLite from container executor; spaced ReviewSession from model_code_review Artifact |
+
+Recorded September 2 full-suite results and September 15 focused results remain historical. New command results belong in the release-readiness ledger with their current date and bounded scope. No unexecuted browser/provider/container or whole-course coverage may be marked passed by this reconciliation.
