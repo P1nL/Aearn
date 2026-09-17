@@ -74,8 +74,16 @@ _TEACHING_CHILD_FOCUS_REQUIRED = "child_focus_required"
 _TEACHING_COMPLETION_ACTION_REQUIRED = "completion_action_required"
 _TEACHING_INTERACTION_MODE_MISMATCH = "interaction_mode_mismatch"
 _TEACHING_RESPONSE_MODE_INVALID = "response_mode_invalid"
+_TEACHING_FOCUS_RESOLUTION_INVALID = "focus_resolution_invalid"
 
 _TEACHING_SEMANTIC_REPAIR_GUIDANCE: Mapping[str, str] = {
+    _TEACHING_FOCUS_RESOLUTION_INVALID: (
+        "Use exact current server focus authority. resolve_and_resume_parent requires focus_id "
+        "in suspended_focuses; if absent or empty there is no parent to resume. stay/wait use "
+        "active_focus or candidate_focus_id, push_child uses candidate_focus_id, abandon_branch "
+        "uses active_focus, and replace_objective uses objective_id or candidate_focus_id. "
+        "Artifact completion does not create a parent or authorize a new focus."
+    ),
     _TEACHING_RESPONSE_MODE_INVALID: (
         "composer requires action=check_understanding or wait_for_input and at least one "
         "prediction, error_detection, misconception_contrast, or micro_transfer move. "
@@ -962,6 +970,8 @@ def validation_diagnostic_code(issues: Sequence[TutorDecisionValidationIssue]) -
         _TEACHING_COMPLETION_ACTION_REQUIRED: "COMPLETION_ACTION_REQUIRED",
         _TEACHING_INTERACTION_MODE_MISMATCH: "INTERACTION_MODE_MISMATCH",
         _TEACHING_RESPONSE_MODE_INVALID: "RESPONSE_MODE_INVALID",
+        _TEACHING_FOCUS_RESOLUTION_INVALID: "FOCUS_RESOLUTION_INVALID",
+        "focus_authority_invalid": "FOCUS_AUTHORITY_INVALID",
     }.get(category, "INVALID")
     return f"TUTOR_PROVIDER_DECISION_{suffix}"
 

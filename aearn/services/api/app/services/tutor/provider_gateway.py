@@ -26,6 +26,7 @@ from app.agents.harness.provider_request import (
 from app.core.config import Settings, get_settings
 from app.core.safe_diagnostics import log_safe_event
 from app.core.teaching_safety import check_teaching_output
+from app.services.learning.teaching_contracts import teaching_focus_resolution_error
 from app.services.llm.llm_client import (
     LLMCallError,
     LLMConfigurationError,
@@ -139,6 +140,71 @@ def _assert_selected_teaching_action(
         raise TutorDecisionValidationError(
             "Tutor selected teaching Skill requires a teaching step",
             issues=(TutorDecisionValidationIssue(path="action.type", category="teaching_step_required"),),
+        )
+
+
+def _assert_teaching_focus_authority(
+    *, context: TutorContextSelection, decision: TutorDecision,
+) -> None:
+    """Repair provider choices against this request's typed server authority only."""
+    step = decision.teaching_step
+    if step is None:
+        return
+    sources = [item for item in context.items if item.section is TutorContextSection.TEACHING_SESSION]
+    if not sources:
+        return  # The final Gate separately rejects an unexpected teaching scope.
+
+    def invalid_authority() -> TutorDecisionValidationError:
+        return TutorDecisionValidationError(
+            "Tutor teaching focus authority is invalid",
+            issues=(TutorDecisionValidationIssue(
+                path="action.focus_resolution", category="focus_authority_invalid",
+            ),),
+        )
+
+    if len(sources) != 1 or not sources[0].source_id.startswith("teaching-session:"):
+        raise invalid_authority()
+    try:
+        authority = json.loads(sources[0].content)
+    except (ValueError, TypeError) as exc:
+        raise invalid_authority() from exc
+    if not isinstance(authority, dict):
+        raise invalid_authority()
+    objective = authority.get("objective")
+    active = authority.get("active_focus")
+    candidate = authority.get("candidate_focus_id")
+    parents = authority.get("suspended_focuses", [])
+    if not isinstance(objective, dict) or not isinstance(parents, list):
+        raise invalid_authority()
+    if active is not None and not isinstance(active, dict):
+        raise invalid_authority()
+    objective_id = objective.get("objective_id")
+    active_id = active.get("focus_id") if isinstance(active, dict) else ""
+    if not all(isinstance(value, str) and value for value in (objective_id, candidate)):
+        raise invalid_authority()
+    if not isinstance(active_id, str) or (active is not None and not active_id):
+        raise invalid_authority()
+    parent_ids: list[str] = []
+    for parent in parents:
+        if not isinstance(parent, dict):
+            raise invalid_authority()
+        parent_id = parent.get("focus_id")
+        if not isinstance(parent_id, str) or not parent_id:
+            raise invalid_authority()
+        parent_ids.append(parent_id)
+    # Explicit narrowing keeps malformed server facts out of the shared policy.
+    assert isinstance(objective_id, str) and isinstance(active_id, str) and isinstance(candidate, str)
+    error = teaching_focus_resolution_error(
+        resolution=step.focus_resolution, focus_id=step.focus_id,
+        objective_id=objective_id, active_focus_id=active_id,
+        candidate_focus_id=candidate, suspended_focus_ids=parent_ids,
+    )
+    if error is not None:
+        raise TutorDecisionValidationError(
+            "Tutor teaching focus choice violates current authority",
+            issues=(TutorDecisionValidationIssue(
+                path="action.focus_resolution", category="focus_resolution_invalid",
+            ),),
         )
 
 
@@ -268,6 +334,7 @@ class PrimaryTutorProviderGateway:
                 decision = parse_tutor_provider_items(response.content, run=run)
                 _assert_decision_text_safe(decision)
                 _assert_selected_teaching_action(context=context, decision=decision)
+                _assert_teaching_focus_authority(context=context, decision=decision)
                 if projector is not None and thinking_sink is not None:
                     raw_message = response.content.get("message")
                     raw_thinking = (

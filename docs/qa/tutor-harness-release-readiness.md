@@ -1,5 +1,43 @@
 # Tutor Harness Release Readiness Ledger
 
+## 2026-09-16：真实 KC 闭环、焦点恢复与移动端遮挡修复
+
+**状态：单选 KC 的一次受控真实闭环已验证；其他工件类型、原主线推进和完整发布门未获通过结论。**
+
+| 检查 | 本轮实际结果与边界 |
+| --- | --- |
+| 环境隔离 | 从保留真实课程状态的 postgres 快照恢复独立 `aearn_real_acceptance_20260916`，没有用 fixture 替代课程；API 8011、限定 user/conversation/track 的 worker，无 beat。浏览器把 API 请求透明转发至 8011，未模拟响应；不是原开发服务直接就绪的证明 |
+| 知识映射复核 | 原 12 节确实均涉及 Python 变量、重赋值、派生值；没有为了工件覆盖改写映射。109 个已发布版本中存在随机 fixture capability；不能把数量当正式类型覆盖 |
+| 首次真实失败 | 模型选出 KC、正常 UI 提交、正确独立回执落库并刷新恢复，但自动后续 run 被 `teaching_parent_focus_invalid` 拦截；当前 suspended_focuses 确为空。旧失败保留，不回填或重开 |
+| 焦点修复 | provider 响应前置校验与最终 Gate 共用六种 focus-resolution 规则；只读当前 typed TeachingSession authority，非法选择进入同一 provider 决策既有的最多两次尝试，安全反馈不回显 provider 值；空父栈不允许 resume，nullable active focus 保留。没有放宽 Gate、修改 Skill bundle、提高预算或自动改写模型 action |
+| 最终真实链 | 真实 deepseek-flash 选择 run `09c159c2-30cb-4389-b198-2228163eaffc` → KC `41eadf58-453e-57e2-828a-c81d4b4e6259` → 390×844 正常点击提交 → 唯一正确/independent 回执 `945d3fb0-dfc5-44ad-aac9-947d1a1679e0` → 自动 continuation `386f61f3-2378-45ae-a800-781df8a10505` completed，focus_resolution=stay。两 run 共 4 条 accepted provider receipts |
+| 回读与重放 | 刷新恢复“回答正确”、无可编辑答案控件，并保留后续 composer 文本迁移题（非 transfer_check 工件）；同请求重放 HTTP200、同 event/receipt、idempotent_replayed=true；同 key 改答案 HTTP409 IDEMPOTENCY_CONFLICT；DB 回执和 continuation 无重复 |
+| 移动端交互 | 390px 确认“查看练习状态”浮层盖住“提交回答”；action shelf 改为正常布局占位。1440×900、900×900、390×900、390×844 正常滚动后中心命中提交按钮，并在 390×844 实际提交成功，无 force click。不是完整无障碍/Tauri 门通过 |
+| 离线回归 | 最终 29 个 API 模块 **345 passed / 147.73s**，独立回归数据库且 provider disabled；3 个前端文件 **40 passed**；Desktop TypeScript/Vite build、改动路径 Ruff/Mypy、diff 检查通过，UI detector 0 finding |
+| 剩余边界 | 正式 Python review v3 因 model_review_semantic_false_positive 被 quarantine；没有同版本恢复操作。已核查治理只有 pilot telemetry 摄入，未找到真实 pilot runner/collector，不能手写计数晋级。SQL/code/demo/来源抽屉未新增真实闭环证据；课程作者本轮保留一次 invalid 后受控修正成功，不承诺首次生成必过 |
+
+原 postgres 主线只读复核仍为 4/12、n2_3；副本也未因 KC 正确就推进正式课程 Gate。证据在本机 `output/artifact-end-to-end-20260916-1933/`，尤其 `kc-final-chain-proof.json`、`kc-fixed-http-replay.json`、真实截图和定向测试日志。本轮 API/worker/Vite 均已停止，临时密钥仅进程使用；独立数据库及私有快照保留。无新建 Trellis、强制发布、改分、删除历史失败、commit、push 或部署。
+
+## 2026-09-16：Artifact platform baseline reconciliation and catalog preflight
+
+**状态：本轮集成检查修复和定向隔离回归通过；不是全工件真实模型验收或发布许可。**
+
+| 检查 | 结果与边界 |
+| --- | --- |
+| 修复前红灯 | 显式隔离 PostgreSQL 库上，平台集成模块为 1 failed / 3 passed；失败为历史 `21` fragments 断言与当前 `25` 不一致 |
+| Schema 检查修复 | 校验命名的 120–240 连续片段、唯一性、110 前置依赖及实际文件；缺失、错序、重复、前置移动有负例，允许未来段后追加。完整 manifest 仍由独立 schema 测试约束 |
+| 首轮定向回归 | 平台集成、schema manifest、model review semantics/artifacts 四模块：28 passed；不是全 API 测试 |
+| 扩展定向回归 | 19 个 API 测试模块：176 passed；涵盖 Item Bank/治理、KC、demo、review、SQL、提交、分支及 supersession。显式隔离数据库、provider disabled，不能证明真实模型质量或浏览器可用性 |
+| 静态检查 | 改动的集成测试文件 Ruff、Mypy 通过；HTTP Route 类型守卫替代未收窄的 BaseRoute 属性访问，无类型忽略 |
+| 评分合同 | 明确已有的提交前结构校验和 exact-binding semantic gate；结构失败不得被模型升级，确定拒绝只在首次回执提交前参与失败决策，不确定结果不伪造终态。提交后教学文案不得改写已持久化分数/进度。未修改生产评分逻辑或 policy version |
+| 真实库只读供应预检 | 已验证 `transaction_read_only=on`，读取原主线映射/能力、出版状态、materialization 存在性及模型约束；无写入、无 provider 调用，未读取 learner 文本、私有答案或 rubric |
+| 原主线供应限制 | 当前仍为 4/12、节点 n2_3；12 个节点均映射 python.variables/python。按该范围筛出的已发布版本为 3 个 KC：普通 knowledge_check、remediation、transfer_check 各 1；普通初始候选仅 1 个。其他能力/语言范围的已发布 review/SQL/demo 不等于本主线可用供应；后续逐条核查确认其中存在历史测试专用 capability，不能当作正式供给 |
+| 尚未验证 | 新一轮真实 provider、浏览器/composer 遮挡复现、executor/container、全部工件真实交互、全课程 Gate、全 API/Desktop 套件均未在本轮验证；只读出版元数据也不能证明运行时 feature flags 或 executor 就绪 |
+
+本轮证据保留在本机 `output/artifact-baseline-repair-20260916-1741/`，原任务树覆盖审计保留在 `output/artifact-coverage-audit-20260916-1628/`。没有创建或切换 Trellis 任务，没有改变真实发布/隔离状态、题目、分数或进度，没有提交、push、部署。后续真实类型验收应先核对目标节点的知识映射和能力，再通过既有 review/pilot/publication 流程获得适配供应；不得为通过测试直接解除 quarantine 或强制发布。
+
+以下日期条目保持原始历史语境；旧通过/失败数不代表本轮完整套件结果。
+
 ## 2026-09-08：Python 实测问题的有序本地修复
 
 **状态：代码修复与受控验证完成；真实课程作者仍有输出截断阻塞，不是全链路通过或发布许可。**

@@ -65,11 +65,31 @@ Every action also carries exact user/conversation/track/TeachingSession scope,
   `security_trust`, `error_false_success`, and optional `weak_testing`.
   Readability, maintainability, and style are non-scoring unless an explicit
   project contract maps them into the closed taxonomy.
-- Matching is deterministic and server-owned. Category, hunk/side/range
-  overlap, required concepts, severity distance, omissions, unsupported
-  findings, and duplicates determine the result. Provider/model output may
-  author a later teaching message but may not change verdict, score, receipt,
-  successor, Artifact state, mastery, or progress.
+- Structural matching and its base `ExerciseAttemptResult` are deterministic and
+  server-owned. Category, hunk/side/range overlap, required concepts,
+  severity distance, omissions, unsupported findings, and duplicates determine
+  that result. A deterministic failure skips semantic review and cannot be
+  promoted to pass by a model.
+- After structural pass, semantic review is a separate pre-commit gate, not a
+  second scorer. `ServerSemanticRequest` binds the authoritative prompt/code/
+  rubric and untrusted submission with exact authority/submission/binding
+  hashes. Only a `SemanticReviewReceipt` whose `request_binding_hash` exactly
+  equals the request `binding_hash` is usable: `VERIFIED` is required for a structural
+  pass to become passed, while `REJECTED` may make that result failed before
+  the first immutable receipt. The model returns only verdict/reason; it
+  supplies no score, and the server applies the existing failed/capped result
+  on semantic rejection before receipt insertion.
+- `UNCERTAIN`, provider unavailability/invalid response, or binding mismatch is
+  recoverable semantic unavailability; do not fabricate a terminal receipt,
+  outcome, score, or state. The immutable receipt stores
+  `ExerciseAttemptResult.policy_version` in
+  `tutor_model_review_artifact_receipts.policy_version` (and the safe event
+  payload); the separate `semantic_policy_version` feedback marker is not a
+  replacement.
+- After result submission and the first immutable receipt/Artifact completion,
+  later model/provider teaching feedback is content-only and cannot rewrite
+  persisted outcome, score, capability scores, receipt/result identity or
+  policy fields, successor, Artifact state, mastery, or progress.
 - The first accepted submission is immutable and stored only in the private
   receipt table. Public Artifact, API/SSE/Desktop, Tutor context, local export,
   logs, and evidence documents omit the full submission, expected findings,
@@ -97,6 +117,10 @@ Every action also carries exact user/conversation/track/TeachingSession scope,
 | --- | --- |
 | Stale presentation hash, unknown hunk, invented code source side, partial/cross-hunk range | action invalid; no receipt/event |
 | Category not enabled by the presentation | action invalid; do not score it as an ordinary false positive |
+| Deterministic structural failure | no semantic provider call; it cannot be promoted to pass |
+| Structural pass + exact hash-bound `VERIFIED` | eligible to persist passed result with deterministic score/policy |
+| Structural pass + exact hash-bound `REJECTED` before receipt | server applies failed/capped result, then persists one receipt |
+| `UNCERTAIN`, unavailable/invalid response, or binding mismatch | recoverable; no fabricated terminal receipt/outcome/score/state |
 | Same client action and same body | replay the same Artifact event and receipt |
 | Same client action with a different body | `IDEMPOTENCY_CONFLICT` |
 | Stale session/item/publication/materialization scope | authority/version conflict; no partial write |
@@ -104,6 +128,7 @@ Every action also carries exact user/conversation/track/TeachingSession scope,
 | Receipt UPDATE/ordinary DELETE | PostgreSQL `23514` |
 | Public payload contains submission/rubric/test/proof/protected marker | reject the complete projection |
 | Evaluation intent lacks exact Artifact event + receipt identity | stale/cancelled continuation; no provider call |
+| Post-commit teaching feedback | content-only; committed receipt/score/state/progress remain unchanged |
 | Repeat bootstrap with existing event v3 and review receipt | both bootstraps succeed |
 
 ## 5. Good / Base / Bad Cases
@@ -111,12 +136,24 @@ Every action also carries exact user/conversation/track/TeachingSession scope,
 - **Good:** A diff selection maps to one current hunk/side/range, the server
   deterministically scores it, stores one private receipt, and publishes only a
   safe terminal projection.
+- **Good:** A deterministic failure remains failed even if a model would return
+  `VERIFIED`; a structural pass is finalized only by an exact request-bound
+  `VERIFIED` receipt.
+- **Good:** An exact request-bound `REJECTED` is applied by the server before
+  the first receipt, retaining result `policy_version` and keeping the separate
+  semantic policy marker in feedback.
 - **Good:** A failed D3 review selects one semantically distinct D2 published
   remediation item and the next teaching context advertises only that handle.
+- **Good:** Later provider teaching feedback changes only safe message content;
+  the committed score, receipt, and Artifact state stay unchanged.
 - **Base:** Historical v1 Artifact and Lesson Gate review history remain readable
   while new Learning Item-backed conversation reviews materialize as v2.
 - **Bad:** Accepting `L1-L4000` because one line overlaps a hunk, allowing source
-  findings in code-only mode, or letting the model revise the saved score.
+  findings in code-only mode, using semantic output to rescue deterministic
+  failure, accepting an unbound receipt, or treating `UNCERTAIN`/unavailable as
+  terminal learner evidence.
+- **Bad:** Letting post-commit teaching feedback rewrite the saved score,
+  receipt, successor, or Artifact state.
 - **Bad:** Serializing `submission_json`, `expected_findings`, matcher concepts,
   validation proofs, or private tests into public feedback or export.
 
@@ -128,6 +165,11 @@ Every action also carries exact user/conversation/track/TeachingSession scope,
 - Deterministic scorer cases for pass, wrong verdict, omission, unsupported
   finding, duplicate finding, severity, suspicious-but-correct/false-positive,
   and wording-independent concept matching.
+- Semantic-boundary cases for deterministic-failure/no-provider promotion,
+  exact request/receipt binding, required `VERIFIED`, pre-receipt `REJECTED`
+  failure/cap, recoverable uncertain/unavailable/invalid/mismatch outcomes,
+  and post-commit feedback immutability; assert receipt `policy_version` is the
+  deterministic result policy and the semantic marker is separate.
 - Real PostgreSQL tests for materialization, immutable private receipt,
   idempotent replay/conflict, stale scope, success without successor, failure
   with distinct D(n-1)/D(n) remediation, no mastery double-write, and exact
@@ -162,3 +204,11 @@ return project_safe_terminal_artifact(receipt)
 
 The correct path validates exact identity before deterministic server scoring and
 keeps private evidence behind the public Artifact facade.
+
+## 8. 2026-09-16 Boundary Note
+
+As of 2026-09-16, this clarifies the submitted implementation; the additive
+v2/history boundary remains unchanged. Pre-commit semantic review is a
+narrow, exact-hash-bound verdict gate after deterministic scoring, while
+post-commit teaching feedback remains content-only. It adds no model scoring
+authority and is not an approval of a new design.

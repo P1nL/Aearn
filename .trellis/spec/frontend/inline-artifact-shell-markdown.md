@@ -42,6 +42,7 @@ Custom Markdown directives are exact and closed:
 - Initial hydration does not identify every existing Artifact as new. A newly added Artifact expands and scrolls to its start once without calling focus; status/version refresh updates the existing shell in place and does not re-scroll. A terminal Artifact stays expanded until the next mainline learner message; branch learner messages never trigger this collapse, and manual reopen survives ordinary refresh.
 - Remove exact branch-owned items from the mainline and insert the depth-one group immediately after its anchor Artifact. Active branches remain expanded; resolved branches default to `答疑 · N 轮`, retain manual expansion in process memory, indent only from the left, and preserve the learner bubble right boundary.
 - Use container queries, `min-width: 0`, bounded internal scroll regions, 44px interactive targets, visible focus, and reduced-motion behavior. Never add a draggable split, nested Artifact, or a second Tutor timeline/SSE reducer.
+- The composer action shelf must reserve its intrinsic height in the normal dock layout, including when controls wrap on narrow screens. Do not translate an absolute shelf over the Artifact timeline or compensate with guessed fixed bottom padding. Verify ordinary scrolling and a real unforced click on Artifact submit controls at 1440x900, 900x900, and 390x844; a jsdom style test alone cannot prove hit-target visibility.
 
 ## 4. Validation & Error Matrix
 

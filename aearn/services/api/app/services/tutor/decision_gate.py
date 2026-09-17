@@ -23,6 +23,7 @@ from app.services.learning.teaching_candidates import (
 from app.services.learning.teaching_contracts import (
     TeachingArtifactCandidateSet,
     TeachingStepDecision,
+    teaching_focus_resolution_error,
     teaching_response_mode_is_valid,
 )
 from app.services.tutor.capability_policy import CapabilityPolicyContext, CapabilityPolicyResolver
@@ -323,21 +324,14 @@ class TeachingTutorDecisionGate:
         suspended_ids = {
             str(item.get("focus_id") or "") for item in suspended if isinstance(item, dict)
         }
-        resolution = step.focus_resolution.value
-        if resolution == "push_child" and step.focus_id != candidate_focus_id:
-            return _deny("teaching_child_focus_invalid")
-        if resolution == "stay" and step.focus_id not in {active_focus_id, candidate_focus_id}:
-            return _deny("teaching_active_focus_invalid")
-        if resolution == "resolve_and_resume_parent" and step.focus_id not in suspended_ids:
-            return _deny("teaching_parent_focus_invalid")
-        if resolution == "replace_objective" and step.focus_id not in {
-            str(objective.get("objective_id") or ""), candidate_focus_id,
-        }:
-            return _deny("teaching_replacement_focus_invalid")
-        if resolution == "abandon_branch" and step.focus_id != active_focus_id:
-            return _deny("teaching_abandoned_focus_invalid")
-        if resolution == "wait" and step.focus_id not in {active_focus_id, candidate_focus_id}:
-            return _deny("teaching_wait_focus_invalid")
+        focus_error = teaching_focus_resolution_error(
+            resolution=step.focus_resolution, focus_id=step.focus_id,
+            objective_id=str(objective.get("objective_id") or ""),
+            active_focus_id=active_focus_id, candidate_focus_id=candidate_focus_id,
+            suspended_focus_ids=suspended_ids,
+        )
+        if focus_error is not None:
+            return _deny(focus_error)
         moves = tuple(item.value for item in step.teaching_moves or ())
         interaction = step.interaction
         if interaction is None:
