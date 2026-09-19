@@ -1,16 +1,70 @@
 # FSRS 调度实现规格
 
-> **历史规格，非当前运行时 authority。** 本文件描述 2026-05-11 的旧
-> `review_states` / `review_logs` / top-level `/api/reviews` 设计，仅保留为迁移证据。
+> **历史规格，非当前运行时权威契约。** 本文件描述 2026-05-11 的旧
+> `review_states` / `review_logs` / 顶层 `/api/reviews` 设计，仅保留为迁移证据。
 > 2026-08-12 起，正式实现以
 > [`tutor-harness-runtime.md`](./tutor-harness-runtime.md)、
 > [`api-contract.md`](./api-contract.md) 和
-> [`database-schema.md`](./database-schema.md) 中的 track-scoped `tutor_review_*`
-> / `ReviewSession` contract 为准；不得按本文恢复旧 API、表或 Celery authority。
+> [`database-schema.md`](./database-schema.md) 中的按学习路线隔离的 `tutor_review_*`
+> / `ReviewSession` 契约为准；不得按本文恢复旧 API、表或 Celery 权威机制。
 
-日期：2026-05-11  
-状态：Draft V1  
-适用范围：Aearn 的 `KnowledgePoint` 复习调度、`ReviewState` 更新、`ReviewLog` 追溯、Celery 定时任务与 `fsrs-optimizer` 启用策略
+## 当前实现对照（2026-09-17）
+
+本节依据本地源码静态核查。正式策略虽命名为 `track_review_fsrs_v1`，但当前 [`reviews/scheduler.py`](../../aearn/services/api/app/services/learning/reviews/scheduler.py) 实现的是确定性规则，并非调用外部 FSRS 库或启用下方历史 `fsrs-optimizer` 训练流程。本次没有执行调度服务、数据库、模型提供方、浏览器或生产验收。
+
+### 权威入口与状态归属
+
+| 对象 | 当前权威入口 | 与旧设计的区别 |
+|---|---|---|
+| 策略与评级 | [`reviews/contracts.py`](../../aearn/services/api/app/services/learning/reviews/contracts.py)、`scheduler.py` | 策略版本 `track_review_fsrs_v1`；评级值为小写 `again/hard/good/easy` |
+| 调度状态与事件 | [`reviews/schedule_repository.py`](../../aearn/services/api/app/services/learning/reviews/schedule_repository.py) | `tutor_review_schedule_states` / `tutor_review_schedule_events`，按用户、路线、`knowledge_key` 隔离，不是旧 `review_states` / `review_logs` |
+| 有限复习批次 | [`reviews/session_repository.py`](../../aearn/services/api/app/services/learning/reviews/session_repository.py) | `tutor_review_sessions` / `tutor_review_items` 管理批次，`tutor_review_finalizations` 保存一次终结回执 |
+| 事务边界 | [`reviews/service.py`](../../aearn/services/api/app/services/learning/reviews/service.py) 的 `finalize_session` | 在事务内更新调度、事件、掌握证据、终结回执和会话，并接纳教学终态事件；不是 Celery 从旧日志推导学习权威 |
+| 正式路由 | [`learning_track_reviews.py`](../../aearn/services/api/app/routes/learning_track_reviews.py)，由 [`app/main.py`](../../aearn/services/api/app/main.py) 注册 | `GET /api/learning-tracks/{track_id}/reviews`、`POST /api/learning-tracks/{track_id}/reviews/sessions`、`POST /api/learning-tracks/{track_id}/reviews/sessions/{session_id}/finalize` |
+
+新调度由可信非复习 `MasteryEvidence` 初始化；`seed_schedule_from_evidence` 显式拒绝复习证据，避免绕过会话终结重复调度。初始化按以下顺序判断：模块诊断证据为 21 天；分数低于 `0.6` 为 10 分钟；独立且分数至少 `0.9` 为 7 天；其他独立证据为 3 天；其余为 1 天。它不是“确认计划即创建空 `ReviewState`”的旧机制。
+
+### 当前评级与间隔公式
+
+`ReviewAggregate` 汇总整批终态题目，平均分采用 `0..1` 分数并保留四位小数；任一题在关键能力上的分数低于 `0.6`（缺失按 `0`）即为关键失败。独立性取整批最弱级别，`remediated` 优先于 `hinted`，两者均不是 `independent`。
+
+评级按表中顺序短路判断，不读取旧 `Attempt.fsrs_rating`：
+
+| 条件 | 当前评级 | 原因码 |
+|---|---|---|
+| 关键能力失败 | `again` | `critical_capability_failed` |
+| 并非所有题目都通过 | `again` | `attempt_failed` |
+| 存在提示或补救依赖 | `hard` | `assistance_used` |
+| 独立且平均分 ≥ `0.95` | `easy` | `independent_high_confidence` |
+| 独立且平均分 ≥ `0.75` | `good` | `independent_pass` |
+| 其余独立但不稳固的通过 | `hard` | `independent_fragile_pass` |
+
+设上次稳定度为 `S`、难度为 `D`，以下为 `advance_schedule` 的实际公式；间隔单位为天：
+
+| 评级 | 间隔 | 新稳定度 | 新难度 | 卡片状态 |
+|---|---|---|---|---|
+| `again` | `10 / (24 * 60)` | `max(0.1, S * 0.35)` | `min(10, D + (1.4 if critical_failure else 1.0))` | `relearning` |
+| `hard` | `max(1, S * 0.8)` | 与间隔相同 | `min(10, D + 0.3)` | `learning` |
+| `good` | `max(3, S * 1.7)` | 与间隔相同 | `max(1, D - 0.25)` | `review` |
+| `easy` | `max(7, S * 2.5)` | 与间隔相同 | `max(1, D - 0.6)` | `review` |
+
+间隔与稳定度上限均为 `3650` 天，稳定度与难度保留四位小数。`due_at = UTC(now) + interval`，不自动对齐上海时区晚间 `20:00`。每次终结 `review_count + 1`；每次 `again` 都令 `lapse_count + 1`，并非仅旧表中 `review/relearning` 状态计入遗忘。
+
+`again` 在关键失败或累计遗忘至少两次时产生 `critical` 风险，否则为 `high`；`hard` 从原 `critical` 降为 `high`，其他为 `normal`；`good/easy` 分别为 `normal/low`。`current_risk` 可在读取时计算逾期升级而不改持久状态；关键前置知识点可形成服务端投影的 Gate。待复习列表以当前路线、调度状态和时间为边界，查询包含已到期或持久风险为 `critical` 的项，不使用下方旧的 `knowledge_points` 联表 SQL。
+
+### 终结、幂等与不变式
+
+- `finalize_session` 要求会话为 `ready_to_finalize`，校验会话版本、路线版本、计划修订和调度状态行版本（`expected_schedule_version`，不是 `scheduler_version` 策略标识），并要求每个复习项均有对应结果。不能把一次答题、热身或排队成功当作整批完成。
+- 已有终结回执且请求哈希相同则回放；请求哈希不同则冲突。调度更新带版本条件，不能仅靠 Redis 锁或客户端状态保证恰好一次。
+- 同一次事务写调度状态、调度事件、可信掌握证据、终结回执并把会话置为 `finalized`。评分本身请参见[当前评分对照](./code-completion-evaluation-spec.md#当前实现对照2026-09-17)。
+- 当前掌握度由 [`mastery.py`](../../aearn/services/api/app/services/learning/mastery.py) 的 `learning_mastery_v2` 可信证据投影产生；下方旧的固定分数增减与“三次复习即可掌握”不是当前判定规则。
+- 下方 FSRS 库降级、上海时区固定时段、优化器阈值、Celery beat 任务、`202 Accepted` 重试协议和旧表约束均为历史设计，不是当前配置、已运行任务或验收结果。
+
+源码对应测试入口：[`test_review_scheduler.py`](../../aearn/services/api/tests/learning/test_review_scheduler.py) 覆盖评级和调度性质；[`test_review_sessions.py`](../../aearn/services/api/tests/learning/test_review_sessions.py) 覆盖批次完成及终结幂等。本次另执行 `python -m pytest tests/learning/test_review_scheduler.py -q -p no:cacheprovider`，结果为 `6 passed`；未执行 `test_review_sessions.py` 或数据库集成验收。
+
+## 历史设计正文（2026-05-11，草案 V1）
+
+原适用范围：Aearn 的 `KnowledgePoint` 复习调度、`ReviewState` 更新、`ReviewLog` 追溯、Celery 定时任务与 `fsrs-optimizer` 启用策略。以下“当前”“必须”等表述均限定在原稿设计阶段，保留原表、公式、SQL、配置和示例用于追溯，不适用于正式 Tutor Harness。
 
 ## 目标
 
@@ -37,16 +91,17 @@ Attempt -> code_completion_result -> Attempt.fsrs_rating -> ReviewState -> due_a
 
 | 业务术语 | FSRS 术语 | 存储位置 | 说明 |
 |---|---|---|---|
-| `KnowledgePoint` | Card identity | `review_states.knowledge_point_id` | V1 最小复习单元 |
-| `ReviewState` | Card current state | `review_states` | 保存 `card_state`、`stability`、`difficulty`、`due_at` |
-| `ReviewLog` | Review history | `review_logs` | append-only，保存每次 rating 和状态快照 |
+| `KnowledgePoint` | 卡片标识 | `review_states.knowledge_point_id` | V1 最小复习单元 |
+| `ReviewState` | 卡片当前状态 | `review_states` | 保存 `card_state`、`stability`、`difficulty`、`due_at` |
+| `ReviewLog` | 复习历史 | `review_logs` | append-only，保存每次 rating 和状态快照 |
 | `Attempt.fsrs_rating` | Rating | `attempts.fsrs_rating` | 由评分规格写入 |
-| `due_at` | Scheduled review datetime | `review_states.due_at` | 到期可复习时间 |
-| `code_completion_result` | Rating evidence | `attempts.code_completion_result` | 保存评分证据与 `next_action` |
+| `due_at` | 计划复习时间 | `review_states.due_at` | 到期可复习时间 |
+| `code_completion_result` | 评级证据 | `attempts.code_completion_result` | 保存评分证据与 `next_action` |
 
 ## KnowledgePoint 与 FSRS Card 映射
 
-### 当前映射
+<a id="当前映射"></a>
+### 原稿映射
 
 V1 中 `KnowledgePoint` 属于用户确认后的 `LearningPlan`，因此可直接映射为：
 
@@ -209,7 +264,8 @@ UNIQUE(request_id)
 7. 根据 `code_completion_result.result` 更新 `KnowledgePoint.status` 和 `mastery_score`。
 8. 提交事务。
 
-### fallback scheduler
+<a id="fallback-scheduler"></a>
+### 确定性兜底调度器
 
 当 FSRS library 不可用、参数损坏或计算异常时，使用 deterministic fallback，保证学习流程不中断。
 
@@ -230,7 +286,8 @@ UNIQUE(request_id)
 
 fallback 必须在 `review_logs.next_state_json.scheduler_fallback=true` 中标记，并将 `review_states.scheduler_version` 写为 `fsrs_v1_fallback`。
 
-## Asia/Shanghai 时区策略
+<a id="asiashanghai-时区策略"></a>
+## 上海时区策略（`Asia/Shanghai`）
 
 ### 存储
 
@@ -293,7 +350,8 @@ idx_review_states_due(user_id, due_at)
 idx_review_states_plan_due(plan_id, due_at)
 ```
 
-### Worker 批量领取
+<a id="worker-批量领取"></a>
+### 后台工作进程批量领取
 
 Celery worker 需要避免多 worker 重复处理同一条 due 记录：
 
@@ -431,7 +489,8 @@ API 同步提交策略：
 3. 写入结构化错误 `INVALID_FSRS_RATING`。
 4. 前端显示“评分需要重新生成”，允许重新执行 `evaluate_attempt`，但不重新运行代码。
 
-## fsrs-optimizer 启用条件
+<a id="fsrs-optimizer-启用条件"></a>
+## 参数优化器启用条件（`fsrs-optimizer`）
 
 默认配置：
 
@@ -462,7 +521,8 @@ FSRS_MIN_LAPSES=10
 - 每次更新 `ReviewState` 时把本次参数快照写入 `review_states.fsrs_parameters` 和 `review_logs.next_state_json.fsrs_parameters`。
 - 如果新参数导致异常 due 激增，切回上一个 `scheduler_version`；已写入的 due 不批量回滚，只通过后续 review 自然修正，必要时用 `manual_adjust` 写 `ReviewLog`。
 
-### optimizer 输入
+<a id="optimizer-输入"></a>
+### 优化器输入
 
 训练数据来自 `review_logs`，最小字段：
 

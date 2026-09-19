@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -313,6 +313,32 @@ class TeachingFocusResolution(StrEnum):
     REPLACE_OBJECTIVE = "replace_objective"
     ABANDON_BRANCH = "abandon_branch"
     WAIT = "wait"
+
+
+def teaching_focus_resolution_error(
+    *, resolution: TeachingFocusResolution, focus_id: str, objective_id: str,
+    active_focus_id: str, candidate_focus_id: str, suspended_focus_ids: Collection[str],
+) -> str | None:
+    """Share exact focus authority between provider repair and final admission."""
+    if resolution is TeachingFocusResolution.PUSH_CHILD and focus_id != candidate_focus_id:
+        return "teaching_child_focus_invalid"
+    if resolution is TeachingFocusResolution.STAY and focus_id not in {
+        active_focus_id, candidate_focus_id,
+    }:
+        return "teaching_active_focus_invalid"
+    if resolution is TeachingFocusResolution.RESOLVE_AND_RESUME_PARENT and focus_id not in suspended_focus_ids:
+        return "teaching_parent_focus_invalid"
+    if resolution is TeachingFocusResolution.REPLACE_OBJECTIVE and focus_id not in {
+        objective_id, candidate_focus_id,
+    }:
+        return "teaching_replacement_focus_invalid"
+    if resolution is TeachingFocusResolution.ABANDON_BRANCH and focus_id != active_focus_id:
+        return "teaching_abandoned_focus_invalid"
+    if resolution is TeachingFocusResolution.WAIT and focus_id not in {
+        active_focus_id, candidate_focus_id,
+    }:
+        return "teaching_wait_focus_invalid"
+    return None
 
 
 class TeachingMove(StrEnum):

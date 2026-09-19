@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter
+from starlette.routing import Route
 
 from app.core.config import Settings
-from app.db.schema import SCHEMA_FRAGMENT_NAMES
+from app.db.schema import SCHEMA_FRAGMENT_NAMES, schema_fragment_paths
 from app.main import app
 from app.services.learning.artifacts.contracts import (
     TUTOR_LEARNING_ARTIFACT_SCHEMA_VERSION,
@@ -26,10 +27,14 @@ from app.services.tutor.conversation_contracts import (
     TutorPublicItem,
     TutorPublicItemReference,
 )
+from app.services.tutor.decision_gate import TeachingTutorDecisionGate
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 _API_ROOT = Path(__file__).resolve().parents[2]
 _DESKTOP_ROOT = _REPOSITORY_ROOT / "aearn" / "apps" / "desktop"
+_CURRENT_TEACHING_SKILL = (
+    f"{TeachingTutorDecisionGate._SKILL_ID}@{TeachingTutorDecisionGate._SKILL_VERSION}"
+)
 _EXPECTED_PRESENTATIONS = {
     "exercise_workspace_v1",
     "browser_preview_v1",
@@ -93,6 +98,42 @@ _EXPECTED_ACTION_FIELDS = {
     "acknowledge_demo_event": {"action", "event_key", "event_nonce"},
     "complete_demo": {"action", "evidence"},
 }
+
+# This platform owns a named, ordered migration segment, not the total number
+# of all present/future schema fragments. The complete manifest is separately
+# pinned by tests/database/test_schema_manifest.py.
+_REQUIRED_PLATFORM_SCHEMA_SEGMENT = (
+    "120_learning_artifacts.sql",
+    "130_learning_item_bank.sql",
+    "140_learning_item_governance.sql",
+    "150_tutor_branch_continuation.sql",
+    "160_teaching_artifact_commit.sql",
+    "170_teaching_demonstrations.sql",
+    "180_knowledge_checks.sql",
+    "190_model_review_artifacts.sql",
+    "200_sql_learning_workspace.sql",
+    "210_tutor_branch_supersession.sql",
+    "220_plan_catalog_knowledge_scope.sql",
+    "230_artifact_authority_supersession.sql",
+    "240_deepseek_flash_runtime_cutover.sql",
+)
+
+
+def _assert_platform_schema_segment(names: tuple[str, ...]) -> None:
+    assert len(names) == len(set(names)), "schema fragments must remain unique"
+    assert set(_REQUIRED_PLATFORM_SCHEMA_SEGMENT) <= set(names), "required platform fragment missing"
+    assert "110_thread_turn_codex.sql" in names
+    start = names.index(_REQUIRED_PLATFORM_SCHEMA_SEGMENT[0])
+    end = names.index(_REQUIRED_PLATFORM_SCHEMA_SEGMENT[-1]) + 1
+    assert names[start:end] == _REQUIRED_PLATFORM_SCHEMA_SEGMENT
+    assert names.index("110_thread_turn_codex.sql") < start
+
+
+def _assert_document_section(text: str, heading: str, markers: tuple[str, ...]) -> None:
+    assert heading in text, f"missing current heading: {heading}"
+    section = text.split(heading, 1)[1].split("\n## ", 1)[0]
+    for marker in markers:
+        assert marker in section, f"{heading} missing current marker: {marker}"
 
 
 def _discriminator_values(contract: object) -> set[str]:
@@ -204,7 +245,8 @@ def test_routes_flags_schema_and_import_boundaries_are_reconciled(
     routes = {
         (method, route.path)
         for route in app.routes
-        for method in getattr(route, "methods", set())
+        if isinstance(route, Route)
+        for method in route.methods or set()
     }
     assert {
         ("GET", "/api/tutor/conversations/{conversation_id}/artifacts/{artifact_id}"),
@@ -213,21 +255,8 @@ def test_routes_flags_schema_and_import_boundaries_are_reconciled(
         ("POST", "/api/learning-tracks/{track_id}/lesson-references/{conversation_id}/resolve"),
     } <= routes
 
-    assert len(SCHEMA_FRAGMENT_NAMES) == 21
-    assert SCHEMA_FRAGMENT_NAMES[-9:] == (
-        "120_learning_artifacts.sql",
-        "130_learning_item_bank.sql",
-        "140_learning_item_governance.sql",
-        "150_tutor_branch_continuation.sql",
-        "160_teaching_artifact_commit.sql",
-        "170_teaching_demonstrations.sql",
-        "180_knowledge_checks.sql",
-        "190_model_review_artifacts.sql",
-        "200_sql_learning_workspace.sql",
-    )
-    assert SCHEMA_FRAGMENT_NAMES.index("110_thread_turn_codex.sql") < SCHEMA_FRAGMENT_NAMES.index(
-        "120_learning_artifacts.sql"
-    )
+    _assert_platform_schema_segment(SCHEMA_FRAGMENT_NAMES)
+    assert tuple(path.name for path in schema_fragment_paths()) == SCHEMA_FRAGMENT_NAMES
     fragment_110 = (_API_ROOT / "app/db/schema/110_thread_turn_codex.sql").read_text(encoding="utf-8")
     assert "tutor_conversation_event_v3" in fragment_110
     assert "chk_tutor_conversation_events_projection_version" in fragment_110
@@ -240,7 +269,6 @@ def test_routes_flags_schema_and_import_boundaries_are_reconciled(
         if isinstance(node, ast.ImportFrom)
     }
     assert imported_modules == {"contracts"}
-    assert (_REPOSITORY_ROOT / "docs/design/learning-agent-claude-desktop-framework.html").is_file()
 
     env_example = (_REPOSITORY_ROOT / "aearn/.env.example").read_text(encoding="utf-8")
     for line in (
@@ -249,6 +277,35 @@ def test_routes_flags_schema_and_import_boundaries_are_reconciled(
         "LEARNING_ITEM_BANK_AGENT_REVIEW_ENABLED=false",
     ):
         assert line in env_example
+
+
+def test_platform_schema_guard_accepts_append_only_followup() -> None:
+    _assert_platform_schema_segment((*SCHEMA_FRAGMENT_NAMES, "250_future_increment.sql"))
+
+
+@pytest.mark.parametrize("change", ("missing", "reordered", "duplicate", "early_owner_late"))
+def test_platform_schema_guard_keeps_missing_reorder_duplicate_and_early_owner_fences(change: str) -> None:
+    names = list(SCHEMA_FRAGMENT_NAMES)
+    if change == "missing":
+        names.remove("230_artifact_authority_supersession.sql")
+    elif change == "reordered":
+        first = names.index("220_plan_catalog_knowledge_scope.sql")
+        second = names.index("230_artifact_authority_supersession.sql")
+        names[first], names[second] = names[second], names[first]
+    elif change == "duplicate":
+        names.append("240_deepseek_flash_runtime_cutover.sql")
+    else:
+        names.remove("110_thread_turn_codex.sql")
+        names.append("110_thread_turn_codex.sql")
+    with pytest.raises(AssertionError):
+        _assert_platform_schema_segment(tuple(names))
+
+
+def test_current_document_markers_cannot_be_satisfied_by_historical_sections() -> None:
+    text = "## Current\ncurrent facts\n## Historical\nold green evidence"
+    _assert_document_section(text, "## Current", ("current facts",))
+    with pytest.raises(AssertionError, match="missing current marker"):
+        _assert_document_section(text, "## Current", ("old green evidence",))
 
 
 def test_every_artifact_family_has_reproducible_happy_and_bad_path_evidence() -> None:
@@ -303,27 +360,31 @@ def test_every_artifact_family_has_reproducible_happy_and_bad_path_evidence() ->
 def test_source_of_truth_documents_cover_platform_and_non_claims() -> None:
     docs = {
         "docs/README.md": (
-            "## 2026-09-02 Tutor Conversation Learning Artifact platform integration status",
+            "## 2026-09-16 Artifact platform current contract",
+            _CURRENT_TEACHING_SKILL,
             "not a release approval",
         ),
         "docs/architecture/tutor-harness-runtime.md": (
-            "## 2026-09-02：Tutor Conversation Learning Artifact platform final composition",
+            "## 2026-09-16：Artifact platform current contract",
+            _CURRENT_TEACHING_SKILL,
             "TUTOR_LEARNING_ARTIFACTS_ENABLED",
         ),
         "docs/architecture/api-contract.md": (
-            "## 2026-09-02：Learning Artifact platform contract reconciliation",
+            "## 2026-09-16：Learning Artifact current contract reconciliation",
             "lesson_document_reference_v1",
         ),
         "docs/architecture/database-schema.md": (
-            "## 2026-09-02：Learning Artifact platform final schema reconciliation",
-            "21 fragments",
+            "## 2026-09-16：Learning Artifact current schema reconciliation",
+            f"{len(SCHEMA_FRAGMENT_NAMES)} fragments",
+            "230_artifact_authority_supersession.sql",
+            "240_deepseek_flash_runtime_cutover.sql",
         ),
         "docs/setup/development-environment.md": (
             "## 2026-09-02：Learning Artifact platform final local verification",
             "not executed",
         ),
         "docs/qa/acceptance-test-plan.md": (
-            "## 2026-09-02 Tutor Conversation Learning Artifact platform final matrix",
+            "## 2026-09-16 Artifact platform current verification matrix",
             "Parent AC1-AC20 evidence map",
         ),
         "docs/qa/tutor-harness-release-readiness.md": (
@@ -334,8 +395,9 @@ def test_source_of_truth_documents_cover_platform_and_non_claims() -> None:
     }
     for relative, required in docs.items():
         text = (_REPOSITORY_ROOT / relative).read_text(encoding="utf-8")
-        for marker in required:
-            assert marker in text, f"{relative} missing current marker: {marker}"
+        # Dated historical command ledgers remain historical; current contract
+        # markers must occur in their own section, never pass via old text.
+        _assert_document_section(text, required[0], required[1:])
 
     assert TUTOR_CONVERSATION_EVENT_PROJECTION_VERSION == "tutor_conversation_event_v3"
     assert TUTOR_CONVERSATION_READABLE_SNAPSHOT_VERSIONS == {

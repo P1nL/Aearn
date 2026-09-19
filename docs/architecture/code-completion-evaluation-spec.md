@@ -1,8 +1,51 @@
-# 代码补全验证 Prompt 与评分规则实施规格
+<a id="代码补全验证-prompt-与评分规则实施规格"></a>
+# 代码补全验证提示词与评分规则：当前对照及历史规格
 
-日期：2026-05-11  
-状态：Draft V1.1  
-适用范围：Aearn 的学习会话、复习变体、Attempt 评分与 FSRS Rating 映射
+> **阅读边界：历史设计不等于当前运行时契约。** 原稿日期为 2026-05-11，版本为草案 V1.1；下方历史正文保留当时的八分制、提示词、JSON Schema、表和路由。2026-09-17 的本地源码核对显示，正式 Tutor Harness 使用服务端确定性评分、可信证据和按学习路线隔离的复习终结流程，不能将旧的 `Attempt.fsrs_rating` 链路直接套用到当前接口。
+
+## 当前实现对照（2026-09-17）
+
+当前阅读入口为[运行时架构](./tutor-harness-runtime.md)、[API 契约](./api-contract.md)、[数据库结构](./database-schema.md)和[复习调度当前对照](./fsrs-scheduling-spec.md#当前实现对照2026-09-17)。以下只记录静态源码事实，不代表本次执行了模型提供方、数据库、浏览器、执行容器或生产验收。
+
+### 评分权威与证据边界
+
+| 关注点 | 当前源码与职责 | 与历史设计的区别 |
+|---|---|---|
+| 执行型练习评分 | [`practice/policies.py`](../../aearn/services/api/app/services/learning/practice/policies.py) 的 `score_execution_result`，策略 `lesson_gate_pass_v1` | 精确解析 `SafeExecutionResultV1` / `SafeExecutionResultV2`，按测试结果计算 `0..1` 分数，不采用历史四项各两分的总分 |
+| 静态推理 | 同文件 `evaluate_static_reasoning` | 规范化答案后做接受集合匹配，反馈含 `execution_claim=not_run`；静态通过不等于执行成功 |
+| 模型代码审查 | [`practice/model_review_scoring.py`](../../aearn/services/api/app/services/learning/practice/model_review_scoring.py) | 按服务端量规确定性匹配发现项、证据、遗漏与误报等；不是旧 `review_ai_patch` 四维 LLM 评分协议 |
+| 知识检查 Artifact | [`artifacts/knowledge_checks.py`](../../aearn/services/api/app/services/learning/artifacts/knowledge_checks.py) | 按已发布题目与结构化回答评分，提示、直接答案和回答回执有独立权威；不能由聊天评语直接授予独立掌握 |
+| 掌握度 | [`mastery.py`](../../aearn/services/api/app/services/learning/mastery.py) 的 `MasteryProjector`，版本 `learning_mastery_v2` | 投影已持久化可信证据，区分强化证据与观察；不按旧 `KnowledgePoint.mastery_score` 的固定加减表更新 |
+| 复习评级 | [`reviews/contracts.py`](../../aearn/services/api/app/services/learning/reviews/contracts.py)、[`reviews/scheduler.py`](../../aearn/services/api/app/services/learning/reviews/scheduler.py) | 汇总有限 `ReviewSession` 批次的结果和独立性，枚举为小写 `again/hard/good/easy`，不是旧的 `Again/Hard/Good/Easy` 写库字段 |
+
+执行型评分的当前公式为：
+
+```text
+score = passed_test_count / total_test_count                 # 有测试时
+score = 1 if status == success else 0                       # 无测试时
+passed = (status == success) and (score >= threshold)
+默认 threshold = 0.8；持久化 score 四舍五入到四位小数
+```
+
+`timeout`、`cancelled`、`unavailable` 分别映射为 `timed_out`、`cancelled`、`unavailable` 终态；其余按是否满足通过条件映射为 `passed` 或 `failed`。服务端安全执行结果与模型面向学习者的解释是两个不同层次：模型反馈不能改写已落库的测试事实或终态分数。Artifact 结果投影和降级反馈边界另见运行时架构，不能把“反馈生成成功”当作“执行通过”。
+
+### 当前接口与持久化入口
+
+- [`app/main.py`](../../aearn/services/api/app/main.py) 注册 `exercise_gates_router` 与 `reviews_router`；复习路由定义在 [`learning_track_reviews.py`](../../aearn/services/api/app/routes/learning_track_reviews.py)，前缀为 `/api/learning-tracks`。
+- 当前复习入口包括 `GET /api/learning-tracks/{track_id}/reviews`、`POST /api/learning-tracks/{track_id}/reviews/sessions` 和 `POST /api/learning-tracks/{track_id}/reviews/sessions/{session_id}/finalize`。具体动作请求仍以 API 契约为准。
+- 练习事实存入 `tutor_exercise_attempts` / `tutor_exercise_attempt_results`；复习由 `tutor_review_sessions` / `tutor_review_items` 组织，通过 `tutor_review_finalizations` 关联调度事件与掌握证据。单题终态不等于整批调度完成。
+- [`reviews/session_repository.py`](../../aearn/services/api/app/services/learning/reviews/session_repository.py) 的 `finalize_session` 校验所有题目结果、会话版本、路线版本、计划修订和调度状态行版本（`expected_schedule_version`，不是 `scheduler_version` 策略标识）；[`reviews/service.py`](../../aearn/services/api/app/services/learning/reviews/service.py) 在同一事务中调用终结并接纳教学终态事件。
+- 仓库仍有 [`exercises/evaluation.py`](../../aearn/services/api/app/services/exercises/evaluation.py) 等旧评分辅助实现；文件存在不证明旧顶层学习会话或复习 API 仍被正式应用注册。不得为“对齐本文”恢复旧路由或旧表。
+
+### 历史内容的使用方式
+
+下方运行能力表是旧阶段设计记录，不是现行语言可用性或已验证容器矩阵；其中“可先 mock 判定”“公开路线可用”不能作为当前执行能力承诺。实际可用性应读取当前运行时能力投影和验收记录。
+
+历史正文仍保留“必须”“当前”等原有设计语气，其作用域均为原草案。原稿中结果条件、提示次数与示例存在张力（例如示例 2 为六分 `passed`，而判定表把高提示依赖列入 `partial`）；本次不擅自重写历史算法以制造一致性，也不把它用作当前验收规则。
+
+## 历史设计正文（2026-05-11，草案 V1.1）
+
+原适用范围：Aearn 的学习会话、复习变体、Attempt 评分与 FSRS Rating 映射。以下表、JSON、提示词、接口和完成标准仅保留作设计演变证据。
 
 ## 目标
 
@@ -244,7 +287,8 @@
 | `partial` | 总分 4-5，或测试通过但提示依赖高 / 解释不稳定 | 记录薄弱点，短补讲，加入重点复习 |
 | `failed` | 总分 ≤ 3，核心空缺错误，关键测试失败，或无法运行 | 降低粒度重讲，不推进新知识 |
 
-## FSRS Rating 映射
+<a id="fsrs-rating-映射"></a>
+## FSRS 评级映射
 
 | `result` | 附加条件 | FSRS Rating |
 |---|---|---|
@@ -299,7 +343,8 @@
 - “这个函数遇到空数组时会返回什么？”
 - “AI 改动的这行代码解决了哪个失败测试？”
 
-## LLM 输出要求
+<a id="llm-输出要求"></a>
+## 大语言模型输出要求
 
 Agent 评分必须输出可解析 JSON，禁止只输出自然语言。
 
@@ -355,7 +400,8 @@ Agent 评分必须输出可解析 JSON，禁止只输出自然语言。
 
 只说 `tests passed` 属于弱证据；如果 `evidence_grounding < 2`，即使 verdict 正确也必须映射为 `result=partial`、`fsrs_rating=Hard`、`next_action=review_variant`，不得给 `Easy`。
 
-## JSON Schema
+<a id="json-schema"></a>
+## JSON 结构校验模式
 
 后端必须用 schema 校验 Agent 输出，并在写入 `attempts.code_completion_result` 前补齐服务端可验证字段。下列 schema 适用于代码补全/修复/解释类练习；`review_ai_patch` 使用上方专用维度，但仍遵守 `result`、`score`、`hard_gates`、`weak_points`、`feedback`、`next_action`、`fsrs_rating` 的公共约束。
 
@@ -456,7 +502,8 @@ Agent 评分必须输出可解析 JSON，禁止只输出自然语言。
 - `evaluator_version`：例如 `code_completion_eval_v1`
 - `evidence_hash`：由 `attempt_id + submitted_code + test_results + explanation_text` 生成，防止评分与证据错配
 
-## 评分 Prompt 模板
+<a id="评分-prompt-模板"></a>
+## 评分提示词模板
 
 `evaluate_attempt_prompt` 只能用于结构化评分，不承担重新运行代码、泄露隐藏测试或补全答案职责。
 
@@ -540,7 +587,7 @@ Agent 评分必须输出可解析 JSON，禁止只输出自然语言。
 
 ## API 对齐
 
-相关接口：
+以下为历史接口，不是当前已注册路由：
 
 - `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/run`
 - `POST /api/learning-sessions/{session_id}/exercises/{exercise_id}/submit`
@@ -549,7 +596,7 @@ Agent 评分必须输出可解析 JSON，禁止只输出自然语言。
 - `POST /api/learning-sessions/{session_id}/attempts/{attempt_id}/check-explanation`
 - `POST /api/reviews/{session_id}/exercise-result`
 
-字段命名必须与 `docs/architecture/api-contract.md` 保持一致。
+原稿要求字段命名与同期 API 规格一致；当前接口字段请以 [API 契约](./api-contract.md) 为准，不再按本节旧字段反向修改正式接口。
 
 ## 数据模型对齐
 

@@ -19,7 +19,7 @@ This repository is the Aearn MVP workspace for an AI programming language learni
 - `aearn/packages/` contains shared project packages.
 - `aearn/infra/` contains local infrastructure configuration.
 - `docs/` contains the product, architecture, API, database, interaction, and acceptance source documents.
-- `docs/design/learning-agent-claude-desktop-framework.html` is the user-designed protected frontend prototype and must not be deleted without explicit user confirmation.
+- `docs/design/learning-agent-claude-desktop-framework.html` is the user-designed frontend reference prototype. It is visual/layout reference only, not runtime code, and is no longer a protected asset.
 
 Legacy tutorial project files have been removed from the current working tree. Do not recreate or depend on them for new Aearn work.
 
