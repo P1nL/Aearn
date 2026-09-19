@@ -6,7 +6,7 @@
 
 ## Overview
 
-The runtime lives under `aearn/apps/desktop/` and uses Vite, React, TypeScript, and Tauri 2. The protected HTML prototype in `docs/design/` remains reference material and is never the production source tree.
+The runtime lives under `aearn/apps/desktop/` and uses Vite, React, TypeScript, and Tauri 2. The HTML prototype in `docs/design/` is reference material only and is never the production source tree.
 
 ---
 

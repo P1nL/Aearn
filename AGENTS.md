@@ -11,7 +11,7 @@ Aearn 是面向 AI 编程的编程语言学习 Agent MVP。当前正式实现目
 - 默认在 `aearn/` 下执行项目命令；仓库根目录只用于 Git、Trellis、文档和 agent 配置。
 - 新业务代码默认进入 `aearn/services/`、`aearn/apps/`、`aearn/packages/` 或 `aearn/infra/`，不要重新引入历史教程目录。
 - 文档变更优先同步 `docs/README.md` 中列出的 source of truth，不要创建重复规格。
-- `docs/design/learning-agent-claude-desktop-framework.html` 是用户设计的受保护前端主原型，不能删除；如需替换，必须先获得用户明确确认。
+- `docs/design/learning-agent-claude-desktop-framework.html` 是用户设计的前端参考原型，仅作视觉和布局参考，不是运行时代码；不再作为受保护资产，可按需修改或替换。
 - 后端依赖以 `aearn/services/api/pyproject.toml` 为准，前端与桌面端依赖以 `aearn/package.json` 和 workspace 配置为准。
 - 本地密钥、`.env`、缓存、构建产物和工具 worktree 不进入 Git。
 

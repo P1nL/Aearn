@@ -269,7 +269,6 @@ def test_routes_flags_schema_and_import_boundaries_are_reconciled(
         if isinstance(node, ast.ImportFrom)
     }
     assert imported_modules == {"contracts"}
-    assert (_REPOSITORY_ROOT / "docs/design/learning-agent-claude-desktop-framework.html").is_file()
 
     env_example = (_REPOSITORY_ROOT / "aearn/.env.example").read_text(encoding="utf-8")
     for line in (

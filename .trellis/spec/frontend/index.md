@@ -6,7 +6,7 @@
 
 ## Overview
 
-The formal desktop runtime lives under `aearn/apps/desktop/`. Current behavior is defined by the implementation and the documents indexed by `docs/README.md`; the protected HTML design under `docs/design/` is reference material, not runtime source.
+The formal desktop runtime lives under `aearn/apps/desktop/`. Current behavior is defined by the implementation and the documents indexed by `docs/README.md`; the HTML design under `docs/design/` is reference material, not runtime source.
 
 ---
 
