@@ -43,14 +43,6 @@ aearn/apps/desktop/src/types.ts
 aearn/apps/desktop/src/styles.css
 ```
 
-默认不要修改：
-
-```text
-docs/design/learning-agent-claude-desktop-framework.html
-```
-
-这个文件是用户设计的受保护主原型，只能作为视觉和布局参考；除非用户明确要求，否则不能删除、重写或替换。
-
 ## 硬性边界
 
 - 不要把旧教程目录或历史原型当成 runtime。
