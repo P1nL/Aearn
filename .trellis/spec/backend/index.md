@@ -16,6 +16,7 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Service ownership, package boundaries, and module layout | Filled |
 | [Database Guidelines](./database-guidelines.md) | PostgreSQL schema, transaction, query, and migration rules | Filled |
+| [Grounding Corpus Operations](./grounding-corpus-operations.md) | Local fixture-only operator CLI, replay, validation, safe output and runtime isolation | Filled |
 | [Error Handling](./error-handling.md) | Error types and safe failure mapping | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, scenarios, and validation gates | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging and redaction | Filled |

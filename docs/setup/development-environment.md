@@ -389,3 +389,74 @@ uv --directory .\aearn\services\api run python -m app.db.bootstrap
 The browser matrix uses disposable learner-safe fixtures at 1440x900, 900x900, 390x844, and reduced motion. It must verify no page overflow, clean console, keyboard/focus return, isolated conversation/drawer/Artifact scrolling, and protected-marker absence. Native Preview security evidence may run only the local Tauri/WebView2 harness already defined by the Preview contract; it must not be described as Docker or production container conformance.
 
 Do not set the real-provider marker, enable Docker conformance, build/sign/publish production images, push, deploy, or migrate production data as part of this default matrix. Record those gates as not executed.
+
+
+## 2026-09-23：RAG Corpus 手工 CLI（fixture-only）
+
+入口为 `python -m app.services.grounding.corpus_cli`，仅供本地 operator 手工运行；没有 HTTP/admin
+接口、Desktop 控件、学习者调用路径或定时任务。CLI **不会自动 bootstrap**。
+
+本阶段只接受服务端注册 Subject 的 `fixture-v1`。材料来自确定性 fixture，使用
+`fixtures.aearn.invalid` 标识，不是下载的权威资料；四条路线仍为 shadow，六个生态仍为 fixture-only。
+即使操作生成了 published corpus / active pointer，也不表示公开课程、真实题库或教学准入已完成。
+`--mode fetch` 当前明确返回 `FETCH_NOT_READY`（退出码 2），不抓取、不静默改用 fixture。
+
+### 临时库演示
+
+先自行创建一个本轮专用、以 `aearn_rag260_` 开头的本地临时数据库，再显式设置 `DATABASE_URL`。
+不要把已有学习库作为演示库。下面从仓库根目录使用 PowerShell 7 运行，先拒绝错误目标，再在该临时库
+执行 bootstrap（bootstrap 是独立开发步骤，不是 CLI 的副作用）。
+
+```powershell
+if (-not $env:DATABASE_URL) { throw '先显式设置本轮临时库 DATABASE_URL' }
+$dbUri = [Uri]$env:DATABASE_URL
+if ($dbUri.Host -notin @('localhost', '127.0.0.1') -or
+    -not $dbUri.AbsolutePath.Trim('/').StartsWith('aearn_rag260_')) {
+    throw '本演示仅允许本地 aearn_rag260_* 临时库'
+}
+$env:PYTHON_DOTENV_DISABLED = '1'
+$env:LLM_TYPE = 'disabled'
+uv --directory .\aearn\services\api run python -m app.db.bootstrap
+if ($LASTEXITCODE -ne 0) { throw '临时库 bootstrap 失败' }
+
+function Invoke-RagCorpus {
+    $json = uv --directory .\aearn\services\api run python -m app.services.grounding.corpus_cli @args
+    $exitCode = $LASTEXITCODE
+    $result = ($json -join "`n") | ConvertFrom-Json
+    if ($exitCode -ne 0) { throw "Corpus CLI 失败：$($result.code)（$exitCode）" }
+    return $result
+}
+
+$key = [guid]::NewGuid().ToString('N')
+$candidate = Invoke-RagCorpus reindex --subject route.python --subject-version fixture-v1 --mode fixture --idempotency-key "$key-reindex"
+$validated = Invoke-RagCorpus validate --corpus-id $candidate.corpus_id --expected-generation 0 --idempotency-key "$key-validate"
+Invoke-RagCorpus diff --candidate-id $candidate.corpus_id --idempotency-key "$key-diff"
+$status = Invoke-RagCorpus status --subject route.python
+$generation = if ($null -eq $status.active) { 0 } else { $status.active.generation }
+Invoke-RagCorpus activate --candidate-id $candidate.corpus_id --expected-generation $generation --summary-hash $validated.summary_hash --idempotency-key "$key-activate"
+Invoke-RagCorpus status --subject route.python
+```
+
+`reindex` 只建立候选，`validate` 和 `diff` 不激活。`activate` 必须显式提交刚取得的 summary hash
+和 active generation；若并发修改导致冲突，不要改用猜测值或自动绕过 CAS。
+
+### 命令与恢复语义
+
+| 命令 | 必须携带的操作参数 |
+| --- | --- |
+| `status` | `--subject` |
+| `reindex` | `--subject --subject-version fixture-v1 --mode fixture --idempotency-key` |
+| `validate` | `--corpus-id --expected-generation --idempotency-key` |
+| `diff` | `--candidate-id --idempotency-key` |
+| `activate` | `--candidate-id --expected-generation --summary-hash --idempotency-key` |
+| `rollback` | `--subject --target-corpus-id --expected-generation --idempotency-key` |
+| `retire` | `--corpus-id --idempotency-key` |
+
+同一幂等键和请求重放原操作回执；不要换键来掩盖失败，也不要让同一键承载另一请求。回滚只把指针指向
+先前 published 版本并递增 generation，不删除历史；不能退役当前 active 版本。fixture 的来源、版本和
+facet 由服务端定义，操作者不能通过命令行传任意 URL/正文或声明校验通过。
+
+操作结果为单行有界 JSON。退出码：`0` 成功/合法重放；`2` 参数、版本、fetch未就绪或校验失败；
+`3` 幂等/代际/状态冲突；`4` 安全化内部错误。不会输出 DSN、密码、原始异常或来源正文。
+普通 `--help` 是本地帮助文本，不是操作回执。演示结束后，仅清理自己创建且已无连接的临时数据库，
+不要删除 Docker 数据卷或原有学习数据库。
