@@ -1038,3 +1038,13 @@ facet。本仓库此阶段没有真实 embedding 索引回执或 pgvector 部署
 当前可验证的是已发布 synthetic fixture corpus；unsupported policy、错误版本/哈希、过期或退役
 语料关闭准入。内部结果保留 fixture 身份及稳定 request/plan/result/report 哈希；尚未实现的真实来源
 授权与消费者发布不能从这些工程回执推导。后续 adapter 必须单独完成治理与兼容验收后才能接入公开路径。
+
+## 2026-09-23：RAG 计划预检与迁移投影（阶段 I）
+
+`plan_coverage.py` 与 `plan_migration.py` 提供内部 shadow 预检及不可变修复提案：按精确 Subject/version、corpus coverage、Lesson/评估能力声明及已发布 Learning Item 事实判定节点，不接入公开计划确认、学习轨道激活、worker、启动脚本或 Desktop。
+
+- 每个节点保留 supported / partial / insufficient / unavailable 差异；核心目标缺口阻断，不能用删除核心节点或普通 Python 替换 LangChain 来伪造通过。
+- 现有学习轨道只读其 active immutable revision；提案绑定 predecessor、原计划哈希、节点级差异、源/能力事实和策略版本。重复请求产生稳定投影，过期身份关闭。
+- 当前交付是未持久化、未确认、不可激活的提案投影，不是新增 successor revision；不改变 active plan、学习进度、assignment 或既有 Lesson 失败记录。
+- 检索仅由显式内部依赖注入调用；默认关闭的适配器不构成公开发布开关。fixture corpus 和静态运行能力声明不是真实资料覆盖、健康 sandbox、教学完成或掌握证据。
+- 实际权限、事务及测试边界见 `.trellis/spec/backend/plan-preflight-migration.md`；生产真实源、公开迁移与完整学习闭环仍属于后续阶段。

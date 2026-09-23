@@ -18,6 +18,7 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 | [Database Guidelines](./database-guidelines.md) | PostgreSQL schema, transaction, query, and migration rules | Filled |
 | [Grounding Corpus Operations](./grounding-corpus-operations.md) | Local fixture-only operator CLI, replay, validation, safe output and runtime isolation | Filled |
 | [Grounding Retrieval V2](./grounding-retrieval-v2.md) | Exact-scope FTS, fake embedding, facet coverage, bounded evidence and no public cutover | Filled |
+| [Plan Preflight and Migration](./plan-preflight-migration.md) | Default-off server-fact preflight, immutable repair projections and no history mutation | Filled |
 | [Error Handling](./error-handling.md) | Error types and safe failure mapping | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, scenarios, and validation gates | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging and redaction | Filled |
