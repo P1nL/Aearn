@@ -1008,3 +1008,33 @@ Public API/SSE/Desktop/export/readiness evidence excludes complete submissions, 
 Codex plan drafting separates direction judgment from planning-fact authority. After one read-only planning-context call, the model must submit exactly one internal closed direction action. The server validates that result and maps it to the existing exact planning question, a bounded answer/refocus message, a fixed direction clarification, or the existing four-field append-only switch reopen. Missing/invalid direction resolution never falls through to the primed old `next_missing_fact`. Since the 2026-09-08 repair, budget/time/fatal Runtime failures remain visible failures rather than being misrepresented as semantic ambiguity; genuine direction clarification retains its existing server mapping.
 
 Primed waiting-for-user turns use low effort and 45 seconds with separate limits of 2,000 message characters and 16,000 reasoning characters; the aggregate hard ceiling remains unchanged. One wrong-order tool call can use the existing single repair allowance, with at most three actual calls but only one accepted direction action. Budget, timeout, fatal tool and cancellation cleanup fence callbacks and require bounded interrupt plus matching terminal confirmation; ACK alone is insufficient, and unconfirmed stop closes the owned runtime. Complete-fact draft turns retain the normal quality profile. Successful mapped postconditions append one closed, idempotent `planning_direction_resolved` receipt in `tutor_run_events` without a migration. The receipt is internal and contains hashes/closed metadata only. Public snapshot/SSE/Desktop contracts gain no direction field. Raw Codex reasoning remains owner-visible through Runtime output, snapshot/history/SSE, and Desktop `think`; commentary, reasoning summary, and unknown channels remain excluded. Harness plan drafting continues to select immutable `tutor.learning-plan-draft@1.0.3`, with 1.0.2 and earlier versions unchanged.
+
+
+## 2026-09-23：RAG v2 内部检索基础（尚未接入公开消费者）
+
+`retrieval_contracts.py`、`retrieval_planner.py`、`hybrid_retrieval.py` 与 `coverage.py`
+增加独立的 exact-scope 检索与资料覆盖合同，不替换当前 `grounding.retrieve` owner、Lesson/Tutor
+读取或旧 `grounding_chunks` 检索，也不新增 HTTP、后台任务、维护入口或 provider。
+确定性 fixture 身份策略提取为中性只读 `corpus_fixture_policy.py`；原 `corpus_fixtures.py` 保持兼容
+重导出，fixture 内容和哈希不变，检索层不依赖 operator 入口模块。
+
+内部请求固定 Subject/version、active-or-exact corpus selector、required/optional facets、stage 和
+named budget profile；active selector 在开始时解析为 exact published 身份。计划先解析允许来源、trust
+与 facet 范围，再通过 PostgreSQL 的存储 tsvector 做带 LIMIT 的全文检索，不能载入所有语言片段后
+在 Python 排序。框架缺口不能由基础语言材料静默补齐。
+
+stage 支持 plan_preflight、lesson_authoring、tutor_focus、practice、review；standard/compact
+预算由服务端定义，随必要 facet 复杂度变化，而不是把固定 top_k 当覆盖证明。选中的证据同时受字符、
+估算 token 和片段数上限约束。覆盖报告区分 satisfied、partial、insufficient、unavailable，并保留
+缺失 facet、来源多样性、trust、版本/新鲜度、预算与封闭原因码。资料覆盖不等于学习者掌握或 Gate 通过。
+当前用量按所选证据正文统计，estimated tokens 采用保守的 UTF-8 字节上界，不是 provider 实际 usage；
+未来消费者组装引用元数据、system 和其他上下文时仍须另做完整 prompt 预算。
+
+可选 embedding 默认为 disabled；本阶段只有 deterministic fake adapter 与明确 synthetic 的
+server-owned receipt/config，绑定 exact corpus/content/registry 哈希。候选必须重新从 PostgreSQL
+精确范围加载并核对哈希、模型、维度和归一化标识；不合格或不可用时降级到 FTS，不能凭相似度覆盖缺失
+facet。本仓库此阶段没有真实 embedding 索引回执或 pgvector 部署，fake 不能冒充生产索引。
+
+当前可验证的是已发布 synthetic fixture corpus；unsupported policy、错误版本/哈希、过期或退役
+语料关闭准入。内部结果保留 fixture 身份及稳定 request/plan/result/report 哈希；尚未实现的真实来源
+授权与消费者发布不能从这些工程回执推导。后续 adapter 必须单独完成治理与兼容验收后才能接入公开路径。
