@@ -146,3 +146,55 @@ Implemented generic semantic chat-direction recovery across Harness, Codex plan 
 ### Status
 
 [OK] **Completed**
+
+
+## Session 6: RAG Subject contracts implemented and verified
+<!-- trellis-session: v=2 fp=0a1e2fdf6fe3af49 -->
+
+**Date**: 2026-09-23
+**Task**: RAG Subject contracts implemented and verified
+**Branch**: `main`
+
+### Summary
+
+GPT-6-Sol implement/check; 48 offline tests plus Ruff/Mypy/lock passed; no live corpus or public rollout.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3d54036` | feat: add guarded RAG subject capability taxonomy |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Versioned corpus authority in isolated disposable PostgreSQL database.
+
+
+## Session 7: Versioned RAG corpus authority verified
+<!-- trellis-session: v=2 fp=6c661d7d2d468d8c -->
+
+**Date**: 2026-09-23
+**Task**: Versioned RAG corpus authority verified
+**Branch**: `main`
+
+### Summary
+
+Six shared corpus tables; guarded lifecycle/CAS/replay and savepoint atomicity. Final 37 DB, 50 legacy compatibility and 48 offline tests passed. Three disposable DBs removed; no live fetch or public rollout.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `eab2c58` | feat: add versioned RAG corpus authority |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Existing operator corpus CLI child; explicit fixture mode and isolated database only.

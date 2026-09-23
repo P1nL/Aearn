@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-09-08
+- **Total Sessions**: 7
+- **Last Active**: 2026-09-23
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~148 | Active |
+| `journal-1.md` | ~200 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,8 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-09-23 | Versioned RAG corpus authority verified | `eab2c58` | `main` |
+| 6 | 2026-09-23 | RAG Subject contracts implemented and verified | `3d54036` | `main` |
 | 5 | 2026-09-08 | Python LessonDocument 有界修复与安全诊断 | `ed2b1d6` | `codex/semantic-planning-language-resolution` |
 | 4 | 2026-09-05 | 提交工作树并整理仓库结构 | `30a92a5`, `c1a8080` | `codex/semantic-planning-language-resolution` |
 | 3 | 2026-09-04 | Tutor semantic direction recovery | `287d53d` | `codex/semantic-planning-language-resolution` |
