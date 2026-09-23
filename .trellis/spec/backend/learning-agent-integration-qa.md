@@ -247,3 +247,48 @@ feature off -> legacy full_catalog rollback
 
 - Resolver/provider/gate/persistence unit and PostgreSQL tests, fake Codex cutover tests, Skill raw-byte/catalog tests, Desktop one-option radio regression, Ruff, Mypy, Desktop check, Trellis validation, and diff hygiene.
 - No real provider call and no mutation of an already persisted request.
+
+
+## Scenario: RAG Subject taxonomy is not runtime or public readiness (2026-09-23)
+
+### 1. Scope / Trigger
+- Changing `grounding/subject_contracts.py`, `subject_registry.py`, or a future consumer of their Subject identities.
+- Phase I adds internal taxonomy only; it does not activate a public course, fetch sources, create a corpus, or prepare a Gate.
+
+### 2. Signatures
+- `all_grounding_subjects() -> tuple[GroundingSubject, ...]`
+- `get_grounding_subject(subject_id_or_alias: str) -> GroundingSubject | None`
+- `subjects_for_public_course_language(course_language: str) -> tuple[GroundingSubject, ...]`
+- `validate_grounding_subject_registry(subjects: Sequence[GroundingSubject]) -> tuple[str, ...]`
+- `capability_projection(subject_id_or_alias: str) -> SubjectCapabilityProjection | None`
+- `is_public_subject_candidate(subject_id_or_alias: str) -> bool`
+
+### 3. Contracts
+- Subject contracts are frozen, strict and extra-forbid; sequence fields are immutable tuples. Phase-I version policy is `operator_locked`.
+- Four route identities and six fixture-only ecosystems are developer-owned. Later corpus/retrieval work consumes these identities instead of creating parallel enums.
+- The existing `LANGUAGE_CAPABILITIES` and `PUBLIC_COURSE_LANGUAGE_MAP` remain the compatibility authority. Eight public course ids and nine underlying language ids are different counts: legacy `html_css` groups HTML and CSS.
+- Registered language support is not observed corpus coverage, verified executor isolation, or learner readiness. All new Subject public admission is closed in this phase.
+- Internal capability projections must not be returned wholesale through public APIs. Their explicit public subset carries only the Subject id and availability.
+
+### 4. Validation & Error Matrix
+| Input / state | Required behavior |
+| --- | --- |
+| Duplicate id/alias, missing/cyclic parent, unknown language/facet/runtime | Deterministic registry rejection; no silent fallback |
+| Unknown lookup | `None` / empty grouping / false admission as appropriate |
+| Fixture-only ecosystem | Not a public plan/course candidate, no live readiness claim |
+| Legacy `html_css` grouping | Read-compatible without replacing current public mapping |
+| New or changed release state | Component claims cannot exceed declared release constraints |
+
+### 5. Good / Base / Bad Cases
+- Good: a future fixture corpus names a validated Subject while remaining unavailable to public course selection.
+- Base: importing the taxonomy performs no network/database/provider I/O and leaves existing language selection unchanged.
+- Bad: enabling a Subject because its underlying language has a runner or because offline fixture tests passed.
+
+### 6. Tests Required
+- Focused `tests/grounding/test_grounding_subjects.py`, existing grounding-source and language-capability regressions; Ruff and Mypy for the new modules.
+- Test mutation/extra-field rejection, identity/graph validation, runtime/release compatibility, fixture admission and safe projection separately.
+- This gate is offline engineering evidence only, not a live source/item/Artifact/Gate/lesson acceptance receipt.
+
+### 7. Wrong vs Correct
+- Wrong: `language.supports_execution` implies the new ecosystem can be publicly selected and its corpus is ready.
+- Correct: preserve the existing public selector, require explicit Subject admission, and separately verify corpus authorization and runtime readiness in their owning layers.
