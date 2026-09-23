@@ -14,6 +14,7 @@ API_DIR = Path(__file__).resolve().parents[2]
 AEARN_DIR = API_DIR.parents[1]
 APP_DIR = API_DIR / "app"
 GROUNDING_DIR = APP_DIR / "services" / "grounding"
+SHADOW_ADAPTER = APP_DIR / "services" / "learning" / "grounding_adapters.py"
 WORKER_DIR = AEARN_DIR / "services" / "worker" / "aearn_worker"
 START_DEV = AEARN_DIR / "scripts" / "start-dev.ps1"
 IMPLEMENTATION = frozenset({"hybrid_retrieval", "retrieval_planner"})
@@ -117,7 +118,13 @@ def test_audit_detects_wiring_but_not_data_only_mentions() -> None:
 
 def test_public_api_worker_and_startup_do_not_reference_v2_implementation() -> None:
     owned = {GROUNDING_DIR / f"{name}.py" for name in V2_MODULES}
-    assert all(path.is_file() for path in owned), "v2 modules not yet complete"
+    # Child06 permits exactly this explicit internal shadow adapter to resolve
+    # the server-owned v2 plan. Its separate audit forbids app/worker consumers
+    # of the adapter; all other runtime files remain excluded here.
+    owned.add(SHADOW_ADAPTER)
+    assert all(path.is_file() for path in owned), "v2 modules or shadow adapter missing"
+    assert any(value == f"{PACKAGE}.retrieval_planner"
+               for _, value in _implementation_references(_parse(SHADOW_ADAPTER)))
     runtime = [path for path in APP_DIR.rglob("*.py") if path not in owned]
     worker = list(WORKER_DIR.rglob("*.py"))
     assert runtime and worker, "API/worker source inventory missing"

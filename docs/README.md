@@ -117,3 +117,9 @@ Local deterministic tests, disposable PostgreSQL/browser fixtures, Rust checks, 
 只读交互见 [前端交互规格](product/frontend-interaction-spec.md)，
 持久化 purpose 与历史兼容见 [数据库契约](architecture/database-schema.md)。
 本次纠正不表示题库审核/pilot、SQL/code/demo 或独立 browser_preview 已通过验收。
+
+## RAG 2.0 阶段 I 工程演示
+
+共享corpus authority、四路线/六生态合成场景、精确FTS/假embedding降级、有界coverage、shadow预检及内部引用兼容接缝见[架构与离线演示指南](architecture/rag-v2-interview-guide.md)。指南不是新的source of truth；公开契约仍以运行时、API、数据库、用户流程与QA文档为准。
+
+本阶段无真实来源抓取或公开v2消费者启用，不增加生态课程，不修改既有用户计划/进度，不表示学习闭环、真实运行环境或生产发布已验收。

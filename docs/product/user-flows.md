@@ -360,3 +360,9 @@ The Tutor may select a published demonstration handle but cannot author or alter
 3. Desktop 复用一个右侧 document drawer，只滚动 drawer 内部并以 absolute dashed overlay 标记 exact block。完整文档和冻结 source snapshots 留在 drawer；Artifact 只保留必要 excerpt 与 source chips。
 4. 新引用在已打开 drawer 中原地 retarget。打开/关闭不会重挂载 Tutor、Lesson、Artifact、Editor 或 Preview，也不会改变 conversation scroll、Composer draft、Attempt/Gate/Review authority。
 5. 390px drawer 宽 88vw，outside click 保持打开；close button/Escape 关闭并在 commit 后把 focus 还给 exact trigger。reduced motion 立即定位且不播放 highlight animation。
+
+## RAG 2.0 shadow 验收对学习流程的影响（阶段 I）
+
+当前学习者流程不变：没有新增生态课程入口、迁移确认弹窗或自动课程修复。内部预检可以说明某节点缺乏精确资料、Lesson/题库或运行能力，但不会更换active plan、删除学习进度、覆盖Lesson失败或替学习者确认迁移。
+
+核心LangChain目标不能被普通Python替代；内部提案保持blocked/wait_for_release。可选节点的修复也只是未持久化、未确认、不可激活的投影。默认关闭的Lesson/Tutor引用适配只验证兼容形状，不让synthetic或fixture_only资料出现在公开教学消息/来源工件中。

@@ -910,3 +910,9 @@ ready、非 blocking、无 action/Attempt，不建立额外评分、进度或 co
 来源详情与“查看来源文档”继续使用 exact Artifact ID/version 与冻结的文档/assignment/hash/block/citation。
 历史手动生成且 `turn_id=null` 的合法来源工件仍可读取，不删除、回写或冒充新的 Tutor 生成证据。
 旧 `source_inspector + remediation` 亦保持历史兼容。新增路径不改写已发布 Skill bundle，不放宽现有上下文预算或重试上限。
+
+## RAG 2.0 内部 shadow 接缝（阶段 I）
+
+本轮没有新增或变更公开HTTP route、Lesson/Tutor/Artifact请求响应字段、课程可选列表或计划确认行为。内部adapter和status projection只供显式测试/演示调用；默认关闭并且不能因corpus处于active/published就声明public course可用。
+
+fixture-only生态不能作为公开course/plan/Lesson/Tutor/Artifact候选。内部引用形状转换不授予现有Lesson持久化或source-inspector权限，不能绕过真实HTTP provenance与冻结来源校验。真实RAG消费者启用、公开状态字段及管理UI均需后续独立合同；本阶段不预先承诺它们的API。

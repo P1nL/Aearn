@@ -570,3 +570,9 @@ Child12 changes no product UI runtime. AC19 therefore reuses the recorded curren
 - 最终独立审查无阻塞项：补充 cancelled prepare replay、expired lease reclaim budget、fatal issue 截断保护与 Desktop missing prepare replay；后端 41 passed，Desktop 4 files / 38 passed，Ruff、Mypy app（249 files）、tsc --noEmit、lock check 与 diff check 通过。两轮各自独立测试库均已删除。
 
 不声明真实 provider 生成质量、RAG v2 或 LangChain corpus 发布、全量 Desktop build、生产迁移、push/deploy/release 或现有用户课程数据修改。
+
+## RAG v2 阶段 I：本地工程验证，不构成发布许可
+
+四路线/六生态synthetic fixture、共享corpus CLI、精确FTS/假embedding降级、coverage、不可激活的计划修复投影及内部Lesson/Tutor形状适配已完成本地工程验证。最后联合批330 passed、0 skipped；全后端Ruff、Mypy276源文件、依赖锁、Desktop typed/build通过。实际演示回放、40个只读适配场景及10项拒绝校验的范围和证据见[阶段I验收矩阵](acceptance-test-plan.md#rag-v2-阶段-i-架构集成验收)和[演示指南](../architecture/rag-v2-interview-guide.md)。
+
+四个route Subject仍为shadow，六个生态仍为fixture_only，active fixture corpus不等于公开课程可用。公开route/consumer/worker/Desktop接口未启用v2；没有真实资料抓取、真实embedding、sandbox健康、完整学习闭环或现有用户迁移证据。两临时数据库已零连接删除；未写原业务库、未推送。本阶段不授权发布、部署或第二阶段真实来源/消费者启用。

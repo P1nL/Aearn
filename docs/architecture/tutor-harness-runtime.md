@@ -1048,3 +1048,11 @@ facet。本仓库此阶段没有真实 embedding 索引回执或 pgvector 部署
 - 当前交付是未持久化、未确认、不可激活的提案投影，不是新增 successor revision；不改变 active plan、学习进度、assignment 或既有 Lesson 失败记录。
 - 检索仅由显式内部依赖注入调用；默认关闭的适配器不构成公开发布开关。fixture corpus 和静态运行能力声明不是真实资料覆盖、健康 sandbox、教学完成或掌握证据。
 - 实际权限、事务及测试边界见 `.trellis/spec/backend/plan-preflight-migration.md`；生产真实源、公开迁移与完整学习闭环仍属于后续阶段。
+
+## RAG 2.0 阶段 I：内部 shadow 集成边界
+
+共享corpus authority、精确检索与计划预检之外，阶段I只增加默认关闭的内部Lesson/Tutor引用形状适配与确定性演示场景。适配输出不是公开DTO或可持久化来源权限：合成fixture、fixture_only生态、candidate/retired语料均不能借兼容形状进入学习者可见状态；不把v2 chunk身份伪装成v1 `grounding_chunks` 行。
+
+四个route Subject仍为shadow，六个生态仍为fixture_only。active fixture corpus仅表示operator指针，不代表课程公开、Lesson可交付或runtime健康。没有新公开route、计划确认拦截、worker schedule或Desktop管理入口；既有Lesson、Tutor及citation链保持原实现。
+
+[架构讲解与可重复离线演示](rag-v2-interview-guide.md)是面试/工程说明，不替代本文和验收计划。真实抓取、真实embedding、来源证据绑定及逐scope消费者启用仍属于后续单独验收。

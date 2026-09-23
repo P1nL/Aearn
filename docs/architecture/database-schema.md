@@ -670,3 +670,9 @@ validated 及后续状态的内容快照不可原地替换；发布和回退只�
 此阶段不提供网络抓取、operator CLI、自动发布策略或公开 consumer；候选覆盖摘要也不等同
 真实来源质量已验证。工程验收使用独立临时数据库进行 bootstrap twice、immutable/scope 约束、
 CAS 竞争与旧读取兼容回归，不能记作真实语料准入、题目发布或完整小节通过。
+
+## RAG 2.0 内部集成的数据库边界（阶段 I）
+
+本轮shadow adapter、scenario manifest与demo不新增数据库表、迁移fragment或学习者状态。既有六张共享corpus表的不可变内容、append-only事件及generation CAS仍按上文执行。演示operator发布只允许显式隔离临时库；引用/预检探针使用调用方持有的只读快照，不修改active learning plan、progress、assignment、Lesson或Artifact。
+
+v2引用兼容输出不是v1 `grounding_chunks` 外键或HTTP ingestion provenance。不得向既有Lesson/Artifact来源表写入伪造兼容行；公开来源冻结、权限与版本校验仍以原契约为准。表/manifest及共享corpus用户清理隔离回归纳入[验收计划](../qa/acceptance-test-plan.md)。

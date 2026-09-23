@@ -564,3 +564,24 @@ The default final matrix uses LLM_TYPE=disabled, fake/deterministic provider sea
 | RT-DIR-06 | P0 | Reasoning retraction | Positive Runtime projection, snapshot/history/SSE parsing, and live/history Desktop `think` rendering accept the owner-scoped reasoning channel; commentary and unknown channels remain rejected | Runtime projection and Desktop Tutor tests |
 
 Routine validation uses fake App Server/local PostgreSQL only. No real-provider latency or semantic-stability claim is authorized by this addendum.
+
+## RAG v2 阶段 I 架构集成验收
+
+本次仅验收四条路线与六个fixture_only生态的合成资料、共享corpus发布、精确检索/coverage、shadow预检、内部引用形状及默认关闭边界。公开API/课程、Lesson/Tutor/Artifact消费者和Desktop交互没有新增接线。
+
+| 检查 | 已执行结果 | 不能据此推导 |
+| --- | --- | --- |
+| 联合后端/数据库回归 | 330 passed，0 skipped，105.57s；grounding、DB manifest/bootstrap、shadow/preflight、integration、既有Lesson/来源/计划 | 全仓库所有测试或真实provider验收 |
+| CLI演示与回放 | 两次真实脚本执行共80个CLI子进程，10 Subjects，输出完全相同；文档中的根目录命令另行成功运行 | 真实文档抓取/embedding质量 |
+| 学习状态保护 | 演示前后161张非corpus表内容指纹不变，含合成轨道与Lesson失败记录；回放全部167表不变 | 原业务库被迁移或真实用户课程已修复 |
+| 引用适配只读探针 | 10 Subjects×2 stages×2 profiles，共40场景；逐条核对DB内容/哈希，167表指纹及READ ONLY REPEATABLE READ事务身份不变 | 旧v1来源权限/公开展示授权 |
+| 安全拒绝 | 10种错误确认、远程/覆盖目标、dotenv/provider/公开gate组合安全非零退出，无DSN/凭据回显 | 对任意环境的完整安全审计 |
+| 静态/构建 | 全app/tests/demo Ruff；Mypy 276源文件；uv lock检查；Desktop tsc/Vite构建通过 | 实际桌面UI、Tauri安装包或部署验收 |
+| 无公开接线 | retrieval原扫描仅增加精确internal adapter路径例外；反向扫描禁止其他app/worker/startup引用adapter | 任意动态反射或完整调用图证明 |
+| 文档/仓库卫生 | 本地Markdown文件目标检查、diff check通过；未修改公开route/schema/课程列表或受保护原型 | 外网链接有效性/远程资料可用性 |
+
+证据目录：`output/rag-shadow-integration-20260923/`，含final-combined-tests.txt、demo-preservation-proof.json、adapter-readonly-proof.json、demo-refusal-proof.json、source-links.json与runtime-isolation.json。输出目录不提交Git；可重复命令与前置条件见[离线演示指南](../architecture/rag-v2-interview-guide.md)。两个main新建的临时库均在零活动连接后删除，无FORCE；原业务数据库未写入。
+
+保留失败与修复：真实adapter摘要最初遗漏policy版本，独立check修正；CLI连接地址最初用inet文本而不是host地址，真实运行在发布前拒绝后修正；集成测试最初误要求缺失LangChain facet也生成plan，现按SOURCE_SCOPE_EMPTY的既有fail-closed合同精确断言。最终批次是在这些修复之后重新执行，不以早期fake/skip结果替代。
+
+本记录不是真实源发布、公开RAG v2 rollout、框架执行环境、完整学习闭环、push/deploy/release批准。阶段I最终任务归档与父任务总复核另行完成。
