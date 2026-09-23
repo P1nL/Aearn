@@ -224,3 +224,29 @@ Fixture-only seven-command CLI. 114 tests, 60 actual CLI processes, 10 Subject f
 ### Next Steps
 
 - Existing bounded hybrid retrieval and coverage child; exact-scope FTS and disabled/fake embedding only.
+
+
+## Session 9: Bounded RAG retrieval verified
+<!-- trellis-session: v=2 fp=cbe2b0fc321278fe -->
+
+**Date**: 2026-09-23
+**Task**: Bounded RAG retrieval verified
+**Branch**: `main`
+
+### Summary
+
+177 tests passed; readonly exact-scope probes and deterministic replays; synthetic only, no public cutover; owned temporary databases removed; local commit only.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a42f3e7` | feat: add bounded exact-scope RAG retrieval and coverage |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Continue existing 09-03-rag-plan-preflight-migration-proposals child05.

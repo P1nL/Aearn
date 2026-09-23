@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/prd.md", "reason": "Verify child acceptance against parent requirements and non-claims."}
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/research/current-state-and-gap.md", "reason": "Verify against the compact current-state baseline and architecture gap."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify citation, coverage, budget and provider boundaries."}
+{"file": ".trellis/spec/backend/grounding-retrieval-v2.md", "reason": "Bounded exact-scope retrieval, evidence budgets, synthetic embedding and readonly/public boundary contract."}

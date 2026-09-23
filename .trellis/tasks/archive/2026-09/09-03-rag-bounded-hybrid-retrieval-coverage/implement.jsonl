@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/prd.md", "reason": "Parent requirements and accepted product decisions."}
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/design.md", "reason": "Parent architecture, boundaries, lifecycle and compatibility design."}
+{"file": ".trellis/tasks/archive/2026-05/05-31-agent-rag-retrieval/design.md", "reason": "Prior FTS choice and structured chunk design for comparison."}
+{"file": ".trellis/spec/backend/grounding-retrieval-v2.md", "reason": "Bounded exact-scope retrieval, evidence budgets, synthetic embedding and readonly/public boundary contract."}

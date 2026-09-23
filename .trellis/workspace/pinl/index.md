@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
+- **Total Sessions**: 9
 - **Last Active**: 2026-09-23
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~226 | Active |
+| `journal-1.md` | ~252 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-09-23 | Bounded RAG retrieval verified | `a42f3e7` | `main` |
 | 8 | 2026-09-23 | Local RAG corpus operator CLI verified | `4b9a9fe` | `main` |
 | 7 | 2026-09-23 | Versioned RAG corpus authority verified | `eab2c58` | `main` |
 | 6 | 2026-09-23 | RAG Subject contracts implemented and verified | `3d54036` | `main` |
