@@ -198,3 +198,29 @@ Six shared corpus tables; guarded lifecycle/CAS/replay and savepoint atomicity. 
 ### Next Steps
 
 - Existing operator corpus CLI child; explicit fixture mode and isolated database only.
+
+
+## Session 8: Local RAG corpus operator CLI verified
+<!-- trellis-session: v=2 fp=fd5d9a2fc96eaab4 -->
+
+**Date**: 2026-09-23
+**Task**: Local RAG corpus operator CLI verified
+**Branch**: `main`
+
+### Summary
+
+Fixture-only seven-command CLI. 114 tests, 60 actual CLI processes, 10 Subject fixture matrix and documented PowerShell example passed. Two disposable databases removed; fetch explicitly not ready, no public rollout.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4b9a9fe` | feat: add local RAG corpus operator CLI |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Existing bounded hybrid retrieval and coverage child; exact-scope FTS and disabled/fake embedding only.
