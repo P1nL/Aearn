@@ -1069,3 +1069,54 @@ repository.complete_turn_with_message_if_current(
 - Revalidate the immutable teaching scope before effect commit, waiting-result persistence, and terminal persistence.
 - Classify all new user-owned tables in exhaustive cutover inventory and delete them child-to-root under the transaction-local purge capability. Deferred lineage must use `NO ACTION`, not immediate `RESTRICT`, where the session/current-checkpoint cycle is cleared in one transaction.
 - Export only bounded summaries and IDs. Omit raw state/authority JSON, hashes used only for internal proof, prompts, reasoning, provider bodies, complete questions/submissions, private tests/rubrics, commands, paths, and secrets.
+
+
+## Scenario: Versioned RAG corpus authority (2026-09-23)
+
+### 1. Scope / Trigger
+- Changes to schema fragment `260_rag_subject_corpus.sql`, grounding `corpus_contracts.py` / `corpus_repository.py`, or their future CLI/consumer adapters.
+- Database source of truth: `docs/architecture/database-schema.md`, the ordered manifest and actual PostgreSQL constraints; legacy grounding remains unchanged.
+
+### 2. Signatures
+- `CorpusRepository(conn)` consumes a caller-owned connection; writes never commit it.
+- `create_candidate`, `add_source`, `add_document`, `add_chunk` build candidate snapshots.
+- `finalize_validation(..., passed, expected_generation, validation_summary, coverage_summary, idempotency_key)` seals the candidate or records failure.
+- `activate(..., expected_generation, summary_hash, idempotency_key)` and `rollback(..., expected_generation, idempotency_key)` move the Subject pointer; `retire` cannot retire its current target.
+- `version`, `active`, `history` read internal typed facts, not public DTOs.
+
+### 3. Contracts
+- Six `grounding_corpus_*` / `grounding_active_corpora` tables are shared infrastructure, not learner-owned tables. `CUTOVER_SHARED_GROUNDING_CORPUS_TABLES` is separate from the exhaustive `tutor_*` namespace lists.
+- Candidate → validated → published/retired, candidate → failed/retired; terminal states do not reopen. Content is immutable once validated, including ordinary direct SQL writes/deletes.
+- Source/document/chunk composite scope and hashes must agree with corpus identity. Snapshot hash syntax alone is not semantic source authorization or facet coverage.
+- Active pointer references a published corpus of the same Subject. Compare expected generation even when no pointer exists; rollback advances generation instead of undoing history.
+- Idempotency is exact request replay: same key/request returns the prior receipt, conflicting request is rejected. A later active pointer must not change an old replay result.
+- Lifecycle events are append-only, bounded, and free of provider payloads/credentials. No user-purge capability makes shared corpus history deletable.
+- Corpus writes reject autocommit connections and use savepoints inside the caller transaction. An idle non-autocommit connection first starts its implicit transaction; a caught operation failure cannot leave publication/events for the caller to commit.
+- Snapshot rows cannot change their corpus parent to escape sealing. The first active pointer must cite an activation receipt, not a rollback receipt.
+- Stored HTTPS URL metadata excludes credentials, explicit ports, query strings and fragments; seed hosts match declared domains. This is metadata hygiene, not a source authorization/fetcher gate.
+- Summary JSON is a bounded object of safe named scalar facts; nested JSON, arbitrary prose/URL/path fields are rejected. Snapshot arrays have bounded typed elements; do not rely on JSON byte size alone.
+
+### 4. Validation & Error Matrix
+| Condition | Required outcome |
+| --- | --- |
+| Stale generation / wrong summary hash / conflicting replay | Reject without partial publication or pointer/event effects |
+| Cross-corpus/source/document/Subject/version lineage | Reject at repository/DB boundary, including direct SQL bypass tests |
+| Content mutation after validation/publication, event mutation | Database guard rejects ordinary UPDATE/DELETE |
+| Two first activations with expected generation 0 | Exactly one winner; no second generation-1 pointer |
+| Retire active target | Reject, retain usable pointer/history |
+| User export/reset/delete/cutover | No shared corpus content export or shared-row deletion |
+
+### 5. Good / Base / Bad Cases
+- Good: publish two immutable versions, rollback to an earlier published version with a new active generation, and preserve all receipts.
+- Base: repeat full bootstrap against the same disposable database without altering historical content or the old grounding read path.
+- Bad: bootstrap the default learner database for acceptance, delete shared fixtures to clean a test, or treat a stored `passed` summary as independently verified real-source evidence.
+
+### 6. Tests Required
+- Use an explicitly named disposable PostgreSQL database. Run schema/bootstrap and mutation tests serially; only the dedicated CAS test opens concurrent business connections.
+- Assert bootstrap twice, state/hash/scope/immutability constraints, exact replay/conflict, two-connection CAS, rollback/retirement and legacy compatibility.
+- Inventory tests must exercise real export/reset/delete/cutover with six-table shared records as well as static classification. Roll back owned fixtures instead of deleting immutable published rows.
+- Record Ruff/Mypy and focused counts separately from live fetch/provider/consumer acceptance; those later phases are not executed here.
+
+### 7. Wrong vs Correct
+- Wrong: add `grounding_corpus_versions` to `CUTOVER_SHARED_TUTOR_TABLES`, or reset a user's shared corpus to achieve test cleanup.
+- Correct: keep a separate shared-infrastructure classification and verify user operations leave it intact; discard only the task-owned disposable database after verification.

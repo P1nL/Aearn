@@ -636,3 +636,37 @@ Artifact purpose 闭合集合新增 `source_inspection`。Tutor 生成的正式�
 真实验收库只应用对应增量 DDL，不为验收运行完整 bootstrap/种子导入。
 
 既有手动来源记录与创建事件保留为历史，不能修改为真实 Tutor turn；新来源与教学消息共用原子终态提交，不通过已移除的手动创建 API 落库。
+
+
+## 2026-09-23：RAG 版本化语料权威（阶段 I）
+
+`260_rag_subject_corpus.sql` 在 manifest 尾部增量加入独立语料表，不改变旧
+`grounding_chunks` 的替换语义，不 backfill 既有 Lesson/Tutor 引用，也不为公开消费者切换读路径。
+
+| 表 | 责任与边界 |
+| --- | --- |
+| `grounding_corpus_versions` | 固定 Subject/version、registry/policy 身份及语料哈希；维护 candidate、validated、published、failed、retired 生命周期 |
+| `grounding_active_corpora` | 每个 Subject 一个 active 指针；用 expected generation CAS 更新，rollback 也推进 generation |
+| `grounding_corpus_source_snapshots` | 保存语料内固定来源、trust、允许域名/版本/facet 元数据，不存凭据 |
+| `grounding_corpus_documents` | 固定 corpus/source 文档身份、URL、文档哈希、解析状态与有界诊断，不存整页原始抓取正文 |
+| `grounding_corpus_chunks` | 固定 corpus/document/source/Subject/version 及 document/chunk 哈希谱系；有界内容与 generated FTS/GIN |
+| `grounding_corpus_events` | append-only 生命周期操作回执，绑定请求/摘要哈希与幂等身份；不存 provider 原文或任意运维路径 |
+
+Repository 使用调用方提供的事务；不得在内部提交、另开一条业务事务或绕过状态/代际校验。
+写操作拒绝 autocommit 连接，并在调用方事务内使用 savepoint；即使调用方捕获后续步骤的异常并继续提交，
+失败操作的状态、事件和指针变更也必须整体撤销。空闲连接先开启调用方的隐式事务，不能让 savepoint 包装变成自动提交。
+持久化 URL 元数据仅接受不含凭据、显式端口、query 或 fragment 的 HTTPS 文档位置；seed 主机须匹配声明域名。
+validation/coverage summary 只允许有界标量事实和安全字段名，不接受嵌套对象、任意正文/URL/路径；JSON 数组必须满足元素类型与长度约束。
+这些存储边界不代替后续抓取授权、重定向/DNS 检查或来源覆盖质量验证。
+validated 及后续状态的内容快照不可原地替换；发布和回退只改变合法状态/active 指针，
+不修改已发布内容。当前 active 语料不可退役；失败/退役状态不能回到 candidate。
+同一 Subject 的两个并发激活必须只允许一个 expected-generation 胜者；失败操作不得遗留半条发布或回执。
+相同幂等键与相同请求恢复原回执，键相同而请求不同必须冲突，不能以“当前指针已变化”重新执行旧请求。
+
+这六表属于共享基础设施，不归某个用户所有。用户 reset/delete 和 clean-slate cutover
+不能清除共享语料；用户 export 不额外导出原始来源、片段正文或内部审计回执。
+`tutor_*` 域的 exhaustive target/shared 分类保持自己的命名空间，不把 `grounding_*` 硬塞入该集合。
+
+此阶段不提供网络抓取、operator CLI、自动发布策略或公开 consumer；候选覆盖摘要也不等同
+真实来源质量已验证。工程验收使用独立临时数据库进行 bootstrap twice、immutable/scope 约束、
+CAS 竞争与旧读取兼容回归，不能记作真实语料准入、题目发布或完整小节通过。

@@ -136,6 +136,19 @@ CUTOVER_SHARED_TUTOR_TABLES = frozenset(
         "tutor_thread_turn_cutover_events",
     }
 )
+# Shared corpus infrastructure is schema-wide, not Tutor target state. Keep it
+# separate from CUTOVER_SHARED_TUTOR_TABLES: that set exhaustively partitions
+# only tutor_* tables with CUTOVER_TARGET_TUTOR_TABLES.
+CUTOVER_SHARED_GROUNDING_CORPUS_TABLES = frozenset(
+    {
+        "grounding_corpus_versions",
+        "grounding_active_corpora",
+        "grounding_corpus_source_snapshots",
+        "grounding_corpus_documents",
+        "grounding_corpus_chunks",
+        "grounding_corpus_events",
+    }
+)
 _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_conversations", "SELECT count(*)::int AS count FROM tutor_conversations WHERE user_id = %s"),
     ("tutor_runs", "SELECT count(*)::int AS count FROM tutor_runs WHERE user_id = %s"),
