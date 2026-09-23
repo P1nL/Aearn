@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/prd.md", "reason": "Verify child acceptance against parent requirements and non-claims."}
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/research/current-state-and-gap.md", "reason": "Verify against the compact current-state baseline and architecture gap."}
+{"file": "docs/qa/acceptance-test-plan.md", "reason": "Final source-of-truth acceptance and regression matrix."}
+{"file": ".trellis/spec/backend/grounding-shadow-integration.md", "reason": "Current exact fixture shadow adapter, guarded demo and no public authority contracts."}

@@ -276,3 +276,29 @@ Fixture-only seven-command CLI. 114 tests, 60 actual CLI processes, 10 Subject f
 ### Next Steps
 
 - Continue existing child06 09-03-rag-shadow-integration-fixtures-docs.
+
+
+## Session 11: RAG shadow integration verified
+<!-- trellis-session: v=2 fp=cb623d2ba1720906 -->
+
+**Date**: 2026-09-24
+**Task**: RAG shadow integration verified
+**Branch**: `main`
+
+### Summary
+
+330 tests passed, full Ruff/Mypy and Desktop build passed; CLI replay, readonly adapter and safe rejection proofs; two disposable DBs removed; phase I only, no public release or push.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `53cf28d` | feat: integrate guarded RAG shadow adapters and fixture demo |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Return to existing RAG parent for phase I acceptance reconciliation; do not start phase II.

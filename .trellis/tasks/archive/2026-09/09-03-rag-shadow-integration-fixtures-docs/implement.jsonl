@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/prd.md", "reason": "Parent requirements and accepted product decisions."}
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/design.md", "reason": "Parent architecture, boundaries, lifecycle and compatibility design."}
+{"file": ".trellis/spec/backend/learning-agent-integration-qa.md", "reason": "Cross-layer language matrix and integration non-claim requirements."}
+{"file": ".trellis/spec/backend/grounding-shadow-integration.md", "reason": "Current exact fixture shadow adapter, guarded demo and no public authority contracts."}
