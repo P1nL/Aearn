@@ -604,12 +604,27 @@ def _safe_fail(
 
 def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], ...]:
     citation_handle = request.evidence[0].handle
+    official_handles = tuple(item.handle for item in request.evidence if item.trust_tier == "official")
+    block_examples = lesson_author_block_examples(
+        language_id=request.language_id,
+        citation_handle=citation_handle,
+        required_capabilities=request.required_capabilities,
+    )
+    if not official_handles:
+        block_examples.pop("authority_note", None)
+    else:
+        authority_example = block_examples.get("authority_note")
+        if isinstance(authority_example, dict):
+            authority_example["citation_ids"] = [official_handles[0]]
     instruction = (
         "You author one strict LessonDocument JSON object. Use only the supplied evidence handles in citation_ids. "
         "Do not output URLs, HTML, Markdown, scripts, styles, commands, paths, hidden tests, answers, rubrics, or execution claims. "
         "Use schema_version lesson_document_v1 and content_standard_version programming_language_lesson_v1. "
-        "Registered block types are heading, learning_objectives, concept, authority_note, code_example, comparison, hint, "
-        "exercise_gate, summary, next_steps. block_id values are stable lowercase keys; order_index starts at zero and is continuous. "
+        "Allowed block types for this request are " + ", ".join(block_examples) + ". They are not all mandatory. "
+        "authority_note may cite only official evidence handles: " + json.dumps(official_handles) + ". "
+        "When that list is empty, do not emit authority_note; explain supported vendor or dialect boundaries in a cited concept "
+        "or comparison instead. Never relabel trusted_de_facto/internal evidence as official or fabricate an official handle. "
+        "block_id values are stable lowercase keys; order_index starts at zero and is continuous. "
         "Every factual block uses at least one supplied evidence handle. code_example.execution_claim is exactly not_run. "
         "exercise_gate only contains gate_key, gate_kind, assessment_contract_version, required_capabilities, learner_prompt. "
         "Every exercise_gate uses only the exact required_capabilities supplied in the request; never invent a .core capability. "
@@ -625,13 +640,9 @@ def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], .
             sort_keys=True,
             separators=(",", ":"),
         )
-        + ". Exact field examples for every registered block type: "
+        + ". Exact field examples for the allowed block types: "
         + json.dumps(
-            lesson_author_block_examples(
-                language_id=request.language_id,
-                citation_handle=citation_handle,
-                required_capabilities=request.required_capabilities,
-            ),
+            block_examples,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

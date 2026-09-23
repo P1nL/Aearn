@@ -25,8 +25,6 @@ from app.services.tutor.cutover import runtime_gate_error
 
 
 router = APIRouter(prefix="/api/learning-tracks", tags=["lesson-documents"])
-
-
 @router.get("/{track_id}/lessons/{knowledge_key}", response_model=None)
 def read_lesson_document(
     track_id: str, knowledge_key: str, request: Request,

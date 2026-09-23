@@ -192,6 +192,7 @@ export type TutorArtifactPurpose =
   | "transfer_check"
   | "code_review"
   | "sql_exploration"
+  | "source_inspection"
   | "result";
 
 export type TutorArtifactOwnerKind = "lesson_gate" | "review_item" | "teaching_practice" | "learning_item";

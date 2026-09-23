@@ -1186,6 +1186,15 @@ function toTutorPublicArtifactItem(payload: unknown): TutorPublicArtifactItem | 
     )) return null;
   if (presentation.type === "sql_workspace_v2" && presentation.public_result_attempt_id !== null &&
       (activeAttempt === null || activeAttempt.attempt_id !== presentation.public_result_attempt_id)) return null;
+  if (payload.purpose === "source_inspection") {
+    if (payload.artifact_kind !== "source_inspector" || (payload.state !== "ready" && payload.state !== "superseded") ||
+        payload.blocking || allowedActions.length > 0 || activeAttempt !== null || presentation.type !== "source_inspector_v1") return null;
+    const documentRef = sourceReferences.length === 1 && sourceReferences[0].kind === "lesson_document"
+      ? sourceReferences[0]
+      : null;
+    if (!documentRef || documentRef.reference_id !== presentation.document_id ||
+        documentRef.reference_version === null || documentRef.content_hash !== presentation.document_content_hash) return null;
+  }
   if (payload.artifact_kind === "test_result") {
     if (payload.purpose !== "result" || payload.state !== "completed" || payload.blocking ||
         allowedActions.length > 0 || activeAttempt === null || activeAttempt.status !== "terminal" ||
@@ -2044,7 +2053,7 @@ function toTutorPublicBranchItemReference(payload: unknown): TutorPublicBranchIt
     item_id: payload.item_id, turn_id: payload.turn_id, item_role: payload.item_role };
 }
 
-function toTutorArtifactActionResponse(payload: unknown): TutorArtifactActionResponse | null {
+export function toTutorArtifactActionResponse(payload: unknown): TutorArtifactActionResponse | null {
   if (!isRecord(payload) || !hasExactKeys(payload, [
     "artifact", "artifact_event_id", "artifact_event_sequence", "idempotent_replayed",
   ]) || !isArtifactBoundedString(payload.artifact_event_id, 160) ||
@@ -2674,7 +2683,8 @@ function isTutorArtifactKind(value: unknown): value is TutorArtifactKind {
 
 function isTutorArtifactPurpose(value: unknown): value is TutorArtifactPurpose {
   return value === "exercise" || value === "demonstration" || value === "knowledge_check" || value === "remediation" ||
-    value === "transfer_check" || value === "code_review" || value === "sql_exploration" || value === "result";
+    value === "transfer_check" || value === "code_review" || value === "sql_exploration" ||
+    value === "source_inspection" || value === "result";
 }
 
 function isTutorArtifactOwnerKind(value: unknown): value is TutorArtifactOwnerKind {

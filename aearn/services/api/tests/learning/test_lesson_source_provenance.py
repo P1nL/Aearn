@@ -15,6 +15,7 @@ from app.services.grounding.grounding_provenance import GroundingProvenance, pro
 from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery, GroundingRetrievalResult
 from app.services.grounding.grounding_sources import get_grounding_source
 from app.services.learning import lesson_authoring
+from app.services.learning.lesson_repository import LessonScopeRecord
 
 NOW = datetime(2026, 9, 8, tzinfo=UTC)
 URL = "https://docs.python.org/3/tutorial/introduction.html"
@@ -174,7 +175,28 @@ def test_dispatch_rejects_fixture_before_author_factory_or_source_hash_write(mon
     run = SimpleNamespace(run_id="run", lease_generation=1, user_id="user", track_id="track", knowledge_key="python.variables")
     repo.claim_authoring_run.return_value = run
     repo.mark_authoring_running.return_value = run
-    repo.read_scope.return_value = SimpleNamespace(language_id="python", knowledge_key="python.variables", node_title="Variables")
+    scope = LessonScopeRecord(
+        user_id="user",
+        track_id="track",
+        language_id="python",
+        goal_text="Learn Python variables",
+        target_level="beginner",
+        track_version=1,
+        active_plan_revision_id="revision-1",
+        module_key="python.basics",
+        module_diagnostic_allowed=False,
+        knowledge_key="python.variables",
+        node_title="Variables",
+        node_description="Store and read values.",
+        required_capabilities=("python.variables",),
+        progress_status="available",
+        progress_version=1,
+        mastery_level="unseen",
+        mastery_confidence=0.0,
+    )
+    repo.read_scope.return_value = scope
+    resolve_catalog_key = Mock(return_value=scope.knowledge_key)
+    monkeypatch.setattr(lesson_authoring, "resolve_catalog_knowledge_key", resolve_catalog_key)
     monkeypatch.setattr(lesson_authoring, "PostgresLessonDocumentRepository", lambda _: repo)
     fail = Mock()
     factory = Mock(side_effect=AssertionError("must not construct provider"))
@@ -182,6 +204,13 @@ def test_dispatch_rejects_fixture_before_author_factory_or_source_hash_write(mon
     monkeypatch.setattr(lesson_authoring, "LESSON_AUTHOR_FACTORY", factory)
     lesson_authoring.dispatch_lesson_authoring_run("run", now=lambda: NOW)
     assert fail.call_args.args[2] == "LESSON_SOURCE_EVIDENCE_INSUFFICIENT"
+    resolve_catalog_key.assert_called_once_with(
+        conn,
+        user_id=scope.user_id,
+        track_id=scope.track_id,
+        plan_revision_id=scope.active_plan_revision_id,
+        knowledge_key=scope.knowledge_key,
+    )
     factory.assert_not_called()
     repo.set_authoring_source_set.assert_not_called()
     repo.publish_authoring_result.assert_not_called()

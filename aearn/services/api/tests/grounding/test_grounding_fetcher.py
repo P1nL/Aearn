@@ -50,6 +50,31 @@ def test_fetch_registered_seed_document_with_fake_client() -> None:
     assert client.calls == ["https://docs.python.org/3/tutorial/index.html"]
 
 
+def test_fetch_postgresql_query_seed_with_offline_fake_client() -> None:
+    # This fake transport verifies registry/fetcher wiring only; it is not real source evidence.
+    url = "https://www.postgresql.org/docs/current/tutorial-select.html"
+    client = FakeHttpClient(
+        lambda requested_url: GroundingHttpResponse(
+            status_code=200,
+            final_url=requested_url,
+            content_type="text/html; charset=utf-8",
+            text="<html><h1>Querying a Table</h1><p>SELECT rows with WHERE and ORDER BY.</p></html>",
+        ),
+    )
+    fetcher = GroundingDocsFetcher(http_client=client, now=_fixed_now)
+
+    result = fetcher.fetch("postgresql-sql-docs", url)
+
+    assert result.status == "ok"
+    assert result.document is not None
+    assert result.document.source_id == "postgresql-sql-docs"
+    assert result.document.language_id == "sql"
+    assert result.document.canonical_url == url
+    assert result.document.final_url == url
+    assert result.document.provenance.kind == "unknown"
+    assert client.calls == [url]
+
+
 def test_fetch_blocks_urls_outside_source_allowlist_without_http_call() -> None:
     client = FakeHttpClient(_ok_response)
     fetcher = GroundingDocsFetcher(http_client=client, now=_fixed_now)

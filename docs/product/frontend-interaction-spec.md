@@ -468,3 +468,18 @@ Lesson inline citation、历史 learner message 的 lesson_selection card 与 so
 Drawer 是 TrackLearningWorkspace 中 Tutor/Lesson 的稳定 sibling。打开或切换引用只替换 drawer request；Tutor conversation、Lesson、Artifact、Monaco、Preview 与进程内 draft 不 key-remount。服务端返回后，drawer 在自身 stage 中按 data-document-drawer-block-id 定位，等待 render/ResizeObserver 后只滚动 lesson-document-drawer-scroll；虚线 highlight 是 absolute overlay，不改变课程块尺寸或对话 scroll。historical 响应显示“内容已更新”并完整展示引用时的冻结文档。
 
 桌面/中等视口为右侧 bounded panel；390px 使用从右侧覆盖的 min(88vw, 440px) modal。Backdrop 点击不关闭；close button 或全局 Escape 关闭。关闭 commit 后恢复 exact source trigger focus且 preventScroll。窄屏只在 drawer 内循环 Tab；reduced motion 使用即时 auto 定位和静态虚线框。1440x900、900x900、390x844 必须无 document/body/workspace 横向 overflow，conversation scroll 不变，fresh console warning/error 为零。
+
+
+## 2026-09-21：来源工件由 Tutor 展示
+
+删除“保存为来源工件”及相关客户端创建请求。来源 Drawer 是只读查看器：
+打开、切换、关闭、引用浏览均不写入来源工件，也不自动向时间线追加卡片。
+
+Tutor 在讲解或回答中选择经过服务端验证的来源，来源工件随同一教学 turn 原子落库，
+Desktop 只通过真实 conversation event/snapshot 显示对应卡片。学习者唯一相关操作是“查看来源文档”。
+是否显示来源不以学习者明确请求为前提：Tutor 可在解释误解/概念对比/例子时主动附上相关来源，但不应在致谢、简单确认或同段重复讲解时刷来源卡片；前端不猜测该判断、不补造来源。
+该操作提交 exact Artifact ID/version 给既有 resolver，不用文案匹配或当前文档替代历史冻结来源。
+
+保留非 blocking/只读展示、source_inspection 与旧 remediation source 的解析兼容、
+精确目标定位、Drawer 内滚动、Escape/Tab 焦点规则，以及打开关闭不重挂载 Tutor/Lesson/编辑器的约束。
+不得以隐藏按钮、点击引用自动创建或前端伪造 timeline item 代替 Tutor 的来源选择。

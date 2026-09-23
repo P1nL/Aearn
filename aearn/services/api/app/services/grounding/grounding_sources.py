@@ -230,7 +230,11 @@ GROUNDING_SOURCES: tuple[GroundingSource, ...] = (
         seed_policy="seed_urls_only",
         content_type="vendor_docs",
         allowlisted_domains=("www.postgresql.org",),
-        seed_urls=("https://www.postgresql.org/docs/current/tutorial.html", "https://www.postgresql.org/docs/current/sql.html"),
+        seed_urls=(
+            "https://www.postgresql.org/docs/current/tutorial.html",
+            "https://www.postgresql.org/docs/current/sql.html",
+            "https://www.postgresql.org/docs/current/tutorial-select.html",
+        ),
         topic_tags=("queries", "joins", "aggregation", "ddl", "transactions", "postgresql"),
         notes="SQL grounding uses trusted vendor documentation because SQL has dialect-specific behavior.",
         source_version_label="postgresql-current",

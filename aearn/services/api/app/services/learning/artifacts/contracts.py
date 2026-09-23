@@ -131,6 +131,7 @@ class TutorArtifactPurpose(StrEnum):
     TRANSFER_CHECK = "transfer_check"
     CODE_REVIEW = "code_review"
     SQL_EXPLORATION = "sql_exploration"
+    SOURCE_INSPECTION = "source_inspection"
     RESULT = "result"
 
 
@@ -935,6 +936,22 @@ class TutorPublicArtifactItem(_StrictArtifactModel):
             )
         if not presentation_matches:
             raise ValueError("artifact kind does not match its presentation")
+        if self.purpose is TutorArtifactPurpose.SOURCE_INSPECTION:
+            if (
+                self.artifact_kind is not TutorArtifactKind.SOURCE_INSPECTOR
+                or self.state not in {
+                    TutorArtifactState.READY,
+                    TutorArtifactState.SUPERSEDED,
+                }
+                or self.blocking
+                or self.allowed_actions
+                or self.active_attempt is not None
+                or not isinstance(
+                    self.presentation,
+                    TutorArtifactSourceInspectorPresentationV1,
+                )
+            ):
+                raise ValueError("source-inspection Artifact authority shape is invalid")
         if self.state.terminal != (self.terminal_at is not None):
             raise ValueError("artifact terminal timestamp is inconsistent")
         if self.state.terminal and self.allowed_actions:
@@ -1086,6 +1103,19 @@ class TutorArtifactCreate(_StrictArtifactModel):
                 raise ValueError(
                     "terminal test-result Artifact Attempt identity is inconsistent"
                 )
+        if self.purpose is TutorArtifactPurpose.SOURCE_INSPECTION:
+            if (
+                self.artifact_kind is not TutorArtifactKind.SOURCE_INSPECTOR
+                or self.state is not TutorArtifactState.READY
+                or self.blocking
+                or self.allowed_actions
+                or self.active_attempt is not None
+                or not isinstance(
+                    self.presentation,
+                    TutorArtifactSourceInspectorPresentationV1,
+                )
+            ):
+                raise ValueError("source-inspection Artifact create shape is invalid")
         if len(self.allowed_actions) != len(set(self.allowed_actions)):
             raise ValueError("artifact allowed actions must be unique")
         if (

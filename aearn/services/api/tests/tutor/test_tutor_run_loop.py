@@ -18,6 +18,7 @@ from app.agents.harness.contracts import (
     TutorContextBudgetMode,
     TutorContextBudgetPolicy,
     TutorContextInput,
+    TutorContextSelection,
     TutorContextSource,
     TutorContinuationKind,
     TutorDecision,
@@ -904,8 +905,14 @@ class _InsufficientContextOnceGate:
     def __init__(self) -> None:
         self.calls = 0
 
-    def validate(self, *, run: TutorRunSnapshot, decision: TutorDecision) -> TutorDecisionGateResult:
-        del run, decision
+    def validate(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        decision: TutorDecision,
+        context: TutorContextSelection,
+    ) -> TutorDecisionGateResult:
+        del run, decision, context
         self.calls += 1
         if self.calls == 1:
             return TutorDecisionGateResult(

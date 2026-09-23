@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from typing import Protocol
 
@@ -13,6 +14,8 @@ from app.agents.harness.skill_catalog import CatalogSkillReference, PublishedSki
 from app.agents.harness.contracts import (
     TutorDecision,
     TutorDecisionGateResult,
+    TutorContextSection,
+    TutorContextSelection,
     TutorDecisionGateStatus,
     TutorRunSnapshot,
 )
@@ -25,6 +28,12 @@ from app.services.learning.teaching_contracts import (
     TeachingStepDecision,
     teaching_response_mode_is_valid,
 )
+from app.services.learning.source_inspector import (
+    SOURCE_INSPECTOR_HANDLE_PREFIX,
+    SourceInspectorCommitError,
+    source_inspector_candidate_handles,
+    validate_source_inspector_evidence,
+)
 from app.services.tutor.capability_policy import CapabilityPolicyContext, CapabilityPolicyResolver
 from app.services.tutor.skill_selection import TutorSkillSelection, TutorSkillSelectionStore
 
@@ -34,7 +43,13 @@ class _TeachingContextRepository(Protocol):
 
 
 class _DecisionGate(Protocol):
-    def validate(self, *, run: TutorRunSnapshot, decision: TutorDecision) -> TutorDecisionGateResult: ...
+    def validate(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        decision: TutorDecision,
+        context: TutorContextSelection,
+    ) -> TutorDecisionGateResult: ...
 
 
 class CatalogTutorDecisionGate:
@@ -56,7 +71,9 @@ class CatalogTutorDecisionGate:
         *,
         run: TutorRunSnapshot,
         decision: TutorDecision,
+        context: TutorContextSelection,
     ) -> TutorDecisionGateResult:
+        del context
         policy = self._policy_resolver.resolve(run=run, catalog=self._catalog)
         if not policy.matches(run=run, catalog=self._catalog):
             return _deny("policy_context_stale")
@@ -258,6 +275,52 @@ class CatalogTutorDecisionGate:
         return selection, skill
 
 
+def _visible_source_inspector_handles(
+    *,
+    context_selection: TutorContextSelection,
+) -> frozenset[str]:
+    teaching_items = tuple(
+        item
+        for item in context_selection.items
+        if item.section is TutorContextSection.TEACHING_SESSION
+    )
+    if len(teaching_items) != 1:
+        raise SourceInspectorCommitError("provider teaching context is missing or ambiguous")
+    try:
+        teaching_payload = json.loads(teaching_items[0].content)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SourceInspectorCommitError("provider teaching context is invalid") from exc
+    if not isinstance(teaching_payload, dict):
+        raise SourceInspectorCommitError("provider teaching context is invalid")
+    raw_allowed = teaching_payload.get("allowed_source_handles")
+    if not isinstance(raw_allowed, list) or any(not isinstance(item, str) for item in raw_allowed):
+        raise SourceInspectorCommitError("provider source allowlist is invalid")
+    allowlisted = tuple(
+        item for item in raw_allowed if item.startswith(SOURCE_INSPECTOR_HANDLE_PREFIX)
+    )
+    if len(allowlisted) != len(set(allowlisted)):
+        raise SourceInspectorCommitError("provider source allowlist is duplicated")
+
+    evidence_handles: list[str] = []
+    for item in context_selection.items:
+        if (
+            item.section is not TutorContextSection.REQUIRED_FACTS
+            or not item.source_id.startswith("teaching-source-candidate:")
+        ):
+            continue
+        try:
+            evidence = json.loads(item.content)
+            validated = validate_source_inspector_evidence((evidence,))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise SourceInspectorCommitError("provider source evidence is invalid") from exc
+        evidence_handles.append(str(validated[0]["handle"]))
+    if len(evidence_handles) != len(set(evidence_handles)):
+        raise SourceInspectorCommitError("provider source evidence is duplicated")
+    if set(allowlisted) != set(evidence_handles):
+        raise SourceInspectorCommitError("provider source evidence and allowlist differ")
+    return frozenset(evidence_handles)
+
+
 def _deny(code: str) -> TutorDecisionGateResult:
     return TutorDecisionGateResult(status=TutorDecisionGateStatus.DENIED, diagnostic_code=code)
 
@@ -283,17 +346,24 @@ class TeachingTutorDecisionGate:
         self._selection_store = selection_store
         self._teaching = teaching
 
-    def validate(self, *, run: TutorRunSnapshot, decision: TutorDecision) -> TutorDecisionGateResult:
+    def validate(
+        self,
+        *,
+        run: TutorRunSnapshot,
+        decision: TutorDecision,
+        context: TutorContextSelection,
+    ) -> TutorDecisionGateResult:
+        provider_context = context
         try:
-            context = self._teaching.teaching_context(user_id=run.user_id, run_id=run.run_id)
+            teaching_context = self._teaching.teaching_context(user_id=run.user_id, run_id=run.run_id)
         except ValueError:
             return _deny("teaching_authority_stale")
         base_validate = self._base.validate
-        if context is None:
+        if teaching_context is None:
             if decision.teaching_step is not None:
                 return _deny("teaching_scope_unexpected")
-            return base_validate(run=run, decision=decision)
-        base_result = base_validate(run=run, decision=decision)
+            return base_validate(run=run, decision=decision, context=provider_context)
+        base_result = base_validate(run=run, decision=decision, context=provider_context)
         if base_result.status is not TutorDecisionGateStatus.APPROVED:
             return base_result
         if decision.teaching_step is None:
@@ -305,18 +375,41 @@ class TeachingTutorDecisionGate:
         if selection.manifest_hash != skill.manifest_hash or selection.instruction_hash != skill.instruction_hash:
             return _deny("teaching_skill_stale")
         step = decision.teaching_step
-        objective = context.get("objective")
-        active_focus = context.get("active_focus")
-        suspended = context.get("suspended_focuses")
-        session = context.get("session")
+        objective = teaching_context.get("objective")
+        active_focus = teaching_context.get("active_focus")
+        suspended = teaching_context.get("suspended_focuses")
+        session = teaching_context.get("session")
         if not isinstance(objective, dict) or not isinstance(session, dict):
             return _deny("teaching_context_invalid")
         if step.objective_id != str(objective.get("objective_id") or ""):
             return _deny("teaching_objective_invalid")
-        allowed_handles = context.get("allowed_source_handles")
-        if not isinstance(allowed_handles, list) or not set(step.source_handles).issubset({str(item) for item in allowed_handles}):
+        raw_allowed_handles = teaching_context.get("allowed_source_handles")
+        if not isinstance(raw_allowed_handles, list):
+            return _deny("teaching_context_invalid")
+        ordinary_allowed_handles = {
+            str(item)
+            for item in raw_allowed_handles
+            if not str(item).startswith(SOURCE_INSPECTOR_HANDLE_PREFIX)
+        }
+        selected_source_handles = {
+            handle
+            for handle in step.source_handles
+            if handle.startswith(SOURCE_INSPECTOR_HANDLE_PREFIX)
+        }
+        selected_ordinary_handles = set(step.source_handles) - selected_source_handles
+        if not selected_ordinary_handles.issubset(ordinary_allowed_handles):
             return _deny("teaching_source_handle_invalid")
-        candidate_focus_id = str(context.get("candidate_focus_id") or "")
+        try:
+            server_source_handles = source_inspector_candidate_handles(teaching_context)
+            visible_source_handles = _visible_source_inspector_handles(context_selection=provider_context)
+        except SourceInspectorCommitError:
+            return _deny("teaching_context_invalid")
+        if not visible_source_handles.issubset(server_source_handles):
+            return _deny("teaching_source_handle_invalid")
+        if not selected_source_handles.issubset(visible_source_handles):
+            return _deny("teaching_source_handle_invalid")
+        allowed_handles = ordinary_allowed_handles | visible_source_handles
+        candidate_focus_id = str(teaching_context.get("candidate_focus_id") or "")
         active_focus_id = str(active_focus.get("focus_id") or "") if isinstance(active_focus, dict) else ""
         if not isinstance(suspended, list):
             return _deny("teaching_context_invalid")
@@ -351,7 +444,7 @@ class TeachingTutorDecisionGate:
             return _deny("teaching_response_mode_invalid")
         if response_mode == "artifact":
             artifact_result = self._validate_artifact_interaction(
-                context=context,
+                context=teaching_context,
                 session=session,
                 step=step,
             )
@@ -359,7 +452,7 @@ class TeachingTutorDecisionGate:
                 return artifact_result
 
         mode = str(session.get("mode") or "")
-        stimulus = context.get("stimulus")
+        stimulus = teaching_context.get("stimulus")
         domain_event = isinstance(stimulus, dict) and stimulus.get("kind") == "domain_event"
         free_reading_actions = (
             self._FREE_READING_ACTIONS | self._FREE_READING_DOMAIN_ACTIONS
@@ -374,13 +467,13 @@ class TeachingTutorDecisionGate:
             payload = stimulus.get("safe_payload") if isinstance(stimulus, dict) else None
             source = payload.get("source_handle") if isinstance(payload, dict) else None
             fresh_response = (
-                context.get("fresh_knowledge_check_evidence") is True
+                teaching_context.get("fresh_knowledge_check_evidence") is True
                 and isinstance(payload, dict)
                 and payload.get("reason_code") == "knowledge_check_evaluation"
                 and isinstance(source, str) and source.startswith("artifact:")
                 and source in allowed_handles
             )
-            recent_units = context.get("recent_teaching_units")
+            recent_units = teaching_context.get("recent_teaching_units")
             if not isinstance(recent_units, list):
                 return _deny("teaching_context_invalid")
             candidate_hash = hashlib.sha256(step.public_message.encode("utf-8")).hexdigest()

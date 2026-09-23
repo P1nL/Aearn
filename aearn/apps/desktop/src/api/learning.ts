@@ -591,8 +591,13 @@ export async function confirmLearningPlanSession(input: {
       }),
     },
   );
-  const session = isRecord(payload) ? toLearningPlanSession(payload.session) : null;
-  const track = isRecord(payload) ? toLearningTrackSummary(payload.track) : null;
+  if (
+    !isRecord(payload) ||
+    !hasExactKeys(payload, ["session", "track", "idempotent_replayed"]) ||
+    typeof payload.idempotent_replayed !== "boolean"
+  ) throw new Error("Learning plan confirmation returned an invalid payload");
+  const session = toLearningPlanSession(payload.session);
+  const track = toLearningTrackDetail(payload.track);
   if (!session || !track) throw new Error("Learning plan confirmation returned an invalid payload");
   return { session, track };
 }

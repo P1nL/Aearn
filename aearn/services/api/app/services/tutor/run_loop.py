@@ -273,7 +273,9 @@ class TutorRunLoop:
                         public_message=result_evaluation_fallback,
                     )
 
-                gate_result = self._decision_gate.validate(run=snapshot, decision=decision)
+                gate_result = self._decision_gate.validate(
+                    run=snapshot, decision=decision, context=context
+                )
                 if gate_result.status is TutorDecisionGateStatus.DENIED:
                     _log_gate_denial(snapshot, decision, gate_result.diagnostic_code, context_input, self._decision_gate)
                     if gate_result.diagnostic_code == "confirmed_question_reasked":

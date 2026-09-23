@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchLessonDocumentReference, toLessonDocumentReferenceResolution } from "../api/learning";
+import {
+  fetchLessonDocumentReference,
+  toLessonDocumentReferenceResolution,
+} from "../api/learning";
 
 const trackId = "22222222-2222-4222-8222-222222222222";
 const conversationId = "33333333-3333-4333-8333-333333333333";
@@ -75,6 +78,7 @@ function fixture(status: "current" | "historical" = "current") {
     },
   };
 }
+
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -158,4 +162,5 @@ describe("LessonDocument reference API", () => {
       },
     })).rejects.toThrow("invalid payload");
   });
+
 });

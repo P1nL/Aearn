@@ -7,6 +7,7 @@ Only a configured primary provider can produce a bounded public response.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -17,7 +18,7 @@ from psycopg import Connection
 
 from app.agents.harness.catalog_context import CatalogContextLoader
 from app.agents.harness.context_budget import TutorContextBudgetPlanner
-from app.agents.harness.context_builder import TutorContextBuilder
+from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
 from app.agents.harness.contracts import (
     MAX_TUTOR_CONTEXT_COMPACTION_CANDIDATES,
     TUTOR_CONTEXT_SUMMARY_POLICY_VERSION,
@@ -27,6 +28,7 @@ from app.agents.harness.contracts import (
     TutorContextError,
     TutorContextInput,
     TutorContextSelection,
+    TutorContextSection,
     TutorContextSource,
     TutorContinuationKind,
     TutorProviderResult,
@@ -56,6 +58,12 @@ from app.services.learning.plan_repository import (
 from app.services.learning.teaching_candidates import (
     TeachingArtifactCandidateBuildError,
     project_teaching_provider_context,
+)
+from app.services.learning.source_inspector import (
+    SOURCE_INSPECTOR_HANDLE_PREFIX,
+    SourceInspectorCandidate,
+    SourceInspectorCommitError,
+    parse_source_inspector_candidates,
 )
 from app.services.learning.teaching_sessions import TeachingSessionConflict, TeachingSessionRepository
 from app.services.tutor.action_adapters import (
@@ -627,7 +635,11 @@ class PostgresTutorLearningContextLoader:
             )
             for index, evidence in enumerate(artifact_evidence)
         )
-        required_facts = (*authoritative.required_facts, *reference_sources, *evidence_sources)
+        required_facts = (
+            *authoritative.required_facts,
+            *reference_sources,
+            *evidence_sources,
+        )
         recent_messages = base.recent_messages
         compaction_plan = base.compaction_plan
         summary_blocked = 0
@@ -762,7 +774,7 @@ class PostgresTutorLearningContextLoader:
                             content=draft,
                         )
                     )
-        return replace(
+        context_input = replace(
             base,
             system_descriptors=tuple(descriptors),
             teaching_session=teaching_sources,
@@ -777,6 +789,128 @@ class PostgresTutorLearningContextLoader:
             confirmed_question_reasked_count=authoritative.confirmed_question_reasked_count,
             summary_blocked_by_unprojected_fact=summary_blocked,
         )
+        if teaching_context is None or not isinstance(teaching_session, Mapping):
+            return context_input
+        return _bind_optional_source_inspection_candidates(
+            snapshot=snapshot,
+            context_input=context_input,
+            teaching_context=teaching_context,
+            teaching_session_id=str(teaching_session["session_id"]),
+        )
+
+
+def _bind_optional_source_inspection_candidates(
+    *,
+    snapshot: TutorRunSnapshot,
+    context_input: TutorContextInput,
+    teaching_context: Mapping[str, object],
+    teaching_session_id: str,
+) -> TutorContextInput:
+    """Admit only optional Lesson sources that fit every existing context bound."""
+
+    try:
+        candidates = parse_source_inspector_candidates(teaching_context)
+    except SourceInspectorCommitError as exc:
+        raise TutorContextError("TUTOR_SOURCE_INSPECTION_INVALID") from exc
+    if not candidates:
+        return context_input
+
+    required_fact_limit = TutorContextBuilderConfig().item_limit_for(
+        TutorContextSection.REQUIRED_FACTS
+    )
+    available_fact_slots = required_fact_limit - len(context_input.required_facts)
+    if available_fact_slots <= 0:
+        return context_input
+
+    selected: list[SourceInspectorCandidate] = []
+    accepted_input = context_input
+    for candidate in candidates:
+        if len(selected) >= available_fact_slots:
+            break
+        trial_candidates = (*selected, candidate)
+        try:
+            trial_input = _source_inspection_context_input(
+                context_input=context_input,
+                teaching_context=teaching_context,
+                teaching_session_id=teaching_session_id,
+                candidates=trial_candidates,
+                run_id=snapshot.run_id,
+            )
+            # This is the same complete request planner/builder used by TutorRunLoop.
+            # A candidate is optional, so any character/item/token overflow simply
+            # removes it instead of failing an otherwise valid teaching turn.
+            TutorContextBudgetPlanner().build_context(
+                run=snapshot,
+                context_input=trial_input,
+                builder=TutorContextBuilder(),
+            )
+        except (TeachingArtifactCandidateBuildError, TutorContextError):
+            continue
+        selected.append(candidate)
+        accepted_input = trial_input
+    return accepted_input
+
+
+def _source_inspection_context_input(
+    *,
+    context_input: TutorContextInput,
+    teaching_context: Mapping[str, object],
+    teaching_session_id: str,
+    candidates: tuple[SourceInspectorCandidate, ...],
+    run_id: str,
+) -> TutorContextInput:
+    visible_context = dict(teaching_context)
+    raw_handles = visible_context.get("allowed_source_handles")
+    if not isinstance(raw_handles, list) or any(not isinstance(item, str) for item in raw_handles):
+        raise TutorContextError("TUTOR_SOURCE_INSPECTION_INVALID")
+    ordinary_handles = {
+        handle
+        for handle in raw_handles
+        if not handle.startswith(SOURCE_INSPECTOR_HANDLE_PREFIX)
+    }
+    visible_context["allowed_source_handles"] = sorted(
+        (*ordinary_handles, *(candidate.handle for candidate in candidates))
+    )
+    # Keep full bindings server-only. The provider receives the same exact subset
+    # as safe evidence, while Decision Gate checks it against this teaching allowlist.
+    source_facts = tuple(
+        TutorContextSource(
+            source_id=f"teaching-source-candidate:{run_id}:{index}",
+            content=candidate.provider_evidence(),
+            semantic_class="confirmed_fact_source",
+        )
+        for index, candidate in enumerate(candidates)
+    )
+    projected_context = _bounded_teaching_context(visible_context)
+    if _projected_interaction_candidates(projected_context) != _projected_interaction_candidates(
+        context_input.teaching_session[0].content
+        if len(context_input.teaching_session) == 1
+        else None
+    ):
+        raise TutorContextError("TUTOR_SOURCE_INSPECTION_INVALID")
+    teaching_source = TutorContextSource(
+        source_id=f"teaching-session:{teaching_session_id}",
+        content=projected_context,
+    )
+    return replace(
+        context_input,
+        teaching_session=(teaching_source,),
+        required_facts=(*context_input.required_facts, *source_facts),
+    )
+
+
+def _projected_interaction_candidates(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Mapping):
+        raise TutorContextError("TUTOR_SOURCE_INSPECTION_INVALID")
+    raw = value.get("artifact_candidates", ())
+    if raw in (None, (), []):
+        return ()
+    if not isinstance(raw, list) or any(not isinstance(item, Mapping) for item in raw):
+        raise TutorContextError("TUTOR_SOURCE_INSPECTION_INVALID")
+    return tuple(
+        json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for item in raw
+    )
 
 
 def _bounded_teaching_context(context: Mapping[str, object]) -> dict[str, object]:

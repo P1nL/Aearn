@@ -31,6 +31,7 @@ project_doc_fallback_filenames = ["AGENTS.md"]
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
+model_reasoning_summary = "detailed"
 [shell_environment_policy]
 inherit = "core"
 

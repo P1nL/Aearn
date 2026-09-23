@@ -6,7 +6,13 @@ from unittest.mock import Mock
 
 import pytest
 
-from app.agents.harness.contracts import TutorDecisionGateResult, TutorDecisionGateStatus
+from app.agents.harness.context_builder import TutorContextBuilder
+from app.agents.harness.contracts import (
+    TutorContextInput,
+    TutorContextSource,
+    TutorDecisionGateResult,
+    TutorDecisionGateStatus,
+)
 from app.services.tutor.decision_gate import TeachingTutorDecisionGate
 from app.services.tutor.decision_protocol import parse_tutor_provider_items
 from tests.tutor.test_teaching_decision_semantic_feedback import _run, _valid_teaching_payload
@@ -59,7 +65,22 @@ def test_new_receipt_can_reuse_strategy_but_never_duplicate_text(
         selection_store=SimpleNamespace(get=Mock(return_value=skill)),
         teaching=SimpleNamespace(teaching_context=Mock(return_value=context)),
     )
-    result = gate.validate(run=run, decision=decision)
+    provider_context = TutorContextBuilder().build(
+        TutorContextInput(
+            run_id=run.run_id,
+            conversation_id=run.conversation_id,
+            input_revision=run.input_revision,
+            current_input_required=False,
+            teaching_session=(
+                TutorContextSource(
+                    source_id="teaching-session:session-1",
+                    content={"allowed_source_handles": context["allowed_source_handles"]},
+                ),
+            ),
+        ),
+        token_budget=10_000,
+    )
+    result = gate.validate(run=run, decision=decision, context=provider_context)
     assert (result.status is TutorDecisionGateStatus.APPROVED) is approved
     if not approved:
         assert result.diagnostic_code == "teaching_unit_not_advanced"

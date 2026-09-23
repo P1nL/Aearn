@@ -91,6 +91,7 @@ class TutorDecisionGate(Protocol):
         *,
         run: TutorRunSnapshot,
         decision: TutorDecision,
+        context: TutorContextSelection,
     ) -> TutorDecisionGateResult: ...
 
 
@@ -381,8 +382,9 @@ class DefaultDenyTutorDecisionGate:
         *,
         run: TutorRunSnapshot,
         decision: TutorDecision,
+        context: TutorContextSelection,
     ) -> TutorDecisionGateResult:
-        del run
+        del run, context
         if decision.skill_references or decision.capability_requests or decision.effect_proposals:
             return TutorDecisionGateResult(
                 status=TutorDecisionGateStatus.DENIED,
@@ -399,8 +401,9 @@ class AllowTutorDecisionGate:
         *,
         run: TutorRunSnapshot,
         decision: TutorDecision,
+        context: TutorContextSelection,
     ) -> TutorDecisionGateResult:
-        del run, decision
+        del run, decision, context
         return TutorDecisionGateResult(status=TutorDecisionGateStatus.APPROVED)
 
 

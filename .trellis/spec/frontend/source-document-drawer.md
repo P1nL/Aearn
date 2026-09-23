@@ -85,3 +85,11 @@ drawerScroll.scrollTo({ top: block.offsetTop - 18 });
 ~~~
 
 The server establishes frozen identity; the Desktop only locates that exact block inside the isolated document panel.
+
+
+### Tutor-driven source Artifact
+
+- The learner only views sources. Drawer open/close/retarget/citation clicks never create or save an Artifact. Do not restore the removed manual-save action or API client.
+- Tutor source selection is persisted atomically with its real teaching turn. Desktop receives the resulting card through normal SSE/snapshot, never synthetic local injection.
+- Preserve exact Artifact ID/version resolution, source_inspection read-only presentation, historical remediation-source compatibility, isolated drawer scrolling and trigger focus restoration.
+- Regressions must prove there is no save control and no creation POST on ordinary source browsing, plus correct true-turn Artifact projection.

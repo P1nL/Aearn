@@ -71,6 +71,7 @@ _EXPECTED_PURPOSES = {
     "transfer_check",
     "code_review",
     "sql_exploration",
+    "source_inspection",
     "result",
 }
 _EXPECTED_SOURCE_KINDS = {

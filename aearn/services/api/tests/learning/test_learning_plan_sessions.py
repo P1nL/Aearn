@@ -20,6 +20,7 @@ from app.agents.harness.contracts import (
     TutorDecisionGateResult,
     TutorPlanningIntentHint,
     TutorDecisionGateStatus,
+    TutorContextInput,
     TutorContextSection,
     TutorRunResult,
     TutorRunStatus,
@@ -390,9 +391,21 @@ class _OneTokenEstimator:
 
 
 class _ApprovedDecisionGate:
-    def validate(self, *, run, decision) -> TutorDecisionGateResult:  # type: ignore[no-untyped-def]
-        del run, decision
+    def validate(self, *, run, decision, context) -> TutorDecisionGateResult:  # type: ignore[no-untyped-def]
+        del run, decision, context
         return TutorDecisionGateResult(status=TutorDecisionGateStatus.APPROVED)
+
+
+def _empty_gate_context(run):  # type: ignore[no-untyped-def]
+    return TutorContextBuilder(estimator=_OneTokenEstimator()).build(
+        TutorContextInput(
+            run_id=run.run_id,
+            conversation_id=run.conversation_id,
+            input_revision=run.input_revision,
+            current_input_required=False,
+        ),
+        token_budget=10,
+    )
 
 
 def _planning_profile_facts(*, weekly_minutes: int) -> dict[str, object]:
@@ -607,6 +620,7 @@ def test_confirmed_planning_fact_survives_long_history_correction_and_reset(
                 checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
                 continuation_kind=TutorContinuationKind.PLANNING_INPUT,
             ),
+            context=_empty_gate_context(corrected_run),
         )
         assert gate_result.status is TutorDecisionGateStatus.DENIED
         assert gate_result.diagnostic_code == "confirmed_question_reasked"
@@ -712,6 +726,7 @@ def test_language_question_gate_revalidates_semantic_hint_staleness_and_feature_
             "tutor.learning-plan-draft@1.0.3",
         )
         gate = PlanningQuestionDecisionGate(base=_ApprovedDecisionGate(), facts=facts)
+        gate_context = TutorContextBuilder().build(context_input, token_budget=100_000)
 
         def decision(candidate: str | None) -> TutorDecision:
             return TutorDecision(
@@ -731,22 +746,23 @@ def test_language_question_gate_revalidates_semantic_hint_staleness_and_feature_
                 continuation_kind=TutorContinuationKind.PLANNING_INPUT,
             )
 
-        inactive = gate.validate(run=run, decision=decision("inactive_language"))
+        inactive = gate.validate(run=run, decision=decision("inactive_language"), context=gate_context)
         assert inactive.status is TutorDecisionGateStatus.DENIED
         assert inactive.diagnostic_code == "planning_language_hint_invalid"
 
         stale = gate.validate(
             run=replace(run, input_revision=run.input_revision + 1),
             decision=decision("python"),
+            context=gate_context,
         )
         assert stale.status is TutorDecisionGateStatus.DENIED
         assert stale.diagnostic_code == "planning_language_hint_invalid"
 
-        no_hint = gate.validate(run=run, decision=decision(None))
+        no_hint = gate.validate(run=run, decision=decision(None), context=gate_context)
         assert no_hint.status is TutorDecisionGateStatus.DENIED
         assert no_hint.diagnostic_code == "planning_language_clarification_required"
 
-        semantic = gate.validate(run=run, decision=decision("python"))
+        semantic = gate.validate(run=run, decision=decision("python"), context=gate_context)
         assert semantic.status is TutorDecisionGateStatus.APPROVED
 
         rollback_gate = PlanningQuestionDecisionGate(
@@ -754,7 +770,7 @@ def test_language_question_gate_revalidates_semantic_hint_staleness_and_feature_
             facts=facts,
             intent_resolution_enabled=False,
         )
-        rollback = rollback_gate.validate(run=run, decision=decision(None))
+        rollback = rollback_gate.validate(run=run, decision=decision(None), context=gate_context)
         assert rollback.status is TutorDecisionGateStatus.APPROVED
         conn.rollback()
 

@@ -39,7 +39,6 @@ export function LessonDocumentDrawer({
   const loadControllerRef = useRef<AbortController | null>(null);
   const narrow = useNarrowDrawer();
   const requestKey = useMemo(() => JSON.stringify(request), [request]);
-
   const load = useCallback(() => {
     loadControllerRef.current?.abort();
     const controller = new AbortController();

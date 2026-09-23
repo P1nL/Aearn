@@ -148,3 +148,16 @@ with transaction(conn):
 ```
 
 The correct path validates exact authority and idempotency before the callback, derives Attempt facts from the existing owner, advances one Artifact version, and atomically appends safe Artifact/conversation events on the same connection.
+
+
+## Tutor-driven source-inspector creation
+
+- Source Artifacts are selected by Tutor, not by a learner-side save endpoint or an automatic write on citation open. The old manual creation route is removed.
+- Use the existing teaching source_handles selection channel with server-provided exact frozen source bindings; do not confuse read-only citation support with learner-response Artifact interaction.
+- Optional source candidates must fit the existing teaching character limit, required-facts item limit, and whole-request token budget. Drop optional sources rather than raising caps or evicting existing interaction candidates/required grounding; authorize only the source evidence/handle subset actually visible to the provider.
+- Rank cited frozen teaching blocks against this run's persisted input (or frozen focus for no-input controls), with exact selections first and exact-block deduplication. Lexical ranking is a bounded shortlist, not semantic proof or a keyword-based create trigger. Never fall back to an unrelated first block for an unmatched learner question.
+- Tutor may select one useful source proactively for misconception correction, subtle behavior contrasts or verifiable examples, without an explicit source request; skip low-value acknowledgements and repeated passages. The strict internal recently_displayed flag uses only same-scope teaching turns committed before this run began, never mutable future history. Public Artifact history remains unchanged.
+- Provider-visible handles and the final Gate allowlist must agree. Unknown, forged, cross-scope, stale or flag-disabled source selections fail closed; no selection means no source Artifact.
+- Recheck run/session/checkpoint/assignment/document/hash/block/citation during the existing atomic teaching terminal commit. Message, checkpoint/action receipt, source Artifact/event and run terminal must roll back together.
+- Associate new sources with the real run and committed checkpoint; source_inspection remains readonly/nonblocking with no Attempt, score, progress or automatic continuation.
+- Preserve old manual/null-turn sources and legacy remediation sources for reads without presenting them as evidence of Tutor-driven generation. Do not rewrite published Skill versions or relax budget/retry limits.

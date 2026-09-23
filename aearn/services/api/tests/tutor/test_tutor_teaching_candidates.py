@@ -6,7 +6,10 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from app.agents.harness.context_builder import TutorContextBuilder
 from app.agents.harness.contracts import (
+    TutorContextInput,
+    TutorContextSource,
     TutorDecision,
     TutorDecisionGateResult,
     TutorDecisionGateStatus,
@@ -83,8 +86,9 @@ class _ApproveGate:
         *,
         run: TutorRunSnapshot,
         decision: TutorDecision,
+        context,  # type: ignore[no-untyped-def]
     ) -> TutorDecisionGateResult:
-        del run, decision
+        del run, decision, context
         return TutorDecisionGateResult(status=TutorDecisionGateStatus.APPROVED)
 
 
@@ -413,6 +417,24 @@ def _decision(*, intent: str, handle: str = _HANDLE, interaction: bool = True) -
     )
 
 
+def _provider_context(context: dict[str, object]):  # type: ignore[no-untyped-def]
+    return TutorContextBuilder().build(
+        TutorContextInput(
+            run_id="run-current",
+            conversation_id="conversation-current",
+            input_revision=0,
+            current_input_required=False,
+            teaching_session=(
+                TutorContextSource(
+                    source_id="teaching-session:session-current",
+                    content=project_teaching_provider_context(context),
+                ),
+            ),
+        ),
+        token_budget=10_000,
+    )
+
+
 def _gate(context: dict[str, object]) -> TeachingTutorDecisionGate:
     catalog = compile_published_skill_catalog()
     skill = catalog.resolve_skill("tutor.lesson-teaching", "1.2.1")
@@ -436,9 +458,11 @@ def _gate(context: dict[str, object]) -> TeachingTutorDecisionGate:
 
 
 def test_gate_accepts_only_exact_current_candidate_intent_pair() -> None:
-    result = _gate(_context(_candidate_set())).validate(
+    context = _context(_candidate_set())
+    result = _gate(context).validate(
         run=_run(),
         decision=_decision(intent="edit_code"),
+        context=_provider_context(context),
     )
 
     assert result.status is TutorDecisionGateStatus.APPROVED
@@ -478,6 +502,7 @@ def test_gate_rejects_handle_not_advertised_by_the_bounded_provider_projection()
     result = _gate(context).validate(
         run=_run(),
         decision=_decision(intent="structured_answer", handle=omitted),
+        context=_provider_context(context),
     )
 
     assert result.status is TutorDecisionGateStatus.DENIED
@@ -524,7 +549,10 @@ def test_gate_rejects_impossible_artifact_instruction_before_public_authority(
     decision: TutorDecision,
     diagnostic_code: str,
 ) -> None:
-    result = _gate(_context(candidate_set)).validate(run=_run(), decision=decision)
+    context = _context(candidate_set)
+    result = _gate(context).validate(
+        run=_run(), decision=decision, context=_provider_context(context)
+    )
 
     assert result.status is TutorDecisionGateStatus.DENIED
     assert result.diagnostic_code == diagnostic_code

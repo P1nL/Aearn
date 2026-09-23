@@ -103,3 +103,17 @@ Cutover inventory is schema-reconciled: every `tutor_*` table is explicitly clas
 All twelve approved Trellis children completed local implementation, verification, commit, and archive, followed by the parent final acceptance reconciliation. The closed public Artifact contract, snapshot v4/v5 recovery, branch/continuation authority, Learning Item governance, HTML editor/isolated Preview, result evaluation, demonstrations, knowledge checks/Hints/remediation, model review v2, SQL workspace, and exact source drawer share one Artifact/Attempt/Result/Markdown/Branch boundary. The final acceptance mapping lives in [the Tutor Conversation Learning Artifact platform matrix](./qa/acceptance-test-plan.md#2026-09-02-tutor-conversation-learning-artifact-platform-final-matrix).
 
 Local deterministic tests, disposable PostgreSQL/browser fixtures, Rust checks, and safe import/static audits do not authorize a real provider run, Docker conformance, reviewed image build/sign/publish, production migration, push, deploy, or release. Those remain separately approved operations.
+
+
+## Tutor 驱动来源工件（2026-09-21）
+
+撤销此前要求学习者“保存为来源工件”的设计及手动创建 API。
+来源由 Tutor 从服务端提供的精确冻结来源中选择，并在教学消息的同一权威终态事务中生成只读非阻塞工件。
+学习者只使用“查看来源文档”；普通来源浏览不创建工件。
+来源选择不要求学习者明确索要：候选按本轮问题与冻结片段做有界相关性排序，Tutor 决定是否有教学展示价值；简短致谢/确认不刷卡，近期已展示片段避免重复。该候选检索是词法 shortlist，不是完整语义检索或所有情境自主性保证。
+历史手动来源保留可读，但不能作为 Tutor 自动生成链路的验收证据。
+
+选择/原子提交边界见 [API 契约](architecture/api-contract.md)，
+只读交互见 [前端交互规格](product/frontend-interaction-spec.md)，
+持久化 purpose 与历史兼容见 [数据库契约](architecture/database-schema.md)。
+本次纠正不表示题库审核/pilot、SQL/code/demo 或独立 browser_preview 已通过验收。

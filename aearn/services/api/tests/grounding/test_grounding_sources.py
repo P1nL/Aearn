@@ -49,6 +49,20 @@ def test_seed_urls_stay_under_allowlisted_domains() -> None:
             assert any(domain in seed_url for domain in domains)
 
 
+def test_postgresql_sql_seeds_add_query_body_without_widening_source_policy() -> None:
+    source = get_grounding_source("postgresql-sql-docs")
+
+    assert source is not None
+    assert source.seed_urls == (
+        "https://www.postgresql.org/docs/current/tutorial.html",
+        "https://www.postgresql.org/docs/current/sql.html",
+        "https://www.postgresql.org/docs/current/tutorial-select.html",
+    )
+    assert source.seed_policy == "seed_urls_only"
+    assert source.allowlisted_domains == ("www.postgresql.org",)
+    assert source.trust_tier == "trusted_de_facto"
+
+
 def test_cpp_uses_trusted_de_facto_source_with_disclosure() -> None:
     cpp_sources = sources_for_language("c++")
     cppreference = get_grounding_source("cppreference-cpp")

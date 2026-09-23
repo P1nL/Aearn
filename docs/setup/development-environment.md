@@ -14,6 +14,8 @@
 - Grounding 的 official 标签不等于真实抓取。新课程只准入带 `grounding_provenance_v1/http_fetch` 的、与来源/URL/正文哈希一致的片段。历史 metadata 缺失为 unknown，不自动升级为可信来源；fixture 只供显式测试 seam。
 - 网络抓取在数据库事务之外执行。仅在指定 source 的所有 seed 成功、所有片段来源校验通过后，将 `persist_grounding_reindex_report(..., mode="fetch")` 与 `replace_grounding_chunks(..., source_ids=(指定来源,))` 在同一事务提交。失败保留原索引。不要运行 fixture reindex 来修复真实课程。
 - Python tutorial 的 seed 包含目录、introduction 与 controlflow，避免仅抓目录却声称获得变量/控制流正文。新索引不会重写历史冻结 LessonDocument。
+- SQL 的 `postgresql-sql-docs` 保持 `seed_urls_only` 与 `trusted_de_facto`，除目录外包含 `tutorial-select.html` 查询正文。新增 seed 不会自动重建已有索引，也不代表 SQLite 方言适配已验收。
+- Lesson author 示例必须服从实际证据 trust tier：无 official 证据时不展示或要求 `authority_note`；有 official 证据时该示例只引用真实 official handle。供应商/方言边界可使用有证据的 concept/comparison；不得提升来源等级或放宽质量门禁。
 - knowledge-bound `lesson_teaching` 输入必须已有当前 TeachingSession/checkpoint。准备未完成时返回 `409 TEACHING_NOT_READY`，不得先调用通用模型再等待工件出现；已有幂等输入依照原绑定回放。
 
 ## 1. 必需工具

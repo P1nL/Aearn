@@ -10,6 +10,7 @@ from ._mixin import PersistenceMixin
 if TYPE_CHECKING:
     from app.services.learning.artifacts.repository import LearningArtifactWriteResult
     from app.services.learning.teaching_artifacts import PreparedTeachingArtifact
+    from app.services.learning.source_inspector import PreparedSourceInspector
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +18,7 @@ class _TeachingStepCommit:
     scope: Mapping[str, object]
     next_checkpoint_id: str
     prepared_artifact: PreparedTeachingArtifact | None
+    prepared_sources: tuple[PreparedSourceInspector, ...]
 
 
 class EffectsPersistenceMixin(PersistenceMixin):
@@ -753,6 +755,45 @@ class EffectsPersistenceMixin(PersistenceMixin):
         ).fetchone()
         if next_checkpoint is None:
             raise RuntimeError("teaching checkpoint commit failed")
+        from app.services.learning.source_inspector import (
+            SOURCE_INSPECTOR_HANDLE_PREFIX,
+            PostgresSourceInspectorMaterializer,
+            SourceInspectorCommitError,
+        )
+
+        prepared_sources: tuple[PreparedSourceInspector, ...] = ()
+        if any(
+            handle.startswith(SOURCE_INSPECTOR_HANDLE_PREFIX)
+            for handle in result.teaching_step.source_handles
+        ):
+            from app.services.learning.teaching_sessions import TeachingSessionRepository
+
+            try:
+                source_context = TeachingSessionRepository(
+                    self._conn,
+                    settings=self._settings,
+                ).teaching_context(
+                    user_id=str(scope["user_id"]),
+                    run_id=str(run["id"]),
+                )
+                if source_context is None:
+                    raise SourceInspectorCommitError(
+                        "teaching source context disappeared before commit"
+                    )
+                prepared_sources = PostgresSourceInspectorMaterializer(
+                    self._conn,
+                    settings=self._settings,
+                ).prepare_selected(
+                    context=source_context,
+                    scope=scope,
+                    step=result.teaching_step,
+                    next_checkpoint_id=str(next_checkpoint["id"]),
+                    next_session_version=next_version,
+                )
+            except (SourceInspectorCommitError, ValidationError) as exc:
+                raise TutorTerminalStateConflict(
+                    "teaching source authority changed before commit"
+                ) from exc
         completed = str(scope["progress_status"]) == "completed" or result.teaching_step.pause_kind.value == "completion_pause"
         status = "completed" if completed else "paused" if result.teaching_step.pause_kind.value == "session_pause" else "active"
         updated = self._conn.execute(
@@ -808,6 +849,7 @@ class EffectsPersistenceMixin(PersistenceMixin):
             scope=dict(scope),
             next_checkpoint_id=str(next_checkpoint["id"]),
             prepared_artifact=prepared_artifact,
+            prepared_sources=prepared_sources,
         )
 
     def _finalize_teaching_step_locked(
@@ -841,6 +883,27 @@ class EffectsPersistenceMixin(PersistenceMixin):
             except TeachingArtifactCommitError as exc:
                 raise TutorTerminalStateConflict(
                     "teaching Artifact failed during atomic commit"
+                ) from exc
+
+        if commit.prepared_sources:
+            from app.services.learning.source_inspector import (
+                PostgresSourceInspectorMaterializer,
+                SourceInspectorCommitError,
+            )
+
+            source_materializer = PostgresSourceInspectorMaterializer(
+                self._conn,
+                settings=self._settings,
+            )
+            try:
+                for prepared_source in commit.prepared_sources:
+                    source_materializer.create(
+                        prepared_source,
+                        occurred_at=created_at,
+                    )
+            except SourceInspectorCommitError as exc:
+                raise TutorTerminalStateConflict(
+                    "teaching source Artifact failed during atomic commit"
                 ) from exc
 
         response_mode = (

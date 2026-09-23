@@ -1,10 +1,16 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ fetchLessonDocumentReference: vi.fn() }));
+const api = vi.hoisted(() => ({
+  fetchLessonDocumentReference: vi.fn(),
+}));
 vi.mock("../../../api", () => api);
 
-import type { LessonDocumentReferenceOpenRequest, LessonDocumentReferenceResolution } from "../../../types";
+import type {
+  LessonDocumentReferenceOpenRequest,
+  LessonDocumentReferenceResolution,
+} from "../../../types";
+import { fetchLessonDocumentReference as resolveReference } from "../../../api/learning";
 import { LessonDocumentDrawer } from "../lesson/LessonDocumentDrawer";
 
 const userId = "11111111-1111-4111-8111-111111111111";
@@ -277,4 +283,44 @@ describe("LessonDocumentDrawer", () => {
     expect(screen.getByText("内容已更新")).toBeInTheDocument();
     expect(rendered.container.querySelector(".lesson-document-drawer-highlight")).toHaveStyle({ top: "12px" });
   });
+
+  it("opens, retargets and closes using only resolver POSTs, never creation or save controls", async () => {
+    const contextRequest: LessonDocumentReferenceOpenRequest = {
+      knowledgeKey: directRequest.knowledgeKey,
+      source: { kind: "context_reference", reference_id: "88888888-8888-4888-8888-888888888888" },
+    };
+    const artifactRequest: LessonDocumentReferenceOpenRequest = {
+      knowledgeKey: directRequest.knowledgeKey,
+      source: { kind: "artifact", artifact_id: "99999999-9999-4999-8999-999999999999", artifact_version: 1 },
+    };
+    const responses = [resolution(),
+      { ...resolution(), source_kind: "context_reference", source_id: contextRequest.source.kind === "context_reference" ? contextRequest.source.reference_id : "" },
+      { ...resolution(), source_kind: "artifact", source_id: artifactRequest.source.kind === "artifact" ? artifactRequest.source.artifact_id : "" },
+    ];
+    const fetchMock = vi.fn();
+    for (const response of responses) fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(response), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    api.fetchLessonDocumentReference.mockImplementation(resolveReference);
+    const onClose = vi.fn();
+    const props = { userId, trackId, conversationId, onClose };
+    const view = render(<LessonDocumentDrawer {...props} request={directRequest} />);
+    for (const [index, request] of [directRequest, contextRequest, artifactRequest].entries()) {
+      if (index > 0) view.rerender(<LessonDocumentDrawer {...props} request={request} />);
+      await screen.findByText("保持变量");
+      expect(screen.queryByRole("button", { name: /保存|生成|创建/ })).not.toBeInTheDocument();
+      expect(fetchMock).toHaveBeenCalledTimes(index + 1);
+      const [url, init] = fetchMock.mock.calls[index];
+      expect(String(url)).toBe(`http://127.0.0.1:8001/api/learning-tracks/${trackId}/lesson-references/${conversationId}/resolve`);
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body)).toEqual({ user_id: userId, knowledge_key: request.knowledgeKey, source: request.source });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "收起" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/artifacts"))).toBe(false);
+  });
+
 });

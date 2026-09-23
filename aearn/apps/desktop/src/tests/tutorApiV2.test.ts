@@ -565,6 +565,42 @@ describe("Tutor v2 API boundary", () => {
     ]);
   });
 
+  it("keeps legacy source inspectors readable while applying the new closed purpose only to formal saves", async () => {
+    const presentation = {
+      type: "source_inspector_v1",
+      document_id: "document-legacy",
+      document_content_hash: digest("document-legacy"),
+      block_id: "block-legacy",
+      excerpt: "Legacy bounded source excerpt.",
+      citation_ids: ["citation-legacy"],
+    };
+    const legacy = artifactFixture({
+      id: "artifact-source-legacy",
+      artifactKind: "source_inspector",
+      purpose: "remediation",
+      presentation,
+      overrides: {
+        source_references: [{
+          kind: "lesson_document",
+          reference_id: "document-legacy",
+          reference_version: 1,
+          content_hash: digest("document-legacy"),
+          label: "Legacy lesson document",
+        }],
+      },
+    });
+    const formalWithLegacyActiveState = { ...legacy, id: "artifact-source-formal", purpose: "source_inspection" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [legacy], activeArtifact: null })))
+      .mockResolvedValueOnce(jsonResponse(snapshotFixture("tutor_conversation_snapshot_v4", { timeline: [formalWithLegacyActiveState], activeArtifact: null })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" }))
+      .resolves.toMatchObject({ timeline: [expect.objectContaining({ id: "artifact-source-legacy", purpose: "remediation" })] });
+    await expect(fetchTutorConversationSnapshot({ userId: "user-1", conversationId: "conversation-1" }))
+      .rejects.toThrow("Tutor snapshot API returned an invalid payload");
+  });
+
   it("accepts snapshot v5 with exact depth-one branch groups and timeline identity", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(branchSnapshotFixture())));
 

@@ -495,7 +495,7 @@ proactive delivery、worker import、schema bootstrap 和 Desktop typed build。
 - `POST /api/learning-plan-sessions`：创建或恢复同一用户唯一未完成 session，并创建专用 Tutor conversation、绑定 `plan_drafting` scope。
 - `GET /api/learning-plan-sessions/current` 与 `GET /api/learning-plan-sessions/{id}`：返回 user-scoped session 和当前 typed draft 安全投影。
 - `POST /api/learning-plan-sessions/{id}/cancel`：按 expected session version 取消。
-- `POST /api/learning-plan-sessions/{id}/confirm`：校验 session version、current draft id/version/hash 后，在同一事务创建 track/revision/route/progress 并改绑 conversation。
+- `POST /api/learning-plan-sessions/{id}/confirm`：校验 session version、current draft id/version/hash 后，在同一事务创建 track/revision/route/progress 并改绑 conversation。响应严格包含 `session`、`track`、布尔 `idempotent_replayed`；其中 `track` 是包含 `created_at`、`archived_at` 的 LearningTrackDetail，而不是列表摘要。客户端分别保持 detail/summary 的严格字段校验；幂等重放必须沿用原确认请求体。
 
 session 公开投影包含 learner-safe `planning_context={schema_version,facts[],questions[],fact_revision}`。
 `facts[]` 只暴露稳定 field、normalized value、状态、revision、source kind 与 source
@@ -884,3 +884,29 @@ The public Learning Artifact boundary is tutor_learning_artifact_v1 with a close
 Write admission is default-off through TUTOR_LEARNING_ARTIFACTS_ENABLED and TUTOR_ARTIFACT_TEACHING_MODE_ENABLED. The provider sees only server-built published handles; when a compatible handle or either gate is absent, edit/run/review/query/demo Artifact intent is rejected before any public Tutor message. Existing safe history remains readable. Every family reuses the existing Gate/Review/Attempt/Teaching/Result authority; the Artifact facade never creates a second score, mastery, progress, schedule, or publication state machine.
 
 Public API, snapshot, SSE, Desktop payloads, local export, errors, and readiness evidence omit full submission, private rubric/test/reference answer, hidden SQL data, provider body/reasoning, command, path, container identity, credentials, and secrets. Default local verification excludes real provider, Docker conformance, production image build/sign/publish, push, deploy, and production migration; those remain separate approvals and are not release approval.
+
+
+## 2026-09-21：Tutor 驱动的来源工件
+
+撤销此前手动 `POST /api/learning-tracks/{track_id}/lesson-references/{conversation_id}/artifacts` 入口。
+学习者不创建或保存来源工件；既有来源 `resolve` 和 Artifact GET 继续只读，打开引用不增加时间线记录。
+
+来源选择使用已有 `TeachingStepDecision.source_handles`，不是新增 learner-response interaction。
+服务端在精确 run/session/track/knowledge/assignment/document authority 下提供有界、可验证的来源候选；
+provider 只能选择本次实际提供的来源 handle，不能自行指定文档、hash、HTML、摘录或 selector。
+没有选择来源 handle 就不生成来源工件；关闭任一 Artifact feature flag 不提供可创建候选。
+可选来源必须同时适配既有 teaching projection 字符、required facts 条目及整轮 token 预算；空间不足时裁来源，不提高上限，也不驱逐既有交互候选或必需 grounding。最终 provider 可见来源 evidence 与 handle allowlist 必须一致，decision gate 只授权该可见子集。
+
+来源候选优先使用本轮 exact 课程引用；其余从冻结文档中有 citation 的概念、说明、代码示例或对比块，按本轮持久化问题（无输入时用冻结 focus）做有界词法相关性排序，最多两个。普通问题无匹配时不回退到首段，也不把检索分数当成展示命令。只有无学习者输入的教学开启/继续轮次允许用课程首个概念作引入候选。
+候选内 `recently_displayed` 为严格布尔值，来自本轮开始之前、同用户/对话/主线/冻结文档的最近三个已提交教学轮次；不计本轮或未来来源，不改变公开 Artifact 协议。
+Tutor 按实际讲解决定是否附来源：纠正概念误解、解释细微行为差异或核对例子时可主动附最相关一张，无需学习者要求；致谢、简短确认、导航和缺少相关依据时不附，近期同段避免重复展示。词法排序不是完整语义检索，模型仍须检查片段是否支持当前解释。
+
+最终提交重新核对选择与冻结来源。在既有教学终态事务中完成 checkpoint CAS、教学消息、action receipt、
+来源 Artifact、conversation event 和 run terminal；来源失败必须回滚，不能先发布消息再另补工件。
+来源工件关联真实 `turn_id`/TeachingSession/新 checkpoint，purpose 为 `source_inspection`，
+ready、非 blocking、无 action/Attempt，不建立额外评分、进度或 continuation。
+它不占用面向学生作答的 `interaction.artifact_handle`，也不强迫 `evidence_pause`。
+
+来源详情与“查看来源文档”继续使用 exact Artifact ID/version 与冻结的文档/assignment/hash/block/citation。
+历史手动生成且 `turn_id=null` 的合法来源工件仍可读取，不删除、回写或冒充新的 Tutor 生成证据。
+旧 `source_inspector + remediation` 亦保持历史兼容。新增路径不改写已发布 Skill bundle，不放宽现有上下文预算或重试上限。

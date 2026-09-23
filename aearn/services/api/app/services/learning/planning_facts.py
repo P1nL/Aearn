@@ -14,6 +14,7 @@ from psycopg import Connection
 
 from app.agents.harness.contracts import (
     TUTOR_PLANNING_QUESTION_KEYS,
+    TutorContextSelection,
     TutorContextSource,
     TutorContinuationKind,
     TutorDecision,
@@ -790,6 +791,7 @@ class TutorDecisionGate(Protocol):
         *,
         run: TutorRunSnapshot,
         decision: TutorDecision,
+        context: TutorContextSelection,
     ) -> TutorDecisionGateResult: ...
 
 
@@ -812,8 +814,9 @@ class PlanningQuestionDecisionGate:
         *,
         run: TutorRunSnapshot,
         decision: TutorDecision,
+        context: TutorContextSelection,
     ) -> TutorDecisionGateResult:
-        result = self._base.validate(run=run, decision=decision)
+        result = self._base.validate(run=run, decision=decision, context=context)
         if result.status is not TutorDecisionGateStatus.APPROVED:
             return result
         if decision.continuation_kind is not TutorContinuationKind.PLANNING_INPUT:

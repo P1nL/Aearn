@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import json
 
 from app.core.config import Settings
-from app.services.learning.lesson_authoring import _parse_author_candidate
+from app.services.learning.lesson_authoring import (
+    LessonAuthoringEvidence,
+    LessonAuthoringRequest,
+    _author_messages,
+    _parse_author_candidate,
+)
 from app.services.learning.lesson_contracts import (
     LESSON_CONTENT_STANDARD_VERSION,
     LESSON_DOCUMENT_SCHEMA_VERSION,
@@ -16,6 +22,70 @@ from app.services.llm.llm_explain_error import (
     build_llm_error_explanation,
     llm_error_explanation_output_schema,
 )
+
+
+def _lesson_author_prompt(*trust_tiers: str) -> tuple[str, dict[str, object], dict[str, object]]:
+    evidence = tuple(
+        LessonAuthoringEvidence(
+            handle=f"S{index}",
+            display_name=f"Source {index}",
+            provider="Offline prompt test",
+            trust_tier=trust_tier,
+            source_version_label="test-only",
+            source_version_kind="rolling",
+            section_path=("Queries",),
+            evidence_excerpt="SELECT rows with a bounded condition.",
+        )
+        for index, trust_tier in enumerate(trust_tiers, 1)
+    )
+    request = LessonAuthoringRequest(
+        document_kind="standard",
+        language_id="sql",
+        knowledge_key="sql.queries",
+        title="SQL queries",
+        goal_text="Learn bounded SQL query behavior.",
+        target_level="beginner",
+        required_capabilities=("sql.queries",),
+        mastery_level="unseen",
+        mastery_confidence=0.0,
+        evidence=evidence,
+    )
+    system, user = _author_messages(request)
+    examples = json.loads(
+        system["content"].rsplit("Exact field examples for the allowed block types: ", 1)[1]
+    )
+    return system["content"], json.loads(user["content"]), examples
+
+
+def test_lesson_author_prompt_forbids_authority_note_without_official_evidence() -> None:
+    system, payload, examples = _lesson_author_prompt("trusted_de_facto")
+
+    allowed_types = system.split("Allowed block types for this request are ", 1)[1].split(
+        ". They are not all mandatory.", 1
+    )[0]
+    assert "authority_note" not in allowed_types.split(", ")
+    assert "authority_note" not in examples
+    assert "authority_note may cite only official evidence handles: []" in system
+    assert "When that list is empty, do not emit authority_note" in system
+    assert [item["trust_tier"] for item in payload["evidence"]] == ["trusted_de_facto"]
+
+
+def test_lesson_author_prompt_uses_only_later_official_handle_for_authority_example() -> None:
+    system, payload, examples = _lesson_author_prompt("trusted_de_facto", "official")
+
+    assert examples["authority_note"]["citation_ids"] == ["S2"]
+    assert "authority_note may cite only official evidence handles: [\"S2\"]" in system
+    assert [item["trust_tier"] for item in payload["evidence"]] == ["trusted_de_facto", "official"]
+
+
+def test_lesson_author_prompt_preserves_authority_example_for_official_evidence() -> None:
+    system, payload, examples = _lesson_author_prompt("official")
+
+    assert examples["authority_note"]["citation_ids"] == ["S1"]
+    assert "authority_note" in system.split("Allowed block types for this request are ", 1)[1].split(
+        ". They are not all mandatory.", 1
+    )[0].split(", ")
+    assert [item["trust_tier"] for item in payload["evidence"]] == ["official"]
 
 
 def test_lesson_author_schema_and_examples_cover_every_registered_block() -> None:

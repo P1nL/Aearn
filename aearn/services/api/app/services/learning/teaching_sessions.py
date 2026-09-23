@@ -29,6 +29,11 @@ from app.services.learning.teaching_candidates import (
     bound_teaching_artifact_candidates,
 )
 from app.services.learning.teaching_loop import build_teaching_action_shelf
+from app.services.learning.source_inspector import (
+    SOURCE_INSPECTOR_HANDLE_PREFIX,
+    PostgresSourceInspectorMaterializer,
+    SourceInspectorCommitError,
+)
 from app.services.learning.teaching_contracts import (
     DomainEventStimulus,
     LearnerMessageStimulus,
@@ -112,6 +117,10 @@ class TeachingSessionRepository:
         self._settings = settings or get_settings()
         self._artifact_candidate_builder = artifact_candidate_builder or TeachingArtifactCandidateBuilder(
             PostgresLearningItemBankRepository(conn)
+        )
+        self._source_inspector = PostgresSourceInspectorMaterializer(
+            conn,
+            settings=self._settings,
         )
 
     def resolve_authority(
@@ -739,13 +748,26 @@ class TeachingSessionRepository:
             raise TeachingSessionConflict("teaching context checkpoint is stale")
         state = self._checkpoint_state(row)
         handles: set[str] = {
-            f"knowledge:{row['knowledge_key']}", f"stimulus:{row['stimulus_id']}",
-            *state.objective.source_handles,
+            f"knowledge:{row['knowledge_key']}",
+            f"stimulus:{row['stimulus_id']}",
+            *(
+                handle
+                for handle in state.objective.source_handles
+                if not handle.startswith(SOURCE_INSPECTOR_HANDLE_PREFIX)
+            ),
         }
         if state.active_focus is not None:
-            handles.update(state.active_focus.source_handles)
+            handles.update(
+                handle
+                for handle in state.active_focus.source_handles
+                if not handle.startswith(SOURCE_INSPECTOR_HANDLE_PREFIX)
+            )
         for focus in state.suspended_focuses:
-            handles.update(focus.source_handles)
+            handles.update(
+                handle
+                for handle in focus.source_handles
+                if not handle.startswith(SOURCE_INSPECTOR_HANDLE_PREFIX)
+            )
         for evidence in state.evidence_cursors:
             handles.add(f"{evidence.evidence_kind}:{evidence.source_id}")
         references = self._conn.execute(
@@ -914,6 +936,20 @@ class TeachingSessionRepository:
                     )
                 }
             )
+        try:
+            source_candidates = self._source_inspector.build_candidates(
+                scope=row,
+                allow_sources=(
+                    str(row["progress_status"]) != "completed"
+                    and result_evaluation_summary is None
+                    and knowledge_check_evaluation is None
+                    and model_review_evaluation is None
+                ),
+            )
+        except SourceInspectorCommitError as exc:
+            raise TeachingSessionConflict(
+                "teaching source candidate authority is invalid"
+            ) from exc
         context: dict[str, object] = {
             "schema_version": "teaching_session_context_v2",
             "session": {
@@ -941,8 +977,12 @@ class TeachingSessionRepository:
             # It cannot be supplied by a learner control or provider output.
             "fresh_knowledge_check_evidence": knowledge_check_evaluation is not None,
             "artifact_candidates": artifact_candidates.model_dump(mode="json"),
-            # Not part of the 1,200-character TEACHING_SESSION authority block.
-            # InteractiveContextLoader promotes every piece to REQUIRED_FACTS.
+            # Full exact bindings remain server-only. The interactive context loader
+            # admits an exact subset only after the ordinary teaching projection,
+            # required-fact item limit and complete provider token budget are known.
+            "source_inspection_candidates": [
+                candidate.model_dump(mode="json") for candidate in source_candidates
+            ],
             "artifact_evidence": list(knowledge_check_evaluation[2]) if knowledge_check_evaluation is not None else [],
             "allowed_source_handles": sorted(handles),
             "action_policy": "lesson_teaching_v3",
