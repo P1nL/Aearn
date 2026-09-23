@@ -250,3 +250,29 @@ Fixture-only seven-command CLI. 114 tests, 60 actual CLI processes, 10 Subject f
 ### Next Steps
 
 - Continue existing 09-03-rag-plan-preflight-migration-proposals child05.
+
+
+## Session 10: Shadow RAG plan preflight verified
+<!-- trellis-session: v=2 fp=9eab12e50b1baafd -->
+
+**Date**: 2026-09-23
+**Task**: Shadow RAG plan preflight verified
+**Branch**: `main`
+
+### Summary
+
+191 tests passed, 35 readonly checks, 167 table fingerprints unchanged; default-off projection only; two disposable databases removed; no public cutover or push.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8a6273c` | feat: add shadow RAG plan preflight and migration proposals |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Continue existing child06 09-03-rag-shadow-integration-fixtures-docs.

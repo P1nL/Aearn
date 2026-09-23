@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/prd.md", "reason": "Parent requirements and accepted product decisions."}
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/design.md", "reason": "Parent architecture, boundaries, lifecycle and compatibility design."}
+{"file": ".trellis/tasks/archive/2026-08/08-04-lesson-document-authority-grounding/design.md", "reason": "Existing plan, Lesson source, assignment and migration authority."}
+{"file": ".trellis/spec/backend/plan-preflight-migration.md", "reason": "Current child05 exact server-fact, read-only projection and default-off boundary contracts."}
