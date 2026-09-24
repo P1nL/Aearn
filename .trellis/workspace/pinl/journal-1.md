@@ -302,3 +302,37 @@ Fixture-only seven-command CLI. 114 tests, 60 actual CLI processes, 10 Subject f
 ### Next Steps
 
 - Return to existing RAG parent for phase I acceptance reconciliation; do not start phase II.
+
+
+## Session 12: RAG A material contracts delivered
+<!-- trellis-session: v=2 fp=e4602d5c645625cc -->
+
+**Date**: 2026-09-24
+**Task**: RAG A material contracts delivered
+**Branch**: `main`
+
+### Summary
+
+A pure contracts and default-deny policies implemented, independently reviewed, verified and archived; Tavily/runtime fallback remains future B/D work.
+
+### Main Changes
+
+- Strict material/source contracts, actor-purpose authority, exact claim receipts, four default-off flags; no public wiring.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1bbf364` | feat: add guarded RAG material and source contracts |
+
+### Testing
+
+- [OK] 150 passed, 7 exclusive-DB tests skipped; new A suites 76 passed; Ruff, Mypy281, offline lock passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Plan B1 controlled Tavily search and persistent budgets; quota exhaustion routes to existing-library materials, no native-search fallback.
