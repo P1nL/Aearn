@@ -1,0 +1,73 @@
+{
+  "scope": "Four explicitly chosen public URLs; no cookie/auth/proxy/redirect bypass, max256KiB hashed prefix plus at most one extra byte to detect truncation,15s timeout; metadata only. DNS precheck is not IP pinning and does not certify production SSRF protection. No corpus write or content approval.",
+  "records": [
+    {
+      "source": "python-reference",
+      "url": "https://docs.python.org/3.12/tutorial/datastructures.html",
+      "observed_at": "2026-09-24T08:03:34.975651+00:00",
+      "method": "direct_https_bounded_read",
+      "body_persisted": false,
+      "admitted_to_corpus": false,
+      "outcome": "read_complete",
+      "status": 200,
+      "content_type": "text/html",
+      "content_encoding": "identity",
+      "captured_bytes": 96467,
+      "body_complete": true,
+      "sha256_captured_bytes": "e4a4047ea7ee716a31a4d530158b8c88220276ad39b08525be19e401ec246a42",
+      "final_url": "https://docs.python.org/3.12/tutorial/datastructures.html",
+      "redirects_followed": 0
+    },
+    {
+      "source": "sqlite-reference",
+      "url": "https://sqlite.org/lang_select.html",
+      "observed_at": "2026-09-24T08:03:35.443573+00:00",
+      "method": "direct_https_bounded_read",
+      "body_persisted": false,
+      "admitted_to_corpus": false,
+      "outcome": "read_capped",
+      "status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "content_encoding": "identity",
+      "captured_bytes": 262144,
+      "body_complete": false,
+      "sha256_captured_bytes": "694e9180aa681386f70d084ff99f2491a920f038899b451d8d584b7ecd482a98",
+      "final_url": "https://sqlite.org/lang_select.html",
+      "redirects_followed": 0
+    },
+    {
+      "source": "third-party-tutorial",
+      "url": "https://www.runoob.com/sqlite/sqlite-tutorial.html",
+      "observed_at": "2026-09-24T08:03:43.475868+00:00",
+      "method": "direct_https_bounded_read",
+      "body_persisted": false,
+      "admitted_to_corpus": false,
+      "outcome": "read_complete",
+      "status": 200,
+      "content_type": "text/html; charset=UTF-8",
+      "content_encoding": "identity",
+      "captured_bytes": 67076,
+      "body_complete": true,
+      "sha256_captured_bytes": "13060949a014dd5ba9928cedc9ad98d04248648a979667ef2cd396bb2a402b61",
+      "final_url": "https://www.runoob.com/sqlite/sqlite-tutorial.html",
+      "redirects_followed": 0
+    },
+    {
+      "source": "public-repository",
+      "url": "https://github.com/swaroopch/byte-of-python",
+      "observed_at": "2026-09-24T08:03:43.695310+00:00",
+      "method": "direct_https_bounded_read",
+      "body_persisted": false,
+      "admitted_to_corpus": false,
+      "outcome": "read_capped",
+      "status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "content_encoding": "identity",
+      "captured_bytes": 262144,
+      "body_complete": false,
+      "sha256_captured_bytes": "26427a1f4ff13c3e770c482a8200078d56f9935a9fa35624c43ab145522138e2",
+      "final_url": "https://github.com/swaroopch/byte-of-python",
+      "redirects_followed": 0
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "rag-material-source-contracts",
+  "name": "rag-material-source-contracts",
+  "title": "RAG A：资料需求、发现权限与用途审核合同",
+  "description": "实现阶段II A的严格资料需求、混合来源发现权限、用途及claim证据合同、服务端身份预算边界与默认关闭配置；关键公开来源搜索抓取单独记录，不作已入库或已发布证明。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "pinl",
+  "assignee": "pinl",
+  "createdAt": "2026-09-24",
+  "completedAt": "2026-09-24",
+  "branch": "main",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "1bbf364",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-03-rag-language-ecosystem-adaptive-retrieval",
+  "relatedFiles": [],
+  "notes": "A实现已本地提交1bbf364；提交前复跑150 passed/7 DB-only skipped，Ruff/Mypy281/lock通过；本轮仅归档A，不开始B或发布，不push。",
+  "meta": {
+    "approval_scope": "package_a_and_bounded_public_source_probe",
+    "user_implementation_approved": true,
+    "public_source_probe_approved": true,
+    "execution_state": "locally_committed_and_archived"
+  }
+}

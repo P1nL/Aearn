@@ -1,0 +1,10 @@
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/phase-ii-prd.md", "reason": "Phase II purposes and explicit nonclaims"}
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/phase-ii-design.md", "reason": "Authority resolver and candidate isolation checks"}
+{"file": ".trellis/spec/backend/grounding-corpus-operations.md", "reason": "Existing operator boundary and fixture compatibility"}
+{"file": ".trellis/spec/backend/grounding-retrieval-v2.md", "reason": "Preserve exact-scope immutable behavior"}
+{"file": ".trellis/spec/backend/grounding-shadow-integration.md", "reason": "No public source authority from shape conversion"}
+{"file": ".trellis/tasks/archive/2026-09/09-24-rag-material-source-contracts/research/user-approval.md", "reason": "No accidental expansion to B-E paid/private/production actions"}
+{"file": ".trellis/tasks/archive/2026-09/09-24-rag-material-source-contracts/research/live-source-observations.md", "reason": "HTTP evidence and body completeness must not be overstated"}
+{"file": ".trellis/tasks/archive/2026-09/09-24-rag-material-source-contracts/research/final-fallback-decision.md", "reason": "Check completeness, dependency-aware partial readiness and A/B scope isolation"}
+{"file": ".trellis/tasks/archive/2026-09/09-24-rag-material-source-contracts/research/fallback-planning-review.md", "reason": "Independent planning review and dependency-aware fallback reconciliation; not runtime acceptance"}
+{"file": ".trellis/spec/backend/grounding-material-contracts.md", "reason": "Verify code-spec signatures and explicit no-live-service claims"}

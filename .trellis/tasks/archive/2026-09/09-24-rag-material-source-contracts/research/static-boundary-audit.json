@@ -1,0 +1,6 @@
+{
+  "static_only": true,
+  "public_app_imports": [],
+  "network_db_process_imports_in_new_package": [],
+  "caveat": "AST import scan is not proof of all dynamic/transitive runtime behavior"
+}
