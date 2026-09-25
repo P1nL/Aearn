@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
-- **Last Active**: 2026-09-24
+- **Total Sessions**: 13
+- **Last Active**: 2026-09-25
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~338 | Active |
+| `journal-1.md` | ~360 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-09-25 | RAG B controlled discovery and quarantine | `07e1d6f` | `codex/rag-controlled-discovery-ingestion` |
 | 12 | 2026-09-24 | RAG A material contracts delivered | `1bbf364` | `main` |
 | 11 | 2026-09-24 | RAG shadow integration verified | `53cf28d` | `main` |
 | 10 | 2026-09-23 | Shadow RAG plan preflight verified | `8a6273c` | `main` |

@@ -336,3 +336,25 @@ A pure contracts and default-deny policies implemented, independently reviewed, 
 ### Next Steps
 
 - Plan B1 controlled Tavily search and persistent budgets; quota exhaustion routes to existing-library materials, no native-search fallback.
+
+
+## Session 13: RAG B controlled discovery and quarantine
+<!-- trellis-session: v=2 fp=d58e34a3b9fd6aeb -->
+
+**Date**: 2026-09-25
+**Task**: RAG B controlled discovery and quarantine
+**Branch**: `codex/rag-controlled-discovery-ingestion`
+
+### Summary
+
+Delivered default-off B1 Tavily ledger/worker and B2 signed-egress bounded fetch, candidate intake lease, quarantine/retention; verified isolated PG, corpus regressions and single approved live transport smoke; production activation remains gated.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `07e1d6f` | feat: implement guarded RAG discovery and quarantine |
+
+### Status
+
+[OK] **Completed**
