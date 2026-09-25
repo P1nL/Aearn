@@ -2,7 +2,7 @@
 
 ## Scope and ownership
 
-`app/services/grounding/autonomous/` contains internal, deterministic contracts and policy checks. This is not a live discovery/ingestion service. No public route, worker, migration, provider adapter, database authority or learner-state consumer is connected by package A. Existing fixture/v1 identities and trust semantics remain unchanged.
+Package A established the internal, deterministic contracts and policy checks under `app/services/grounding/autonomous/`. Package A itself did not connect a live service, worker, provider, database authority or learner-state consumer; B1/B2 now add separate default-off implementations in the same package (see [Grounding Controlled Discovery](./grounding-controlled-discovery.md)). No B candidate becomes an active corpus document or public learner-state consumer. Existing fixture/v1 identities and trust semantics remain unchanged.
 
 The product decision for future B/D is: reuse reviewed applicable library material; use Tavily free-tier search for gaps; on quota exhaustion use only existing qualified library materials. Do not add native model search or another provider. Preserve unmet objectives and gaps; partial material readiness does not bypass prerequisites or formal Gate. A does not implement that runtime routing.
 

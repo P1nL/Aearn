@@ -1,7 +1,9 @@
 import os
 import socket
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
+from uuid import UUID
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.signals import worker_shutdown  # type: ignore[import-untyped]
@@ -46,6 +48,9 @@ celery_app.conf.task_routes = {
     "tutor.codex.reconcile": {"queue": "tutor-codex", "priority": 8},
     "tutor.codex.runtime_health": {"queue": "tutor-codex", "priority": 9},
     "tutor.codex.runtime_shutdown": {"queue": "tutor-codex", "priority": 9},
+    "rag.discovery.dispatch": {"queue": "rag-controlled", "priority": 5},
+    "rag.candidate.intake": {"queue": "rag-controlled", "priority": 5},
+    "rag.candidate.retention": {"queue": "rag-controlled", "priority": 1},
 }
 
 
@@ -146,6 +151,93 @@ def _run_tutor_scheduler_task(operation: str, *, limit: int) -> dict[str, object
     return run_tutor_scheduler_operation(operation=operation, limit=limit)  # type: ignore[arg-type]
 
 
+def _rag_blocked(code: str) -> dict[str, object]:
+    return {"status": "blocked_policy", "code": code, "processed": 0}
+
+
+def _rag_uuid(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) != 36:
+        return None
+    try:
+        return value if str(UUID(value)) == value else None
+    except ValueError:
+        return None
+
+
+def _run_rag_task(
+    operation: str,
+    *,
+    job_id: object = None,
+    candidate_id: object = None,
+    limit: object = None,
+) -> dict[str, object]:
+    """Wake an API-owned durable operation; never resolve URLs or do I/O here.
+
+    The API composition entrypoint is intentionally optional until its policy,
+    lease and deployment permissions are wired. A Celery wakeup is not authority.
+    """
+    if operation == "dispatch":
+        if _rag_uuid(job_id) is None or candidate_id is not None or limit is not None:
+            return _rag_blocked("rag_worker_invalid_arguments")
+    elif operation == "intake":
+        if _rag_uuid(candidate_id) is None or job_id is not None or limit is not None:
+            return _rag_blocked("rag_worker_invalid_arguments")
+    elif operation == "retention":
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 100
+            or job_id is not None
+            or candidate_id is not None
+        ):
+            return _rag_blocked("rag_worker_invalid_arguments")
+    else:
+        return _rag_blocked("rag_worker_invalid_operation")
+
+    # Discovery/intake have an early default-off brake. Retention is a separate
+    # privacy obligation: only its operator approval in API composition controls it.
+    if operation != "retention":
+        try:
+            from app.core.config import get_settings
+
+            settings = get_settings()
+            if not settings.rag_source_discovery_enabled:
+                return _rag_blocked("rag_worker_gate_closed")
+            if operation == "intake" and not settings.rag_auto_intake_enabled:
+                return _rag_blocked("rag_worker_gate_closed")
+        except Exception:
+            return _rag_blocked("rag_worker_settings_unavailable")
+
+    try:
+        composition = import_module(
+            "app.services.grounding.autonomous.worker_composition"
+        )
+        run_operation = composition.run_rag_worker_operation
+    except Exception:
+        return _rag_blocked("rag_worker_composition_unavailable")
+
+    try:
+        result = run_operation(
+            operation=operation, job_id=job_id, candidate_id=candidate_id, limit=limit
+        )
+    except Exception:
+        return _rag_blocked("rag_worker_composition_failed")
+
+    # Never return raw candidate metadata or exception/provider text via Celery.
+    if not isinstance(result, dict) or result.get("status") not in (
+        "completed",
+        "no_work",
+        "blocked_policy",
+    ):
+        return _rag_blocked("rag_worker_composition_failed")
+    processed = result.get("processed")
+    max_processed = limit if operation == "retention" and isinstance(limit, int) else 1
+    if type(processed) is not int or not 0 <= processed <= max_processed:
+        return _rag_blocked("rag_worker_composition_failed")
+    if result["status"] == "blocked_policy":
+        return _rag_blocked("rag_worker_composition_blocked")
+    return {"status": result["status"], "processed": processed}
+
+
 @celery_app.task(name="health.ping")
 def ping() -> str:
     return "pong"
@@ -203,6 +295,21 @@ def codex_runtime_health() -> dict[str, object]:
 @celery_app.task(name="tutor.codex.runtime_shutdown", queue="tutor-codex", priority=9)
 def codex_runtime_shutdown() -> dict[str, object]:
     return _run_tutor_codex_task("shutdown")
+
+
+@celery_app.task(name="rag.discovery.dispatch", queue="rag-controlled", priority=5)
+def dispatch_rag_discovery(job_id: str) -> dict[str, object]:
+    return _run_rag_task("dispatch", job_id=job_id)
+
+
+@celery_app.task(name="rag.candidate.intake", queue="rag-controlled", priority=5)
+def intake_rag_candidate(candidate_id: str) -> dict[str, object]:
+    return _run_rag_task("intake", candidate_id=candidate_id)
+
+
+@celery_app.task(name="rag.candidate.retention", queue="rag-controlled", priority=1)
+def retain_rag_candidates(limit: int) -> dict[str, object]:
+    return _run_rag_task("retention", limit=limit)
 
 
 @worker_shutdown.connect

@@ -9,7 +9,36 @@ from uuid import UUID
 from psycopg import Connection
 
 from app.services.repositories.user_repository import get_user, serialize_user
+from app.services.grounding.autonomous.context_repository import DiscoveryContextRepository
 from app.services.tutor.persistence import PostgresTutorRepository
+
+
+class _LocalUserRagAuthority:
+    """The already-resolved local user is the only owner of their B private refs."""
+
+    def __init__(self, user_id: UUID) -> None:
+        self.user_id = user_id
+
+    def authorize(self, user_id: UUID) -> bool:
+        return user_id == self.user_id
+
+
+def _rag_refs(conn: Connection[dict[str, object]], user: Mapping[str, object]) -> dict[str, object]:
+    owner_id = UUID(str(user["id"]))
+    refs = DiscoveryContextRepository(conn).export_user_refs(
+        user_id=owner_id, authority=_LocalUserRagAuthority(owner_id),
+    )
+    return {
+        "job_ids": [str(value) for value in refs.job_ids],
+        "candidate_ids": [str(value) for value in refs.candidate_ids],
+    }
+
+
+def _unlink_rag_refs(conn: Connection[dict[str, object]], user: Mapping[str, object]) -> None:
+    owner_id = UUID(str(user["id"]))
+    DiscoveryContextRepository(conn).unlink_user(
+        user_id=owner_id, authority=_LocalUserRagAuthority(owner_id),
+    )
 
 
 class EntityNotFoundError(ValueError):
@@ -114,6 +143,7 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
             "reminder_preference": user.get("reminder_preference") or {},
         },
         "summary": summary,
+        "rag_discovery_refs": _rag_refs(conn, user),
         "plans": _export_plans(conn, user_id),
         "modules": _export_modules(conn, user_id),
         "knowledge_points": _export_knowledge_points(conn, user_id),
@@ -206,6 +236,7 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
 def reset_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object]:
     _ensure_user(conn, user_id)
     before = get_user_data_summary(conn, user_id)
+    _unlink_rag_refs(conn, _ensure_user(conn, user_id))
     _delete_user_owned_learning_data(conn, user_id)
     user = _ensure_user(conn, user_id)
     return {
@@ -219,6 +250,7 @@ def reset_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[s
 def delete_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[str, object]:
     _ensure_user(conn, user_id)
     before = get_user_data_summary(conn, user_id)
+    _unlink_rag_refs(conn, _ensure_user(conn, user_id))
     _delete_user_owned_learning_data(conn, user_id)
     conn.execute(
         """

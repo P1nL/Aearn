@@ -676,3 +676,51 @@ CAS 竞争与旧读取兼容回归，不能记作真实语料准入、题目发�
 本轮shadow adapter、scenario manifest与demo不新增数据库表、迁移fragment或学习者状态。既有六张共享corpus表的不可变内容、append-only事件及generation CAS仍按上文执行。演示operator发布只允许显式隔离临时库；引用/预检探针使用调用方持有的只读快照，不修改active learning plan、progress、assignment、Lesson或Artifact。
 
 v2引用兼容输出不是v1 `grounding_chunks` 外键或HTTP ingestion provenance。不得向既有Lesson/Artifact来源表写入伪造兼容行；公开来源冻结、权限与版本校验仍以原契约为准。表/manifest及共享corpus用户清理隔离回归纳入[验收计划](../qa/acceptance-test-plan.md)。
+
+## 2026-09-24：RAG B1 受控发现持久账本（默认关闭）
+
+`270_rag_discovery_jobs.sql` 是在 `260_rag_subject_corpus.sql` 之后的增量 fragment，不更改既有语料、fixture 哈希或公开读取路径。B1 只存发现作业与**未准入**候选：
+
+| 表 | 责任与边界 |
+| --- | --- |
+| `rag_budget_authority_roots` | 默认禁用、bootstrap 不 seed 的服务端 root/delegation/policy/period/cap 配置；只读 resolver 逐字段核对 A 的当前 snapshot，缺审批/配置不得启用 |
+| `rag_budget_periods` | canonical root + period 唯一行，记录可信服务端额度上限及周期截止；锁定此行后累计所有 job/profile 的预留、未知与已结算用量 |
+| `rag_budget_reservations` | root/period/operation 幂等预留；尝试中及用量不明均占满预留容量，已结算按权威实际用量计费；跨 job 共享 root |
+| `rag_budget_attempts` | 每一预留仅一次 attempt 身份；`started -> dispatched` 在当前权限/开关、完整服务端投影摘要、预留、lease owner+generation 下持久一次性 CAS；只有提交成功的首次 dispatch 可外呼，重启/重复调用不能再发送；不明用量标 unknown 且不因超时/失租释放 |
+| `rag_discovery_jobs` | 无全局 beat 的显式作业；`owner_id + generation + expiry` 租约隔离失租写入，终态不重新领取 |
+| `rag_discovery_job_refs` | actor 私有引用与共享 job 分离；**不属于 shared classification**，不能随共享 job/receipt 整体保留或导出。本人 unlink/用户 reset/delete 必须通过可信 `PrivateReferenceRemovalAuthority`，删除仅该 actor 的映射；无授权默认拒绝 |
+| `rag_discovery_receipts` | 同一 job 内安全搜索结果码、响应摘要和已结算 attempt 身份，不存 query、provider 原文或密钥 |
+| `rag_discovery_candidates` | 同一 receipt/job 范围的未准入 URL 元数据；只允许无凭据、query/fragment 的 HTTPS 位置；无 active corpus 外键、不得被正式检索或题库消费 |
+
+Repository 使用调用方事务和内部 savepoint；不提交事务、不执行外呼。每次预留必须先由 A 的当前 `AuthorityResolver` 验证 actor/action/完整 demand/purpose/policy/delegation，再由可信 `BudgetPolicyResolver` 解析同一 root 的 period/cap；请求的 `RagBudgetDelegation` 只是匹配参考而非余额。operation/attempt/receipt 重放必须比对完整安全身份；冲突拒绝。作业 lease 过期后不可提交候选/终态；账本未知用量保持保守占用，后续权威对账不能由失败响应推测零消耗。四个自主开关仍默认关闭，本 schema 不启动 worker、provider 或外部抓取。
+
+私有引用双用户反例：actor A/B 对同一公开 job 分别建立映射，A 的本人 unlink 或用户清理只删 A 的 `rag_discovery_job_refs` 行；B 的映射、共享 job、已结算预算/receipt/candidate 保留。清理入口不得因为 `grounding_*` / `rag_*` 表名前缀将这些映射盲目列入旧 Tutor cutover 的共享或全局删除集合。若用户导出引用，只能由产品层按已核验本人范围投影允许的个人关联，不得顺带导出另一 actor 映射、共享候选原文或内部审计。当前仅提供仓储清理端口，产品 reset/delete/export 接线尚未完成，不能宣称全链路通过。
+
+本 fragment 属于 B1 代码合同，不代表真实 PostgreSQL、Tavily 费用、出口或用户清理/导出全链路已验收。B2 的暂存内容、许可及留存需要后续独立 fragment；B1 candidate URL 也绝非已抓取正文或正式教材来源。
+
+## 2026-09-24：RAG B2 隔离候选暂存（不入正式语料）
+
+`280_rag_candidate_staging.sql` 接在 B1 fragment 后，仅建未准入候选的捕获、片段和个人引用。它不更新六张 corpus 表、active pointer、旧 grounding 读取或公开消费者：
+
+| 表 | 责任与边界 |
+| --- | --- |
+| `rag_candidate_captures` | 唯一 B1 candidate/job 的隔离捕获，真实请求链、最终 URL、原始捕获范围（none/prefix/full）、hash、保留期限及清理状态；原文仅获 exact StorageRetentionPolicy 后限量存放。`offline_protocol_only` 是离线协议证据；`live_egress_attested` 仅可由同一 concrete SafeFetcher 的一次性签名出口 receipt 在提交时消费，不代表正式准入。none 的 fetched hash 是空 HEAD 响应体，不是远端正文；prefix hash 仅覆盖精确 206 range。 |
+| `rag_candidate_fragments` | 仅 full 捕获后保留结构化片段及 hash；过期/全局撤权清空片段文本并保留最小审计身份。不能供正式检索、规划或题库读取。 |
+| `rag_candidate_private_refs` | 学习者/actor 对共享 candidate 的个人关联。本人删除仅 unlink 自己；共享来源事实和其他用户引用不随之删除。未经核验的私有导出不得暴露其他用户、共享原文或审计内部信息。 |
+| `rag_candidate_intake_leases` | B1 结算并终结 discovery lease 后，按已结算 candidate 独立持久化 B2 摄入租约（owner + generation + expiry），不重开 Tavily dispatch。重试/失租只按候选和新代数 fencing；成功完成后不可再领取，失败保留已结算预算义务。表存在不构成抓取或保留授权。 |
+
+`CandidateStagingRepository` 在调用方短事务内对同一候选的 intake lease owner+generation、已结算 B1 收据、完整 demand/purpose/root、当前 probe/store 权限和 exact storage grant 重新验证，捕获内容/hash/片段重新计算后才写入。网络 I/O 不在 DB 事务内，接口既不授教材用途也不验证评分 claim。过期/撤权清理原文及片段文本、保留获许可的非秘密摘要；临时文件、失败样本、队列与日志不得成为保留旁路。schema 可标记 concrete fetcher 的一次性 `live_egress_attested` receipt；离线测试及一次临时隔离出口 smoke 不能替代生产出口与保留许可审批。
+
+共享候选/捕获不进旧 Tutor 用户删除集合；`rag_candidate_private_refs` 是私有映射，产品 reset/delete/export 需只处理当前 actor 的引用。B2 的阶段性抓取与暂存不等于正式语料准入；生产出口和 operator policy 未独立验收前保持默认关闭。
+
+## RAG B 持久需求与默认关闭的候选政策
+
+`290_rag_discovery_context.sql` 保存 job 的去身份化、经服务端审核的查询词与 hash；`rag_discovery_private_contexts` 保存按 `users.id`/actor 精确归属的 plan/node/revision、适读性和语言需求，`rag_discovery_actor_owners` 只能在可信身份绑定后创建，旧孤立引用不自动认领。重启按私有 context 重建完整 demand 后仍须再次核验 A 的当前 actor/action/policy/delegation；hash 和共享 job 不能单独授予外部发现。用户导出仅按本人投影 job/candidate 不含共享内容与其他用户引用；reset/delete 应同事务解绑自己的 context、refs 和 actor owner，保留共享用量事实。
+
+`300_rag_candidate_policy.sql` 保存 operator 配置、bootstrap 不 seed/enable 的确切 policy generation、HTTPS host/path 探查与存储许可、内容捕获级别/字节和许可/保留截止。软来源偏好不是权限；公开可见也不推导全文保存许可。政策未知、过期、撤权或更改代际时默认拒绝。探查、暂存提交以及每一个 redirect 目标必须重新核对当前政策；代码已有逐跳政策与签名出口验证，但生产部署出口尚未独立验收，不能把离线规则或临时实验算作生产联网准入。`license_id` 必须来自 operator grant 并与候选暂存记录一致，而非依赖模型/网页自称。
+
+这些增量 fragment 仅提供默认关闭的持久合同，不改变既有 corpus active、旧 Tutor Gate、公开 route 或来源正式用途审核。用户 reset/delete/export 已按本人私有引用接线；生产 live 执行与正式 C 准入仍有独立验收门槛。
+
+## RAG B 基础 campaign 的服务 principal
+
+`310_rag_campaign_authority.sql` 把 operator 配置的服务 actor、精确 Subject/version/facets/purpose/适读性/语言、预算 root 和周期/费用批准与用户私有 actor 所有权分开。bootstrap 只建表、不 seed 或启用服务 principal、campaign 或网络调用。签发的 campaign context 不属于 `users.id`，不可伪装用户计划；仅显式 operator 入口、当前 principal/policy/root/period/cost/开关与受支持 Subject 校验全部通过后才能共享 B1 broker/job/ledger。没有全局 beat、公开 route 或自动外部发现。持久 issuance 供重启重核，但并不等于来源正式准入或课程可授课。服务 principal 与审批撤销时，新操作必须拒绝，已发作业和不明费用仍按租约及账本处理。B2 probe/store 在此之外还要当前 `intake_approved`（默认 false）及精确候选存储政策、独立费用/网络/保留审批；撤回该位不重开 B1 已结算作业。

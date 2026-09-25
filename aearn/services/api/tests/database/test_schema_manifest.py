@@ -42,6 +42,11 @@ EXPECTED_SCHEMA_FRAGMENT_NAMES = (
     "240_deepseek_flash_runtime_cutover.sql",
     "250_source_inspection_artifacts.sql",
     "260_rag_subject_corpus.sql",
+    "270_rag_discovery_jobs.sql",
+    "280_rag_candidate_staging.sql",
+    "290_rag_discovery_context.sql",
+    "300_rag_candidate_policy.sql",
+    "310_rag_campaign_authority.sql",
 )
 
 
@@ -66,13 +71,18 @@ def test_schema_combined_view_and_apply_order_match_the_manifest() -> None:
     assert tuple(fragment.name for fragment in fragments) == EXPECTED_SCHEMA_FRAGMENT_NAMES
     assert load_schema_text() == "".join(fragment.sql for fragment in fragments)
     assert fragments[0].sql.startswith("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    assert "Child 09 conversation-native SQL workspace" in fragments[-7].sql
-    assert "tutor_branch_authority_replacement_valid" in fragments[-6].sql
-    assert "tutor_plan_catalog_knowledge_key" in fragments[-5].sql
-    assert "tutor_artifact_supersession_successor" in fragments[-4].sql
-    assert "deepseek-flash" in fragments[-3].sql
-    assert "source_inspection" in fragments[-2].sql
-    assert "grounding_corpus_versions" in fragments[-1].sql
+    assert "Child 09 conversation-native SQL workspace" in fragments[-12].sql
+    assert "tutor_branch_authority_replacement_valid" in fragments[-11].sql
+    assert "tutor_plan_catalog_knowledge_key" in fragments[-10].sql
+    assert "tutor_artifact_supersession_successor" in fragments[-9].sql
+    assert "deepseek-flash" in fragments[-8].sql
+    assert "source_inspection" in fragments[-7].sql
+    assert "grounding_corpus_versions" in fragments[-6].sql
+    assert "rag_budget_periods" in fragments[-5].sql
+    assert "rag_candidate_captures" in fragments[-4].sql
+    assert "rag_discovery_private_contexts" in fragments[-3].sql
+    assert "rag_candidate_access_policies" in fragments[-2].sql
+    assert "rag_campaign_principals" in fragments[-1].sql
 
     recorder = RecordingConnection()
     apply_schema(cast(Connection[dict[str, object]], recorder))

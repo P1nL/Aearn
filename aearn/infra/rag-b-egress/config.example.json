@@ -1,0 +1,11 @@
+{
+  "deployment_id": "OPERATOR_REVIEWED_DEPLOYMENT_ID",
+  "socket_dir": "/run/rag-attestor",
+  "trusted_gid": 23456,
+  "worker_uid": 65534,
+  "worker_gid": 65534,
+  "dns_ipv4": "OPERATOR_APPROVED_RESOLVER_IPV4",
+  "destinations": {
+    "operator-approved.example.org": ["OPERATOR_RESOLVED_PUBLIC_IPV4"]
+  }
+}

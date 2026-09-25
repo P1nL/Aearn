@@ -12,6 +12,7 @@ dependencies = [
     { name = "celery" },
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic" },
     { name = "python-dotenv" },
@@ -22,7 +23,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -36,6 +36,7 @@ requires-dist = [
     { name = "celery", specifier = "==5.5.3" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "fastapi", specifier = "==0.128.0" },
+    { name = "httpx" },
     { name = "psycopg", extras = ["binary", "pool"] },
     { name = "pydantic" },
     { name = "python-dotenv" },
@@ -46,7 +47,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },

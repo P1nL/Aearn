@@ -34,6 +34,11 @@ SCHEMA_FRAGMENT_NAMES: tuple[str, ...] = (
     '240_deepseek_flash_runtime_cutover.sql',
     '250_source_inspection_artifacts.sql',
     '260_rag_subject_corpus.sql',
+    '270_rag_discovery_jobs.sql',
+    '280_rag_candidate_staging.sql',
+    '290_rag_discovery_context.sql',
+    '300_rag_candidate_policy.sql',
+    '310_rag_campaign_authority.sql',
 )
 
 
