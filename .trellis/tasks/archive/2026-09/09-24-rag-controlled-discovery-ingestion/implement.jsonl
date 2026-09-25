@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend scope and source-of-truth index"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Additive schema and transaction invariants"}
+{"file": ".trellis/spec/backend/grounding-material-contracts.md", "reason": "A authority and default-off source contracts"}
+{"file": ".trellis/spec/backend/grounding-corpus-operations.md", "reason": "Preserve single corpus authority"}
+{"file": ".trellis/tasks/09-24-rag-controlled-discovery-ingestion/research/persistence-seams.md", "reason": "B1 B2 persistence and isolated database seams"}
+{"file": ".trellis/tasks/09-24-rag-controlled-discovery-ingestion/research/transport-seams.md", "reason": "B2 security transport and parser seams"}
+{"file": ".trellis/tasks/09-24-rag-controlled-discovery-ingestion/research/b2-acceptance-boundary.md", "reason": "B2 layered transport retention and privacy acceptance"}

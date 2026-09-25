@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Schema transaction and inventory review"}
+{"file": ".trellis/spec/backend/grounding-material-contracts.md", "reason": "Source authority negative checks"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality gate"}
+{"file": ".trellis/tasks/09-24-rag-controlled-discovery-ingestion/research/persistence-seams.md", "reason": "Budget job and staging risk seams"}
+{"file": ".trellis/tasks/09-24-rag-controlled-discovery-ingestion/research/b2-acceptance-boundary.md", "reason": "Check independent application egress and live proof"}
