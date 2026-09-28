@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from secrets import token_hex
 
@@ -21,6 +22,23 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from .safe_fetch import SafeFetchDenied, _public_ip, _validated_url
 
 _MAX_RECEIPT = 4096
+
+
+@dataclass(frozen=True)
+class VerifiedEgressEnvelope:
+    """Exact canonical signed receipt; the receiver must verify it again.
+
+    This is transport evidence, not a grant to fetch, retain, or admit content.
+    A consumer must pin the verification key independently.
+    """
+
+    canonical_receipt: bytes
+    signature_hex: str
+
+    def as_envelope(self) -> dict[str, object]:
+        """Return the signer-compatible JSON shape without changing signed bytes."""
+        return {"receipt": json.loads(self.canonical_receipt),
+                "signature": self.signature_hex}
 
 
 class LiveEgressAttestor:
@@ -48,6 +66,12 @@ class LiveEgressAttestor:
         self._trusted_gid = trusted_gid
 
     async def attest(self, *, host: str, ip: str) -> bool:
+        """Preserve the B boolean API and its one-challenge-per-call semantics."""
+        await self.attest_envelope(host=host, ip=ip)
+        return True
+
+    async def attest_envelope(self, *, host: str, ip: str) -> VerifiedEgressEnvelope:
+        """Return only a freshly verified, exact host/IP-bound signed envelope."""
         try:
             canonical, checked_host = _validated_url(f"https://{host}/")
             if canonical != f"https://{host}/" or checked_host != host or _public_ip(ip) != ip:
@@ -110,8 +134,9 @@ class LiveEgressAttestor:
                     or type(receipt.get("expires_unix")) is not int
                     or not time.time() < receipt["expires_unix"] <= time.time() + 10):
                 raise SafeFetchDenied("EGRESS_UNVERIFIED")
-            self._key.verify(bytes.fromhex(signature), _canonical(receipt))
-            return True
+            canonical_receipt = _canonical(receipt)
+            self._key.verify(bytes.fromhex(signature), canonical_receipt)
+            return VerifiedEgressEnvelope(canonical_receipt, signature)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

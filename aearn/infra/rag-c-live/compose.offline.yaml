@@ -1,0 +1,58 @@
+# Only an explicit --profile offline-preflight starts these diagnostic containers.
+# This is NOT the live C host adapter or one-shot worker composition.
+name: rag-c-offline-preflight
+services:
+  control-proof:
+    profiles: [offline-preflight]
+    image: ${RAG_C_CONTROL_IMAGE:?Reviewed immutable control image digest required}
+    read_only: true
+    user: "0:0"
+    cap_drop: [ALL]
+    # Root bootstrap must set the dedicated socket group; no worker inherits it.
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    networks: [control_db_only]
+    volumes:
+      - bridge:/run/rag-c-control
+    environment:
+      RAG_C_WORKER_UID: ${RAG_C_WORKER_UID:?Reviewed worker UID required}
+      RAG_C_WORKER_GID: ${RAG_C_WORKER_GID:?Reviewed worker GID required}
+      RAG_C_BRIDGE_GID: ${RAG_C_BRIDGE_GID:?Reviewed bridge GID required}
+    healthcheck:
+      test: [CMD, python3, -c, "import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect('/run/rag-c-control/peer.sock'); s.close()"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+  egress-proof:
+    profiles: [offline-preflight]
+    image: ${RAG_C_EGRESS_IMAGE:?Reviewed immutable egress image digest required}
+    depends_on:
+      control-proof: {condition: service_healthy}
+    read_only: true
+    user: "0:0"
+    cap_drop: [ALL]
+    # Bootstrap only: setpriv drops every effective/bounding capability in worker.
+    cap_add: [NET_ADMIN, SETUID, SETGID, SETPCAP]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    networks: [egress_only]
+    tmpfs:
+      - /run:mode=0755,noexec,nosuid,nodev
+    volumes:
+      - bridge:/run/rag-c-control:ro
+      - ${RAG_C_EGRESS_CONFIG:?Reviewed root-owned Linux config path required}:/etc/rag-c/egress.json:ro
+    environment:
+      RAG_C_PREFLIGHT_ONLY: "yes"
+networks:
+  # An operator must inspect membership and prove no other TCP peer or route is
+  # reachable by control. Internal is a brake, not a DB-only proof.
+  control_db_only:
+    internal: true
+  # Docker bridge alone does not block private TCP. The B installer runs before
+  # the non-root probes; both families must have kernel OUTPUT default DROP.
+  egress_only:
+    # Give IPv6 probes a real route; an absent route cannot prove OUTPUT DROP.
+    enable_ipv6: true
+volumes:
+  bridge: {}

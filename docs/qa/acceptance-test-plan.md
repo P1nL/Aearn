@@ -585,3 +585,28 @@ Routine validation uses fake App Server/local PostgreSQL only. No real-provider 
 保留失败与修复：真实adapter摘要最初遗漏policy版本，独立check修正；CLI连接地址最初用inet文本而不是host地址，真实运行在发布前拒绝后修正；集成测试最初误要求缺失LangChain facet也生成plan，现按SOURCE_SCOPE_EMPTY的既有fail-closed合同精确断言。最终批次是在这些修复之后重新执行，不以早期fake/skip结果替代。
 
 本记录不是真实源发布、公开RAG v2 rollout、框架执行环境、完整学习闭环、push/deploy/release批准。阶段I最终任务归档与父任务总复核另行完成。
+
+
+## RAG D：内部规划消费者验收（2026-09-27）
+
+运行D专项contracts/schema/repository/user-inventory/evidence/current-authorization/publication-fence/learning-consumer测试；使用实际核对过的专用 `aearn_rag260_c_d_*` PostgreSQL，串行bootstrap两遍及跨连接barrier。测试替身只替换provider transport/明确标注的质量actor verifier，至少一条组合应走真实C adapter→dispatcher→context→gateway→capability→真实draft与binding仓储。
+
+必验：default-off零新增IO、exact parent→target持久认领、重启/取消/旧run/错scope、successor重新selection、保留核心目标、依赖顺序无关及main_teaching前置、用途/claim隔离、假ready拒绝、typed非空授权receipt、唯一自然键与重放冲突、撤权/expiry/active generation、同事务模拟publication+materialization回滚、reset/delete两路与其他用户/共享corpus保护。
+
+mock、隔离PG、真实当前来源、真实provider、公开consumer release、E题库发布/供题分别记录。未跑的writer并发场景不能因一个policy锁测试通过被统一标passed；guard导致的skip不算实测。现有v1/公开路径回归和精确import审计必须保留。
+
+工程结果以D任务 `research/implementation-verification.md` 为准；本清单不预填passed，也不替代独立release许可或项目费用计量。
+
+追加修复结果单列于同任务 `research/repair-verification.md`，不得把首批通过数套用于后续代码。新增必验：合法JSON但教材词义错误→真实gateway诊断驱动第二候选→同事务精确receipt/selection/binding；两轮不一致或reviewer uncertain/无效/不可用时无新稿/绑定；missing-feedback revision拒绝、同attempt重放不重复付费IO、lease失效后用量审计不被回滚、未获provider accepted attempt的review不可用于append。
+
+预算需验证required完整请求恰好容纳/少1token拒绝，及首次可容纳但repair指令导致第二次超限时只有首轮client call与receipt。测试中的4096不是必然失败值；不得放宽产品上限来迁就旧fixture。
+
+真实reviewer对公开SQL合成正反例的识别，只证明审查组件；新鲜可信C准入＋真实规划模型＋D持久绑定必须另行同链验收。独立终结自由文本仍不在草案候选审查覆盖内。来源超时的unknown、未消费补充授权、无新鲜capture都必须留作未通过/未执行证据；不得续期旧回执或手写ready材料补齐报告。
+
+### D 最终内部真实验收
+
+最终同链已返回 `passed_internal_only`，独立数据库读取确认真实parent/successor均自然completed、各1次draft capability、后继v2指向精确父稿、目标hash保留、1条当前 `sql.queries/supplementary_explanation` binding，以及consistent/supported语义回执。来源是Tavily原生Markdown提取并经独立服务审核，不是原始HTML或独立TLS证明；schema/main/assessment缺口仍保留。最终一轮实际触发pace_summary领域长度错误，在付费语义审核和执行之前完成真实有界修复后通过。历史失败及旧直接取源行均保留。
+
+后续回归应包含：当前revision verified receipt才关闭已消费能力；完成阶段非思考但由模型生成terminal；内部Skill/capability1.1.0容量与旧发布版本隔离；raw1024不放松领域字段上限，未知/伪造版本不得扩容；过长领域字段只输出安全schema诊断并进入既有repair。最新9项定向纯测试、3项专库组合、329源文件Mypy及Ruff通过；此前更大矩阵不冒充重跑。GPT-5.6 Sol完成版本/信任边界复核后额度拒绝，最后纯domain补丁由主会话补测和真实链路验证，独立check边界据实保留。
+
+最终证据：`.trellis/tasks/archive/2026-09/09-27-rag-plan-material-evidence-binding/research/d-final-closeout.md` 和 `d-final-acceptance.json`。最终链8次模型HTTP，历史累计69，人民币费用未对账；公开消费者、E发布和Gate不在本次通过范围。

@@ -356,6 +356,9 @@ class ControlledCapabilityGateway:
         request: TutorCapabilityRequest,
     ) -> TutorCapabilityResult:
         descriptor = self._descriptors.get(request.capability_id)
+        if request.capability_id == "learning.plan.draft" and request.capability_version == "1.1.0":
+            descriptor = next(item for item in default_action_descriptors(plan_draft_version="1.1.0")
+                              if item.action_id == request.capability_id)
         if descriptor is None or request.capability_id in {"runner.execute", "model-code-review.validate"}:
             return TutorCapabilityResult(
                 request_id=request.request_id,
@@ -376,6 +379,12 @@ class ControlledCapabilityGateway:
             run_id=run.run_id,
             input_revision=run.input_revision,
         )
+        if request.capability_id == "learning.plan.draft":
+            selected_descriptor = (self._catalog.capability_for_skill(request.capability_id, selected.reference)
+                                   if selected is not None else None)
+            if selected_descriptor is None or selected_descriptor.version != request.capability_version:
+                return TutorCapabilityResult(request_id=request.request_id, status=TutorCapabilityStatus.DENIED,
+                                             diagnostic_code="capability_version_not_selected")
         adapter = _CapabilityAuthorityActionAdapter(
             gateway=self._authority_gateway,
             recorder=self._authority_recorder,

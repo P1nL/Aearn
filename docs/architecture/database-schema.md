@@ -724,3 +724,54 @@ Repository 使用调用方事务和内部 savepoint；不提交事务、不执�
 ## RAG B 基础 campaign 的服务 principal
 
 `310_rag_campaign_authority.sql` 把 operator 配置的服务 actor、精确 Subject/version/facets/purpose/适读性/语言、预算 root 和周期/费用批准与用户私有 actor 所有权分开。bootstrap 只建表、不 seed 或启用服务 principal、campaign 或网络调用。签发的 campaign context 不属于 `users.id`，不可伪装用户计划；仅显式 operator 入口、当前 principal/policy/root/period/cost/开关与受支持 Subject 校验全部通过后才能共享 B1 broker/job/ledger。没有全局 beat、公开 route 或自动外部发现。持久 issuance 供重启重核，但并不等于来源正式准入或课程可授课。服务 principal 与审批撤销时，新操作必须拒绝，已发作业和不明费用仍按租约及账本处理。B2 probe/store 在此之外还要当前 `intake_approved`（默认 false）及精确候选存储政策、独立费用/网络/保留审批；撤回该位不重开 B1 已结算作业。
+
+## RAG C 来源审核与正式语料准入（默认关闭的增量结构）
+
+`320_rag_registered_source.sql` 和 `330_rag_source_admission.sql` 顺接 B 的 310 fragment。Bootstrap 只建表，不预置来源、准入、许可或生产开关。它们不重写既有 260 corpus 的六表、fixture-v1 内容/含义、旧公开检索或 Tutor Gate：
+
+| 表 | 责任与边界 |
+| --- | --- |
+| `rag_registered_source_policies` | operator 预注册精确 Subject/version/facets/source、HTTPS URL/host/path、origin/适读性、许可/用途、保留期、最高 8 MiB 正文（来源策略可更低，历史 320 的 1 MiB 约束由 `340_rag_c_capture_capacity.sql` 幂等升级）、canonical root，默认 `enabled=false`；撤权不可复活，不能由模型 URL/公开域名推导许可 |
+| `rag_registered_fetch_attempts` | 预注册 source 默认单 URL 一次性 `dispatched` CAS，独立于 Tavily/B1 attempt；350 仅允许绑定已终结原记录、精确新 dispatch/policy/root/request hash 与有效期的 operator 显式单次补充授权，旧记录不复活；同进程 dispatch owner 只提供 pre-DNS/pre-dial 两次 grant，重启丢失 permit。结果 settled 或 unknown，失去响应不得换 key 重抓、不能伪造 B candidate receipt |
+| `rag_registered_source_captures` | 单次受控 fetch 的链/最终 URL/hash/许可/有界正文；真实 host 结算同时保存 canonical `transport_proof`、其 SHA-256、attestor 公钥指纹及 worker 镜像指纹（旧合成 fixture 可空，不等于生产证明）；只允许带签名出口的 live provenance，过期/撤权后清正文而保留允许的最小非秘密事实；记录本身不授教学用途 |
+| `rag_registered_supplemental_authorizations` | 350 中显式 operator 单次追加请求凭据；绑定终态原派发、新派发 UUID、URL、策略/代次、root、request hash 和有效期，不复活或删除原记录，不链式追加 |
+| `rag_candidate_use_grants` | 360 中 B full capture 的独立正式用途及历史保留授权，默认关闭；绑定 capture/hash、当前 B policy/generation/root、scope、许可和用途，允许单调撤权。B 暂存许可不能替代该授权 |
+| `rag_source_reviews` / `rag_source_admissions` | 具体注册 capture 或 B full capture 的 exact 文档/revision/hash、lineage、适读性、质量与用途审核事实；review 与 admission 分离，失败/隔离不得准入。`immutable_history_allowed` 只有在 corpus 快照历史内容保留许可明确时才允许 link |
+| `rag_source_claim_receipts` | 对 exact claim/需求/来源版本的独立来源验证事实；同 lineage 的另一篇不能假装独立。隔离执行路径没有可信 verifier adapter 时 DB 默认拒绝仅凭 handle 的 receipt；应用仍须独立验证语义和当前授权 |
+| `rag_corpus_admission_links` / `rag_corpus_validation_receipts` | C admission 到现有 corpus source/document 的绑定及独立动态验证 receipt；现有 `CorpusRepository` 仍是唯一 candidate/validation event/单 active CAS 写者，旧 `CorpusService` 保持 fixture-only |
+
+可信 control 通过 Unix peer UID/GID、固定镜像与当前 DB 授权验证 worker 报告，并在同一事务结算 attempt/capture；B 签名只证明拨号前的 namespace/出口规则，不独立证明 HTTPS 正文。`registered_source_retention` 在调用方事务内物理置空到期/撤权的 capture 正文；formal corpus 历史文本另须 policy 与 review 双重永久历史授权，不能把当前用途过期等同于历史许可撤销，也不能把读取拒绝冒充备份/WAL 擦除。
+
+2026-09-25 隔离实测已完成真实 SQLite SELECT 全文抓取与留存（2,033,807 bytes）、provenance 再验、独立自动服务审核及签名回执、正式 supplementary admission 和 partial corpus 激活。自动审核仅批准 WHERE/LIMIT 两个精确片段；不是整页或主教材/评分证据资格。真实库现为 1 capture、1 review、1 admission、1 active pointer（generation=1），正式快照仅含 2 个获审片段。原 unknown 记录保留；后来明确批准的两次追加 GET 已耗尽（一次定位旧 1 MiB 大小拒绝、一次在 8 MiB 上限下完整结算）。这不授权自动重试或继续请求。实测仍限获准单页、无 Tavily、专用可丢弃数据库；该页最多支持 `route.sql` 的 `queries` facet，缺 `schema` 时完整基础资料仍 not_ready。任何生产网络、共享内容保留、用途/claim 或公开 consumer 要独立核对；真实来源已抓取也不能单独解除默认关闭门禁。
+
+
+## 2026-09-28：隔离来源的单次到期刷新（420）
+
+`420_rag_c_expired_source_refresh.sql` 复用现有 final-followup allowance 与 supplemental authorization，不新增 corpus authority、不自动授予权限。仅在同一 URL 已有前三次 unknown 和第四次真实 settled capture，且第四代 capture/policy/root/授权均到期但未撤销时，允许 operator 以 `standingpolicy.sourcefreshness.` 审批引用追加一次第五代全新 GET。新 policy/root/dispatch/request 必须独立、当前有效且最长 24 小时，来源、Subject/version/facets、URL、license、用途及历史许可不变，字节上限不扩大。原四次记录和到期时间不可改写；`dispatched_at <= fetched_at <= settled_at <= DB now`。旧 generation-3/4 检查保持原样，第六代及重复第五次派发拒绝；失败仍消耗本次额度，不能复用已过期正文或将 partial body 当作完整 capture。该结构已通过隔离测试，不代表新的真实抓取或 D 全链路验收已成功。
+
+## Tavily 提取接入（430，用户显式授权切换）
+
+`430_rag_tavily_extraction.sql` 增加 `rag_provider_extraction_attempts`，记录 Tavily 单 URL 的预派发、请求/返回内容 hash、格式/深度、provider request ID、可空 usage、时间及 settled/failed/unknown 终态；它复用当前 registered policy/root，派发先持久化、HTTP 在事务外、结果另开短事务结算。根资源上限不因失败重置。
+
+`rag_registered_source_captures` 复用既有留存和准入体系：`fetch_attempt_id` 与 `provider_attempt_id` 必须且只能有一个。旧 direct capture 的 `live_egress_attested` 合同保留；新 provider capture 明确标记 `provider_extracted`、`text/markdown` 或 `text/plain`，不附加或伪造 TLS/worker transport proof。Tavily 返回的完整提取结果不等于原始完整 HTML。独立自动服务使用新的原生 Markdown 签名 profile 审核精确片段，后续仍进入唯一的 review/admission/corpus/selection/binding 权威。Schema 不开启公开消费者、不授予整页/主教材/评分资格，也不复活旧 direct dispatch。
+
+## 2026-09-27：RAG D 草案材料选择与冻结（内部默认关闭）
+
+`370_rag_plan_material_bindings.sql` 在现有manifest增量登记两张用户级表，不新增corpus/document/active pointer或题库publication authority：
+
+| 表 | 当前职责 |
+|---|---|
+| `rag_material_selections` | 整稿scope、逐节点/用途需求与材料结果、canonical digest及幂等身份；snapshot不可变，只允许一次全空→全满的target run/input_revision关联，关联具有独立摘要和唯一target约束 |
+| `rag_plan_material_bindings` | successor selection及exact draft/node/goal/purpose、文档/chunk/授权坐标；同自然键只能冻结一组canonical证据，更换retry key不能替代旧绑定 |
+
+仓储在调用方同连接READ COMMITTED短事务核对当前草案和typed current授权receipt，重放不豁免当前授权；不接受None/boolean回调作成功。父selection只作反馈，新稿必须重新取证与选择。来源、claim与active权限仍归A/C及唯一corpus writer。
+
+两表纳入用户数据统计与既有授权purge：binding→selection，再一致地解除目标用户session.current_draft_id引用后删除draft/session/scope/run。不能删除其他用户或共享corpus；普通业务无权改历史，reset/delete仍需既有用户授权。C已有表/记录和旧schema定义保留。
+
+### D 追加：教材语义审查审计（2026-09-27）
+
+`380_rag_material_semantic_reviews.sql` 增加用户私有 `rag_material_semantic_reviews`，关联精确run/user/conversation与selection handle/digest，保存parent/candidate/authority/request哈希、decision iteration/attempt、verdict/reason及可得模型usage；不保存原始提示、来源正文或密钥。
+
+审查派发前记录 `dispatched`，完成后只允许一次结算为 `settled`；结算后不可变，未结算表示结果/用量未知而非免费。相同attempt重放不能再调用模型；usage结算与后续lease/current authorization是否仍有效分开，审计行不等于发布或append授权。append还需核对当前来源、父稿、候选哈希及匹配的已接受provider attempt。授权用户purge先删除语义审计，再删除其引用的selection；共享C来源不受影响。
+
+本schema说明不是生产部署、真实来源资格或真实模型通过证据；实际隔离验收与非声明见D任务 `research/implementation-verification.md`。费用授权与执行核算另外遵循开发期外部资源政策。

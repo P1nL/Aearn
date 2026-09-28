@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import urllib.error
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Mapping, Sequence
 
 import pytest
 
+from app.agents.harness.context_budget import build_tutor_context_budget_policy
 from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
 from app.agents.harness.contracts import (
     TutorCheckpointReason,
@@ -153,6 +155,21 @@ def _run() -> TutorRunSnapshot:
     )
 
 
+def _retry_run() -> TutorRunSnapshot:
+    # These fake-provider tests verify retry/diagnostic semantics, not the unknown
+    # provider's conservative 4K input fallback. Reserve a finite 8K input / 4K
+    # output envelope for the initial request plus actual repair instructions.
+    # Keep _run() unchanged for ordinary/default-capacity tests; explicit overflow
+    # sending-path coverage lives in test_tutor_provider_request_budget.py.
+    run = _run()
+    policy = build_tutor_context_budget_policy(Settings(
+        llm_type="disabled",
+        tutor_default_context_window_tokens=12_288,
+        tutor_default_output_reserve_tokens=4_096,
+    ))
+    return replace(run, policy=replace(run.policy, context_budget_policy=policy))
+
+
 def _context() -> TutorContextSelection:
     return TutorContextBuilder(config=TutorContextBuilderConfig(section_item_limits=())).build(
         TutorContextInput(
@@ -197,6 +214,104 @@ def _valid_payload() -> dict[str, object]:
         },
         "action": {"type": "turn_completed"},
     }
+
+
+def test_verified_plan_receipt_repairs_duplicate_draft_into_model_completion() -> None:
+    duplicate = _valid_payload()
+    duplicate["action"] = {
+        "type": "request_capability",
+        "capability_id": "learning.plan.draft",
+        # Completion takes precedence even when a repeated draft would fail its
+        # legacy payload parser. It must not invite a larger duplicate draft.
+        "arguments": [{"key": "profile_json", "value": "x" * 1025}],
+    }
+    completed = _valid_payload()
+    completed["message"] = {
+        "type": "agent_message",
+        "text": "计划已保存，可以进入审核。",
+        "public_thinking_text": "草稿已经通过服务器校验，本轮只需告知结果并结束。",
+        "conversation_title": "审核学习计划",
+    }
+    client = SequencedJsonClient([duplicate, completed])
+    context = TutorContextBuilder().build(
+        TutorContextInput(
+            run_id="run-provider", conversation_id="conversation-provider", input_revision=0,
+            current_input_required=True,
+            current_input=TutorContextSource("message-current", "请生成学习计划。"),
+            action_receipts=(TutorContextSource("action-receipt:plan", {
+                "kind": "executed_action_receipt",
+                "action_id": "learning.plan.draft",
+                "status": "verified",
+                "verification_status": "verified",
+                "authority_kind": "plan_draft",
+                "authority_id": "saved-draft",
+                "input_revision": 0,
+            }),),
+            capability_schemas=(TutorContextSource(
+                "catalog:capability:learning.plan.draft@1.0.0",
+                {"name": "learning.plan.draft", "inputSchema": {"type": "object"}},
+            ),),
+        ),
+        token_budget=4_000,
+    )
+
+    result = PrimaryTutorProviderGateway(
+        settings=Settings(llm_type="disabled"), client=client,
+    ).decide(run=_retry_run(), context=context)
+
+    assert result.decision is not None
+    assert result.decision.terminal_outcome is not None
+    assert client.calls == 2
+    repair = client.messages[1][-1]["content"]
+    assert "already succeeded" in repair
+    assert "action.type=turn_completed" in repair
+    assert "profile_json" not in repair
+
+
+def test_only_current_verified_plan_completion_disables_thinking() -> None:
+    from tests.tutor.test_tutor_plan_wire_contract import _arguments, _valid_parts
+
+    selected = _valid_payload()
+    selected["action"] = {"type": "select_skill", "skill_id": "tutor.learning-plan-draft", "version": "1.0.3"}
+    drafted = _valid_payload()
+    drafted["action"] = {"type": "request_capability", "capability_id": "learning.plan.draft",
+                         "arguments": _arguments(_valid_parts())}
+
+    class RecordingClient(SequencedJsonClient):
+        def __init__(self) -> None:
+            super().__init__([selected, drafted, _valid_payload()])
+            self.options: list[dict[str, object]] = []
+
+        def complete_json(self, messages, **kwargs):
+            self.options.append(dict(kwargs))
+            return super().complete_json(messages, **kwargs)
+
+    client = RecordingClient()
+    settings = Settings(llm_type="deepseek", deepseek_api_key="offline-test-key",
+                        deepseek_model="deepseek-flash", tutor_deepseek_repair_thinking_disabled=False)
+    gateway = PrimaryTutorProviderGateway(settings=settings, client=client)
+    run = _run()
+    receipt = TutorContextSource("action-receipt:plan", {
+        "kind": "executed_action_receipt", "action_id": "learning.plan.draft",
+        "status": "verified", "verification_status": "verified", "authority_kind": "plan_draft",
+        "authority_id": "saved-draft", "input_revision": run.input_revision,
+    })
+    completed_context = TutorContextBuilder().build(TutorContextInput(
+        run_id=run.run_id, conversation_id=run.conversation_id, input_revision=run.input_revision,
+        current_input_required=True, current_input=TutorContextSource("current", "Create the plan."),
+        action_receipts=(receipt,),
+    ), token_budget=4_000)
+
+    first = gateway.decide(run=run, context=_context())
+    second = gateway.decide(run=replace(run, model_call_count=1), context=_context())
+    last = gateway.decide(run=replace(run, model_call_count=2, capability_call_count=1), context=completed_context)
+
+    assert first.decision is not None and first.decision.skill_references
+    assert second.decision is not None and second.decision.capability_requests
+    assert last.decision is not None and last.decision.terminal_outcome is not None
+    assert client.calls == 3
+    assert [options["thinking_mode"] for options in client.options] == [None, None, "disabled"]
+    assert [options["max_tokens"] for options in client.options] == [settings.tutor_decision_max_output_tokens] * 3
 
 
 def test_provider_payload_separates_authoritative_current_input_from_optional_history() -> None:
@@ -264,7 +379,7 @@ def test_repair_retry_preserves_current_input_and_latest_intent_teaching_policy(
     )
     gateway = PrimaryTutorProviderGateway(settings=Settings(llm_type="disabled"), client=client)
 
-    result = gateway.decide(run=_run(), context=_interactive_context())
+    result = gateway.decide(run=_retry_run(), context=_interactive_context())
 
     assert result.decision is not None
     assert client.calls == 2
@@ -748,7 +863,7 @@ def test_primary_gateway_classifies_deepseek_invalid_response_shapes_without_ret
         client=OpenAICompatibleClient(settings, transport=transport),
     )
 
-    result = gateway.decide(run=_run(), context=_context())
+    result = gateway.decide(run=_retry_run(), context=_context())
 
     assert result.terminal_outcome is not None
     assert result.safe_code == expected_code
@@ -1394,7 +1509,7 @@ def test_primary_gateway_rejects_unsafe_public_thinking_before_domain_assembly()
     result = PrimaryTutorProviderGateway(
         settings=Settings(llm_type="disabled"),
         client=FakeJsonClient(content=payload),
-    ).decide(run=_run(), context=_context())
+    ).decide(run=_retry_run(), context=_context())
 
     assert result.terminal_outcome is not None
     assert result.safe_code == "TUTOR_PROVIDER_OUTPUT_SAFETY_REJECTED"
@@ -1421,7 +1536,7 @@ def test_primary_gateway_retries_one_invalid_envelope_on_the_same_primary_model(
         settings=Settings(llm_type="disabled"), client=client
     )
 
-    result = gateway.decide(run=_run(), context=_context())
+    result = gateway.decide(run=_retry_run(), context=_context())
 
     assert result.decision is not None
     assert result.terminal_outcome is None
@@ -1465,8 +1580,8 @@ def test_primary_gateway_rejects_unknown_or_guardrail_blocked_envelopes_as_model
         client=FakeJsonClient(content=blocked_payload),
     )
 
-    unknown_result = unknown.decide(run=_run(), context=_context())
-    blocked_result = blocked.decide(run=_run(), context=_context())
+    unknown_result = unknown.decide(run=_retry_run(), context=_context())
+    blocked_result = blocked.decide(run=_retry_run(), context=_context())
 
     assert unknown_result.terminal_outcome is not None
     assert blocked_result.terminal_outcome is not None
@@ -1508,7 +1623,7 @@ def test_primary_gateway_rejects_internal_nested_payload_fields_as_model_unavail
         ),
     )
 
-    result = gateway.decide(run=_run(), context=_context())
+    result = gateway.decide(run=_retry_run(), context=_context())
 
     assert result.terminal_outcome is not None
     assert result.safe_code == "TUTOR_PROVIDER_DECISION_INVALID_VALUE"
@@ -1708,7 +1823,7 @@ def test_primary_gateway_records_safe_configuration_and_failure_categories(
         client=FakeJsonClient(error=error),
     )
 
-    result = gateway.decide(run=_run(), context=_context())
+    result = gateway.decide(run=_retry_run(), context=_context())
 
     assert result.terminal_outcome is not None
     assert result.safe_code == expected_code
@@ -1864,7 +1979,7 @@ def test_gateway_records_usage_for_each_repair_attempt_and_preserves_model_call_
         client=OpenAICompatibleClient(settings, transport=transport),
     )
 
-    result = gateway.decide(run=_run(), context=_context())
+    result = gateway.decide(run=_retry_run(), context=_context())
 
     assert result.decision is not None
     assert [attempt.outcome for attempt in result.attempts] == [

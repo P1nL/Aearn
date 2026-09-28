@@ -3205,9 +3205,17 @@ persist(
   必须把 required-only estimate 作为保守下界，不能因 prompt/metadata 长度变化让最终
   `estimated_total_input_tokens` 低于 required floor。只把剩余 optional budget 交给
   builder；`131_072` 是 DeepSeek Flash input hard limit，不是填满目标。
-- current input 永远 required 且先保留。optional priority 固定为：system/selected Skill
+- current input 永远 required 且先保留。经 catalog 当前 run/revision、policy、selection hash
+  校验的 selected Skill 是不可截断的 required SYSTEM mapping（精确五字段及 instruction digest），
+  不可因 optional budget=0 或 SYSTEM item limit 静默跳过；表示不全须在 provider IO 前失败。
+  Builder 的局部 hash 校验不是独立 catalog 授权。optional priority 固定为：其他 system
   policy、最新既往消息、直接相关 active plan/review、working summary、memory、activity、
-  非必要 capability schema。达到预算时跳过 optional item，不能删除 current input。
+  非必要 capability schema。capability schema 只能原子选中或跳过，不可截断成 JSON 片段；
+  达到预算时跳过 optional item，不能删除 current input。已发布教学 Skill 的原文若含
+  `hidden test(s)` 这样的**禁止泄露措辞**，通用 learner-data redactor 会误判整段；只能在
+  精确已审指令 hash + 本地 instruction digest 匹配时保留该不可变原文，其他来源、元数据
+  脱敏或变更后的 Skill 仍 fail closed。测试替身须在 run 创建时冻结足以装下完整 Skill 的
+  显式窗口，不能只修改 dispatcher Settings 或调低 overflow 门禁。
 - classifier 只读取安全结构化事实：current input 字符/行数、code fence 数、候选/长
   source 数、recent history 数与 summary availability；不得把模型自由文本自报复杂度
   或中文/英文业务关键词作为唯一升级依据。
@@ -3234,6 +3242,12 @@ persist(
   `TUTOR_CONTEXT_REQUIRED_OVERFLOW`，run `failed`，provider call 为零。
 - optional selection 后完整请求仍超过 hard limit -> planner 确定性收缩 optional budget；
   无法在有界 rebalance 内收敛 -> `TUTOR_CONTEXT_REQUEST_OVERFLOW`，不调用 provider。
+- 每次 gateway 发送（包括追加 repair guidance 的重试）必须调用
+  `assert_tutor_provider_request_budget(messages, capability=...)` 重估即将发送的完整消息。
+  使用原 serializer/UTF-8 estimator 和 protocol/safety reserve；input_hard_limit 已计 output reserve，
+  不重复扣除。优先 persisted run policy capability，否则 resolve 当前 Settings；exact fit 允许。
+  超限返回 FAILED / `TUTOR_CONTEXT_REQUEST_OVERFLOW`，保留已经发生的 attempt/usage，
+  不发送下一笔、不编造其 usage/receipt；streaming provisional attempt 必须 discard。
 - 非精确 model 名（例如 `deepseek-flash-preview`）-> 保守显式 capability，不能继承
   1M registry entry。
 - 旧 persisted policy 无 `context_budget_policy` -> legacy builder path；不是损坏数据。
@@ -3259,7 +3273,12 @@ persist(
 - `test_tutor_context_builder.py`：current input reservation、newest-first recent selection、
   optional budget、metadata/selection 一致和 high-water 行为。
 - `test_tutor_provider_gateway.py`：shared initial/repair serializer、primary-only protocol、
-  exact DeepSeek limits 和 usage regression。
+  exact DeepSeek limits 和 usage regression。retry-focused fixture 必须显式给予足够且有界的输入容量，
+  不能默认4K又假定追加修复指令永远能装下。
+- `test_tutor_provider_request_budget.py`：真实gateway首轮恰好容纳、repair后超限，
+  client只有1笔、无第二笔receipt、streaming discard，以及policy/Settings fallback。
+- `test_catalog_artifact_scope.py`：按实际完整请求估算验证不足/足够两个方向；
+  不足时零模型调用、零artifact写入。不得硬编码“4096一定溢出”作为业务规则。
 - `test_tutor_run_loop.py`：required overflow 零 provider call、受控单次 mode upgrade、
   revision/supersede/cancellation/model budget gate。
 - `test_tutor_input_merge.py` / `test_tutor_run_repository.py`：新 run policy JSON 完整、

@@ -3,18 +3,27 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import re
 import time
 import zlib
 from dataclasses import dataclass, field
 from hashlib import sha256
-from typing import AsyncIterator, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Mapping, Protocol
 from urllib.parse import urljoin, urlsplit, urlunsplit
+
+if TYPE_CHECKING:
+    from .live_egress import VerifiedEgressEnvelope
 
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
 _MIME = frozenset({"text/html", "text/plain", "text/markdown"})
 _REQUEST_HEADERS = {"accept": "text/html, text/plain, text/markdown"}
+_FORMAL_BODY_MAX = 8 * 1024 * 1024
+_B_COMPRESSED_MAX = 1024 * 1024
+_B_EXPANDED_MAX = 4 * 1024 * 1024
+_REGISTERED_DEADLINE_MAX = 300.0
+ProgressCallback = Callable[[str, int, int | None, str], None]
 
 
 class SafeFetchDenied(Exception):
@@ -33,8 +42,8 @@ class FetchLimits:
     deadline_seconds: float = 10.0
 
     def __post_init__(self) -> None:
-        if (not 0 < self.compressed_bytes <= 1024 * 1024
-                or not 0 < self.expanded_bytes <= 4 * 1024 * 1024
+        if (not 0 < self.compressed_bytes <= _FORMAL_BODY_MAX
+                or not 0 < self.expanded_bytes <= _FORMAL_BODY_MAX
                 or not 0 <= self.redirects <= 5
                 or not 0 < self.deadline_seconds <= 30):
             raise ValueError("INVALID_FETCH_LIMITS")
@@ -96,6 +105,9 @@ class FetchResult:
     live_receipt: object | None = field(default=None, repr=False, compare=False)
     capture_kind: str = "full"
     range_end: int | None = None
+    egress_proof: VerifiedEgressEnvelope | None = field(default=None, repr=False, compare=False)
+    # C only: recorded after the second grant, immediately before the pinned dial.
+    pre_dial_unix_ms: int | None = None
 
 
 def _validated_url(url: str) -> tuple[str, str]:
@@ -202,13 +214,19 @@ class SafeFetcher:
                  egress: EgressAttestor | None = None,
                  hop_policy: HopPolicy | None = None,
                  limits: FetchLimits | None = None,
-                 offline_protocol_test: bool = False) -> None:
+                 offline_protocol_test: bool = False,
+                 request_gzip: bool = False,
+                 registered_full_deadline_seconds: float | None = None,
+                 on_progress: ProgressCallback | None = None) -> None:
         self.resolver = resolver
         self.connector = connector
         self.egress = egress
         self.hop_policy = hop_policy
         self.limits = limits or FetchLimits()
         self.offline_protocol_test = offline_protocol_test
+        self.request_gzip = request_gzip
+        self.registered_full_deadline_seconds = registered_full_deadline_seconds
+        self.on_progress = on_progress
         self._live_receipts: dict[object, tuple[str, str, float]] = {}
 
     @property
@@ -218,12 +236,13 @@ class SafeFetcher:
         from .live_egress import LiveEgressAttestor
         from .pinned_tls_connector import PinnedTlsConnector
         from .public_dns import PublicDnsResolver
+        from .registered_source_policy import RegisteredSourceHopPolicy
 
         return (not self.offline_protocol_test
                 and type(self.resolver) is PublicDnsResolver
                 and type(self.connector) is PinnedTlsConnector
                 and type(self.egress) is LiveEgressAttestor
-                and type(self.hop_policy) is CandidateHopPolicy)
+                and type(self.hop_policy) in (CandidateHopPolicy, RegisteredSourceHopPolicy))
 
     def consume_live_receipt(self, receipt: object | None, *, url: str, digest: str) -> bool:
         """One-use in-process proof of a completed pinned and attested fetch."""
@@ -243,6 +262,34 @@ class SafeFetcher:
                 or (capture_kind != "prefix" and prefix_bytes != 0)
                 or (capture_kind == "prefix" and not 0 < prefix_bytes < min(1_000_000, self.limits.expanded_bytes))):
             raise SafeFetchDenied("CAPTURE_SCOPE_INVALID")
+        from .registered_source_policy import RegisteredSourceHopPolicy, RegisteredSourceScope
+
+        effective_seconds = self.limits.deadline_seconds
+        override = self.registered_full_deadline_seconds
+        if override is not None:
+            if (type(override) not in (int, float)
+                    or not 0 < override <= _REGISTERED_DEADLINE_MAX
+                    or type(self.hop_policy) is not RegisteredSourceHopPolicy
+                    or capture_kind != "full" or self.limits.redirects != 0
+                    or self.request_gzip is not True):
+                raise SafeFetchDenied("REGISTERED_SCOPE_DENIED")
+            effective_seconds = float(override)
+        if type(self.request_gzip) is not bool or (
+            self.request_gzip and type(self.hop_policy) is not RegisteredSourceHopPolicy
+        ):
+            # Compression negotiation is C-only; B's request shape remains unchanged.
+            raise SafeFetchDenied("CAPTURE_SCOPE_INVALID")
+        if type(self.hop_policy) is RegisteredSourceHopPolicy:
+            scope = self.hop_policy.scope
+            if (type(scope) is not RegisteredSourceScope
+                    or url != scope.url or capture_kind != "full" or self.limits.redirects != 0
+                    or self.limits.compressed_bytes > scope.max_bytes
+                    or self.limits.expanded_bytes > scope.max_bytes):
+                raise SafeFetchDenied("REGISTERED_SCOPE_DENIED")
+        elif (self.limits.compressed_bytes > _B_COMPRESSED_MAX
+              or self.limits.expanded_bytes > _B_EXPANDED_MAX):
+            # The larger envelope is C-only, not a widened B fetch permission.
+            raise SafeFetchDenied("CAPTURE_SCOPE_INVALID")
         if not self.offline_protocol_test:
             if not self.live_ready:
                 raise SafeFetchDenied("LIVE_EGRESS_UNVERIFIED")
@@ -256,11 +303,12 @@ class SafeFetcher:
             raise SafeFetchDenied("PORT_MISSING")
         if cancelled is not None and cancelled.is_set():
             raise SafeFetchDenied("CANCELLED")
-        work = asyncio.create_task(self._fetch_hops(url, capture_kind, prefix_bytes, hop_grant))
+        deadline = time.monotonic() + effective_seconds
+        work = asyncio.create_task(self._fetch_hops(url, capture_kind, prefix_bytes, hop_grant, deadline))
         watcher = asyncio.create_task(cancelled.wait()) if cancelled is not None else None
         try:
             tasks = {work, watcher} if watcher is not None else {work}
-            done, _ = await asyncio.wait(tasks, timeout=self.limits.deadline_seconds,
+            done, _ = await asyncio.wait(tasks, timeout=effective_seconds,
                                          return_when=asyncio.FIRST_COMPLETED)
             if not done:
                 raise SafeFetchDenied("DEADLINE_EXCEEDED")
@@ -283,17 +331,22 @@ class SafeFetcher:
             await asyncio.gather(work, return_exceptions=True)
 
     async def _fetch_hops(self, url: str, capture_kind: str, prefix_bytes: int,
-                          hop_grant: Callable[[str], bool] | None) -> FetchResult:
+                          hop_grant: Callable[[str], bool] | None, deadline: float) -> FetchResult:
         assert self.resolver is not None and self.connector is not None and self.egress is not None
-        deadline = time.monotonic() + self.limits.deadline_seconds
         hops: list[str] = []
         visited: set[str] = set()
         compressed_total = 0
         method = "HEAD" if capture_kind == "none" else "GET"
-        request_headers = (_REQUEST_HEADERS if capture_kind != "prefix" else
-                           {**_REQUEST_HEADERS, "range": f"bytes=0-{prefix_bytes - 1}",
-                            "accept-encoding": "identity"})
+        if capture_kind == "prefix":
+            request_headers = {**_REQUEST_HEADERS, "range": f"bytes=0-{prefix_bytes - 1}",
+                               "accept-encoding": "identity"}
+        elif capture_kind == "full" and self.request_gzip:
+            request_headers = {**_REQUEST_HEADERS, "accept-encoding": "gzip"}
+        else:
+            request_headers = _REQUEST_HEADERS
         for _ in range(self.limits.redirects + 1):
+            signed_proof: VerifiedEgressEnvelope | None = None
+            pre_dial_unix_ms: int | None = None
             current, host = _validated_url(url)
             if current in visited:
                 raise SafeFetchDenied("REDIRECT_LOOP")
@@ -302,11 +355,27 @@ class SafeFetcher:
             try:
                 self._check_hop_policy(current, initial=len(hops) == 1)
                 self._check_grant(hop_grant, current)
+                self._progress("dns")
                 ip = _resolved_public(await self.resolver.resolve(host))
-                if not await self.egress.attest(host=host, ip=ip):
+                self._progress("signature")
+                from .registered_source_policy import RegisteredSourceHopPolicy
+                if not self.offline_protocol_test and type(self.hop_policy) is RegisteredSourceHopPolicy:
+                    from .live_egress import LiveEgressAttestor, VerifiedEgressEnvelope
+                    if type(self.egress) is not LiveEgressAttestor:
+                        raise SafeFetchDenied("EGRESS_UNVERIFIED")
+                    signed_proof = await self.egress.attest_envelope(host=host, ip=ip)
+                    if type(signed_proof) is not VerifiedEgressEnvelope:
+                        raise SafeFetchDenied("EGRESS_UNVERIFIED")
+                elif not await self.egress.attest(host=host, ip=ip):
                     raise SafeFetchDenied("EGRESS_UNVERIFIED")
                 self._check_hop_policy(current, initial=len(hops) == 1)
                 self._check_grant(hop_grant, current)
+                if signed_proof is not None:
+                    pre_dial_unix_ms = time.time_ns() // 1_000_000
+                    expires = json.loads(signed_proof.canonical_receipt)["expires_unix"]
+                    if type(expires) is not int or pre_dial_unix_ms >= expires * 1000:
+                        raise SafeFetchDenied("EGRESS_UNVERIFIED")
+                self._progress("tls")
                 response = await self.connector.open(
                     host=host, ip=ip, url=current, deadline=deadline,
                     headers=request_headers, method=method,
@@ -324,6 +393,10 @@ class SafeFetcher:
                     raise SafeFetchDenied("CONNECTION_DENIED")
                 headers = _headers(response.headers)
                 if response.status in _REDIRECTS:
+                    if self.limits.redirects == 0:
+                        from .registered_source_policy import RegisteredSourceHopPolicy
+                        if type(self.hop_policy) is RegisteredSourceHopPolicy:
+                            raise SafeFetchDenied("REDIRECT_DENIED")
                     location = headers.get("location")
                     if not location:
                         raise SafeFetchDenied("REDIRECT_DENIED")
@@ -351,7 +424,7 @@ class SafeFetcher:
                     receipt = self._receipt(hops[0], digest)
                     return FetchResult(current, tuple(hops), mime, b"", digest, 0, 0,
                                        "offline_protocol_only" if receipt is None else "live_egress_attested",
-                                       receipt, "none")
+                                       receipt, "none", egress_proof=signed_proof)
                 if capture_kind == "prefix":
                     # Exact single range and known total are required. Multipart,
                     # compression, weaker/shorter range and unknown totals close.
@@ -383,14 +456,24 @@ class SafeFetcher:
                                    compressed_total, expanded,
                                    "offline_protocol_only" if receipt is None else "live_egress_attested",
                                    receipt, capture_kind,
-                                   prefix_bytes - 1 if capture_kind == "prefix" else None)
+                                   prefix_bytes - 1 if capture_kind == "prefix" else None,
+                                   signed_proof if capture_kind == "full" else None,
+                                   pre_dial_unix_ms if capture_kind == "full" else None)
             finally:
                 await self.connector.close(response)
         raise SafeFetchDenied("REDIRECT_LIMIT")
 
+    def _progress(self, stage: str) -> None:
+        from .registered_source_policy import RegisteredSourceHopPolicy
+        if self.on_progress is not None and type(self.hop_policy) is RegisteredSourceHopPolicy:
+            self.on_progress(stage, 0, None, "unknown")
+
     def _check_grant(self, guard: Callable[[str], bool] | None, url: str) -> None:
         if guard is None:
-            if self.offline_protocol_test:
+            from .registered_source_policy import RegisteredSourceHopPolicy
+            # C uses its own mandatory current grant resolver twice per hop;
+            # B retains the separate candidate hop-grant requirement.
+            if self.offline_protocol_test or type(self.hop_policy) is RegisteredSourceHopPolicy:
                 return
             raise SafeFetchDenied("HOP_GRANT_DENIED")
         try:

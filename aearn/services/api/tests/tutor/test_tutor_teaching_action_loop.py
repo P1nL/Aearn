@@ -23,6 +23,14 @@ import pytest
 pytestmark = pytest.mark.skipif(not database_available(), reason="PostgreSQL is not available")
 
 
+def _teaching_settings() -> Settings:
+    # The fake provider must have room for the complete, published v1.2.1
+    # executable Skill. The conservative disabled-provider default cannot
+    # carry it, and silently dropping/truncating the Skill is not an option.
+    return Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True,
+                    tutor_default_context_window_tokens=16_384)
+
+
 class _TeachingProvider:
     def __init__(
         self, *, unavailable: bool = False, free_reading: bool = False, invalid_handle: bool = False,
@@ -113,7 +121,7 @@ class _TeachingProvider:
 
 def _open_guided(conn):  # type: ignore[no-untyped-def]
     scope = create_teaching_scope(conn)
-    opened = TeachingSessionService(conn).open(
+    opened = TeachingSessionService(conn, settings=_teaching_settings()).open(
         user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         conversation_id=str(scope["conversation_id"]), expected_track_version=1,
         expected_progress_version=1, expected_assignment_version=1,
@@ -129,14 +137,14 @@ def test_one_stimulus_commits_one_teaching_step_checkpoint_receipt_and_pause() -
         scope, opened, run_id = _open_guided(conn)
     provider = _TeachingProvider()
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
     assert provider.calls == 2
 
     with connection() as conn:
-        service = TeachingSessionService(conn)
+        service = TeachingSessionService(conn, settings=_teaching_settings())
         current = service.current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
@@ -173,13 +181,13 @@ def test_composer_response_unit_projects_no_continue_and_keeps_composer_as_next_
         learner_response_mode="composer",
     )
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
 
     with connection() as conn:
-        current = TeachingSessionService(conn).current(
+        current = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
         assert current["checkpoint"]["recommended_action_key"] == "respond_in_composer"
@@ -205,7 +213,7 @@ def test_selected_v12_gate_rejects_missing_invalid_or_mismatched_unit_fields(
     with connection() as conn:
         scope, _opened, run_id = _open_guided(conn)
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: _TeachingProvider(
             action_override=action,
             teaching_moves=teaching_moves,
@@ -229,13 +237,13 @@ def test_continue_rejects_repeated_recent_unit_but_allows_changed_strategy() -> 
     with connection() as conn:
         scope, _opened, first_run_id = _open_guided(conn)
     first = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: _TeachingProvider(),
     ).dispatch(user_id=str(scope["user_id"]), run_id=first_run_id)
     assert first.terminal_outcome is TutorTerminalOutcome.COMPLETED
 
     with connection() as conn:
-        service = TeachingSessionService(conn)
+        service = TeachingSessionService(conn, settings=_teaching_settings())
         current = service.current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
@@ -251,14 +259,14 @@ def test_continue_rejects_repeated_recent_unit_but_allows_changed_strategy() -> 
         repeated_run = str(repeated["pending_run"]["run_id"])
 
     denied = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: _TeachingProvider(),
     ).dispatch(user_id=str(scope["user_id"]), run_id=repeated_run)
     assert denied.terminal_outcome is TutorTerminalOutcome.BLOCKED_POLICY
     assert denied.diagnostic_code == "teaching_unit_not_advanced"
 
     with connection() as conn:
-        service = TeachingSessionService(conn)
+        service = TeachingSessionService(conn, settings=_teaching_settings())
         current = service.current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
@@ -274,7 +282,7 @@ def test_continue_rejects_repeated_recent_unit_but_allows_changed_strategy() -> 
         changed_run = str(changed["pending_run"]["run_id"])
 
     approved = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: _TeachingProvider(
             action_override="show_example",
             public_message_override="把变量看作贴在值上的标签；现在换到列表元素，预测重新赋值后哪个引用会变化。",
@@ -306,7 +314,7 @@ def test_teaching_action_receipt_is_append_only_exported_redacted_and_reset_chil
     with connection() as conn:
         scope, _opened, run_id = _open_guided(conn)
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: _TeachingProvider(),
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
@@ -345,13 +353,13 @@ def test_provider_unavailable_preserves_checkpoint_and_does_not_auto_admit() -> 
         scope, _opened, run_id = _open_guided(conn)
     provider = _TeachingProvider(unavailable=True)
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.MODEL_UNAVAILABLE
     assert provider.calls == 1
     with connection() as conn:
-        current = TeachingSessionService(conn).current(
+        current = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
         assert current["session_version"] == 1
@@ -425,7 +433,7 @@ def test_learner_direction_drift_preserves_current_input_and_teaching_authority(
 ) -> None:
     with connection() as conn:
         scope = create_teaching_scope(conn)
-        opened = TeachingSessionService(conn).open(
+        opened = TeachingSessionService(conn, settings=_teaching_settings()).open(
             user_id=str(scope["user_id"]),
             track_id=str(scope["track_id"]),
             knowledge_key="python.variables",
@@ -439,7 +447,7 @@ def test_learner_direction_drift_preserves_current_input_and_teaching_authority(
         assert opened["pending_run"] is None
         accepted = TutorPublicService(
             conn,
-            settings=Settings(llm_type="disabled"),
+            settings=_teaching_settings(),
         ).accept_conversation_input(
             user_id=str(scope["user_id"]),
             conversation_id=str(scope["conversation_id"]),
@@ -463,7 +471,7 @@ def test_learner_direction_drift_preserves_current_input_and_teaching_authority(
         expected_current_input=latest_input,
     )
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
 
@@ -471,7 +479,7 @@ def test_learner_direction_drift_preserves_current_input_and_teaching_authority(
     assert public_message.count("？") == question_count
     assert forbidden_fragment not in public_message
     with connection() as conn:
-        current = TeachingSessionService(conn).current(
+        current = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]),
             track_id=str(scope["track_id"]),
             knowledge_key="python.variables",
@@ -495,14 +503,14 @@ def test_learner_direction_drift_preserves_current_input_and_teaching_authority(
 def test_free_reading_question_is_reactive_and_does_not_switch_mode() -> None:
     with connection() as conn:
         scope = create_teaching_scope(conn)
-        opened = TeachingSessionService(conn).open(
+        opened = TeachingSessionService(conn, settings=_teaching_settings()).open(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
             conversation_id=str(scope["conversation_id"]), expected_track_version=1,
             expected_progress_version=1, expected_assignment_version=1,
             mode=TeachingSessionMode.FREE_READING, idempotency_key="free-reading-open",
         )
         assert opened["pending_run"] is None
-        accepted = TutorPublicService(conn, settings=Settings(llm_type="disabled")).accept_conversation_input(
+        accepted = TutorPublicService(conn, settings=_teaching_settings()).accept_conversation_input(
             user_id=str(scope["user_id"]), conversation_id=str(scope["conversation_id"]),
             content="变量和赋值有什么区别？", idempotency_key="free-reading-question",
             learning_scope=LearningScope(
@@ -513,12 +521,12 @@ def test_free_reading_question_is_reactive_and_does_not_switch_mode() -> None:
         run_id = str(accepted["run"]["run_id"])
     provider = _TeachingProvider(free_reading=True)
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
     with connection() as conn:
-        current = TeachingSessionService(conn).current(
+        current = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
         assert current["mode"] == "free_reading"
@@ -526,7 +534,7 @@ def test_free_reading_question_is_reactive_and_does_not_switch_mode() -> None:
         assert conn.execute(
             "SELECT count(*) AS count FROM tutor_runs WHERE conversation_id=%s", (scope["conversation_id"],),
         ).fetchone()["count"] == 1
-        service = TeachingSessionService(conn)
+        service = TeachingSessionService(conn, settings=_teaching_settings())
         with pytest.raises(TeachingSessionServiceError) as invalid_continue:
             service.action(
                 user_id=str(scope["user_id"]), track_id=str(scope["track_id"]),
@@ -561,12 +569,12 @@ def test_unknown_teaching_handle_fails_closed_without_message_or_checkpoint() ->
         scope, _opened, run_id = _open_guided(conn)
     provider = _TeachingProvider(invalid_handle=True)
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.BLOCKED_POLICY
     with connection() as conn:
-        current = TeachingSessionService(conn).current(
+        current = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
         assert current["session_version"] == 1
@@ -583,12 +591,12 @@ def test_provider_cannot_replace_focus_with_an_unlisted_identity() -> None:
     with connection() as conn:
         scope, _opened, run_id = _open_guided(conn)
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: _TeachingProvider(invalid_focus=True),
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.BLOCKED_POLICY
     with connection() as conn:
-        current = TeachingSessionService(conn).current(
+        current = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
         assert current["session_version"] == 1
@@ -695,13 +703,13 @@ def test_stale_session_after_provider_is_cancelled_without_publication() -> None
 
     provider = _TeachingProvider(before_teaching_step=make_stale)
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.CANCELLED
     assert result.diagnostic_code == "teaching_authority_stale"
     with connection() as conn:
-        current = TeachingSessionService(conn).current(
+        current = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
         assert current["session_version"] == 2 and current["mode"] == "free_reading"
@@ -717,7 +725,7 @@ def test_stale_session_after_provider_is_cancelled_without_publication() -> None
 def test_progress_authority_refresh_creates_successor_and_commits_completion_pause() -> None:
     with connection() as conn:
         scope = create_teaching_scope(conn)
-        first = TeachingSessionService(conn).open(
+        first = TeachingSessionService(conn, settings=_teaching_settings()).open(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
             conversation_id=str(scope["conversation_id"]), expected_track_version=1,
             expected_progress_version=1, expected_assignment_version=1,
@@ -733,7 +741,7 @@ def test_progress_authority_refresh_creates_successor_and_commits_completion_pau
         conn.commit()
 
     with connection() as conn:
-        refreshed = TeachingSessionService(conn).open(
+        refreshed = TeachingSessionService(conn, settings=_teaching_settings()).open(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
             conversation_id=str(scope["conversation_id"]), expected_track_version=1,
             expected_progress_version=2, expected_assignment_version=1,
@@ -757,19 +765,19 @@ def test_progress_authority_refresh_creates_successor_and_commits_completion_pau
 
     provider = _TeachingProvider(completion=True)
     result = TutorInteractiveRunDispatcher(
-        settings=Settings(llm_type="disabled", tutor_thread_turn_v2_enabled=True),
+        settings=_teaching_settings(),
         provider_factory=lambda settings: provider,
     ).dispatch(user_id=str(scope["user_id"]), run_id=run_id)
     assert result.terminal_outcome is TutorTerminalOutcome.COMPLETED
     with connection() as conn:
-        current = TeachingSessionService(conn).current(
+        current = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
         assert current["session_id"] == successor_id
         assert current["status"] == "completed"
         assert current["checkpoint"]["pause_reason"] == "completion_pause"
         assert current["action_shelf"]["state"] == "completion"
-        reopened = TeachingSessionService(conn).open(
+        reopened = TeachingSessionService(conn, settings=_teaching_settings()).open(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]),
             knowledge_key="python.variables", conversation_id=str(scope["conversation_id"]),
             expected_track_version=1, expected_progress_version=2,
@@ -795,7 +803,7 @@ def test_completion_pause_requires_explicit_latest_roadmap_transition() -> None:
 
     with connection() as conn:
         scope = create_teaching_scope(conn)
-        opened = TeachingSessionService(conn).open(
+        opened = TeachingSessionService(conn, settings=_teaching_settings()).open(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
             conversation_id=str(scope["conversation_id"]), expected_track_version=1,
             expected_progress_version=1, expected_assignment_version=1,
@@ -872,7 +880,7 @@ def test_completion_pause_requires_explicit_latest_roadmap_transition() -> None:
         )
         conn.commit()
 
-        completed = TeachingSessionService(conn).current(
+        completed = TeachingSessionService(conn, settings=_teaching_settings()).current(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]), knowledge_key="python.variables",
         )
         assert completed["status"] == "completed"
@@ -882,7 +890,7 @@ def test_completion_pause_requires_explicit_latest_roadmap_transition() -> None:
         ).fetchone()["count"] == 0
 
         with pytest.raises(TeachingSessionServiceError) as wrong_candidate:
-            TeachingSessionService(conn).action(
+            TeachingSessionService(conn, settings=_teaching_settings()).action(
                 user_id=str(scope["user_id"]), track_id=str(scope["track_id"]),
                 session_id=str(session["session_id"]),
                 control=TeachingControlStimulus(
@@ -899,7 +907,7 @@ def test_completion_pause_requires_explicit_latest_roadmap_transition() -> None:
             (scope["track_id"],),
         ).fetchone() == {"current_knowledge_key": "python.variables", "version": 1}
 
-        transitioned = TeachingSessionService(conn).action(
+        transitioned = TeachingSessionService(conn, settings=_teaching_settings()).action(
             user_id=str(scope["user_id"]), track_id=str(scope["track_id"]),
             session_id=str(session["session_id"]),
             control=TeachingControlStimulus(

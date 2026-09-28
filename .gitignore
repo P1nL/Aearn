@@ -43,6 +43,7 @@ coverage.xml
 **/*.tsbuildinfo
 
 # Local environment, logs, and process state.
+/.runtime/
 .env
 .env.*
 !.env.example

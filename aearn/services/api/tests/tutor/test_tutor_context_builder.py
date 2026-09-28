@@ -528,3 +528,152 @@ def test_compaction_stops_before_unprojected_fact_barrier() -> None:
     assert compaction is not None
     assert compaction.retired_message_ids == ("id-1", "id-2")
     assert selection.checkpoint_metadata.summary_blocked_by_unprojected_fact == 1
+
+def test_capability_schema_is_atomic_not_1200_character_clipped() -> None:
+    schema = {"name": "learning.plan.draft", "inputSchema": {
+        "type": "object", "required": ["module_1", "module_2"],
+        "description": "a" * 1800}}
+    context = TutorContextInput(run_id="tutor-run-1", conversation_id="conversation-1",
+        input_revision=2, current_input_required=True,
+        current_input=TutorContextSource("message-current", "draft plan"),
+        capability_schemas=(TutorContextSource("schema", schema),))
+    builder = TutorContextBuilder()
+    full = builder.build(context, token_budget=2000, optional_token_budget=1000)
+    items = [item for item in full.items if item.section is TutorContextSection.CAPABILITY_SCHEMAS]
+    assert len(items) == 1 and json.loads(items[0].content) == schema
+    assert len(items[0].content) > 1600
+    assert full.checkpoint_metadata.truncated_count == 0
+    skipped = builder.build(context, token_budget=100, optional_token_budget=10)
+    assert all(item.section is not TutorContextSection.CAPABILITY_SCHEMAS for item in skipped.items)
+    assert _section_metadata(skipped, TutorContextSection.CAPABILITY_SCHEMAS).skipped_count == 1
+
+
+def test_capability_schema_sensitive_field_is_denied_not_partially_exported() -> None:
+    context = TutorContextInput(run_id="tutor-run-1", conversation_id="conversation-1",
+        input_revision=2, current_input_required=True,
+        current_input=TutorContextSource("message-current", "draft plan"),
+        capability_schemas=(TutorContextSource("schema", {"name": "plan", "api_key": "do-not-emit"}),))
+    with pytest.raises(TutorContextError, match="TUTOR_CAPABILITY_SCHEMA_UNREPRESENTABLE"):
+        TutorContextBuilder().build(context, token_budget=1000)
+
+
+def _selected_skill_source(*, instruction: str = "Late instruction: use action as a JSON string.") -> TutorContextSource:
+    import hashlib
+    return TutorContextSource(
+        "catalog:selected:tutor.learning-plan-draft@1.0.3",
+        {"id": "tutor.learning-plan-draft", "version": "1.0.3",
+         "manifest_hash": "a" * 64,
+         "instruction_hash": hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
+         "instruction": instruction},
+    )
+
+
+def test_selected_skill_is_atomic_mandatory_and_late_rules_survive() -> None:
+    instruction = "Opening instructions. " + ("x" * 1800) + "\nNo effect proposal. Action arguments are JSON strings."
+    context = TutorContextInput(
+        run_id="tutor-run-1", conversation_id="conversation-1", input_revision=2,
+        current_input_required=True, current_input=TutorContextSource("current", "plan"),
+        system_descriptors=(_selected_skill_source(instruction=instruction),),
+    )
+    builder = TutorContextBuilder()
+    selection = builder.build(context, token_budget=3000, optional_token_budget=0)
+    item, = selection.items
+    assert json.loads(item.content)["instruction"] == instruction
+    assert len(item.content) > 1600
+    assert selection.checkpoint_metadata.truncated_count == 0
+    assert _section_metadata(selection, TutorContextSection.SYSTEM).selected_count == 1
+    with pytest.raises(TutorContextError, match="TUTOR_SELECTED_SKILL_UNREPRESENTABLE"):
+        builder.build(context, token_budget=10, optional_token_budget=0)
+
+
+@pytest.mark.parametrize("mutation", ["id", "version", "digest", "secret", "location"])
+def test_selected_skill_spoof_mismatch_or_redaction_denied(mutation: str) -> None:
+    source = _selected_skill_source()
+    content = dict(source.content)
+    source_id = source.source_id
+    if mutation == "id":
+        content["id"] = "tutor.elsewhere"
+    elif mutation == "version":
+        content["version"] = "1.0.2"
+    elif mutation == "digest":
+        content["instruction_hash"] = "b" * 64
+    elif mutation == "secret":
+        content["api_key"] = "do-not-emit"
+    else:
+        source_id = "catalog:selected:tutor.elsewhere@1.0.3"
+    context = TutorContextInput(
+        run_id="tutor-run-1", conversation_id="conversation-1", input_revision=2,
+        current_input_required=False,
+        system_descriptors=(TutorContextSource(source_id, content),),
+    )
+    with pytest.raises(TutorContextError, match="TUTOR_SELECTED_SKILL_UNREPRESENTABLE"):
+        TutorContextBuilder().build(context, token_budget=3000)
+
+
+def test_selected_skill_json_string_source_is_rejected_before_double_encoding() -> None:
+    source = _selected_skill_source()
+    context = TutorContextInput(
+        run_id="tutor-run-1", conversation_id="conversation-1", input_revision=2,
+        current_input_required=False,
+        system_descriptors=(TutorContextSource(source.source_id, json.dumps(source.content)),),
+    )
+    with pytest.raises(TutorContextError, match="TUTOR_SELECTED_SKILL_UNREPRESENTABLE"):
+        TutorContextBuilder().build(context, token_budget=3000)
+
+
+def test_selected_skill_displaced_by_item_cap_fails_instead_of_silent_drop() -> None:
+    context = TutorContextInput(
+        run_id="tutor-run-1", conversation_id="conversation-1", input_revision=2,
+        current_input_required=False,
+        system_descriptors=(TutorContextSource("system", "optional"), _selected_skill_source()),
+    )
+    with pytest.raises(TutorContextError, match="TUTOR_SELECTED_SKILL_UNREPRESENTABLE"):
+        TutorContextBuilder(config=_config()).build(context, token_budget=3000)
+
+
+def test_selected_skill_secret_redaction_does_not_rewrite_executable_instructions() -> None:
+    context = TutorContextInput(
+        run_id="tutor-run-1", conversation_id="conversation-1", input_revision=2,
+        current_input_required=False,
+        system_descriptors=(_selected_skill_source(instruction="Use raw_prompt secret here."),),
+    )
+    with pytest.raises(TutorContextError, match="TUTOR_SELECTED_SKILL_PROTECTED"):
+        TutorContextBuilder().build(context, token_budget=3000)
+
+
+@pytest.mark.parametrize("version", ["1.0.0", "1.1.0", "1.2.0", "1.2.1"])
+def test_reviewed_published_lesson_skill_prohibition_survives_without_secret_bypass(version: str) -> None:
+    from app.agents.harness.skill_catalog import compile_published_skill_catalog
+
+    skill = compile_published_skill_catalog().resolve_skill("tutor.lesson-teaching", version)
+    assert skill is not None
+    source = TutorContextSource(
+        f"catalog:selected:tutor.lesson-teaching@{version}",
+        {"id": skill.manifest.id, "version": version,
+         "manifest_hash": skill.manifest_hash, "instruction_hash": skill.instruction_hash,
+         "instruction": skill.instruction},
+    )
+    context = TutorContextInput(
+        run_id="tutor-run-1", conversation_id="conversation-1", input_revision=2,
+        current_input_required=False, system_descriptors=(source,),
+    )
+    selection = TutorContextBuilder().build(context, token_budget=6000)
+    assert json.loads(selection.items[0].content)["instruction"] == skill.instruction
+    assert "hidden test" in skill.instruction.lower()
+
+
+def test_unknown_selected_lesson_skill_hidden_test_marker_fails_closed() -> None:
+    instruction = "Never expose hidden tests or raw_prompt secret here."
+    import hashlib
+    source = TutorContextSource(
+        "catalog:selected:tutor.lesson-teaching@9.9.9",
+        {"id": "tutor.lesson-teaching", "version": "9.9.9", "manifest_hash": "a" * 64,
+         "instruction_hash": hashlib.sha256(instruction.encode()).hexdigest(),
+         "instruction": instruction},
+    )
+    context = TutorContextInput(
+        run_id="tutor-run-1", conversation_id="conversation-1", input_revision=2,
+        current_input_required=False, system_descriptors=(source,),
+    )
+    with pytest.raises(TutorContextError, match="TUTOR_SELECTED_SKILL_PROTECTED"):
+        TutorContextBuilder().build(context, token_budget=6000)

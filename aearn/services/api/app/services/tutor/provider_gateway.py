@@ -5,10 +5,19 @@ import json
 import logging
 import socket
 import urllib.error
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Literal, Protocol, TypedDict
 
+from pydantic import ValidationError
+
+from app.agents.harness.actions import is_current_verified_plan_draft_receipt
+from app.agents.harness.capabilities import (
+    LEARNING_PLAN_DRAFT_CAPABILITY_ID, LEARNING_PLAN_DRAFT_V110_DESCRIPTOR, CapabilitySchemaExporter,
+    plan_draft_input_model,
+)
 from app.agents.harness.contracts import (
+    TutorContextError,
+    TutorTerminalOutcome,
     TutorCapabilityRequest,
     TutorContextSection,
     TutorContextSelection,
@@ -18,6 +27,8 @@ from app.agents.harness.contracts import (
     TutorProviderAttemptReceipt,
     TutorProviderResult,
     TutorRunSnapshot,
+    is_complete_selected_skill,
+    payload_mapping_from_fields,
 )
 from app.agents.harness.provider_request import (
     TUTOR_TEACHING_POLICY,
@@ -42,7 +53,9 @@ from app.services.llm.provider_diagnostics import (
     ProviderDiagnosticStore,
 )
 from app.services.tutor.ports import TutorLifecycleConflict
-from app.services.tutor.validation_diagnostics import validation_log_fields
+from app.services.tutor.provider_request_budget import assert_tutor_provider_request_budget
+from app.services.tutor.validation_diagnostics import plan_domain_validation_issues, validation_log_fields
+from app.services.learning.plan_drafting import decode_compact_modules, decode_compact_profile
 from app.services.tutor.public_thinking_stream import (
     TutorProviderPublicTextProjector,
     TutorPublicThinkingSafetyError,
@@ -142,6 +155,82 @@ def _assert_selected_teaching_action(
         )
 
 
+def _is_verified_plan_completion(*, run: TutorRunSnapshot, context: TutorContextSelection) -> bool:
+    # The receipt loader scopes these server-owned records to user_id/run_id.
+    # It can also include older revisions; only the current revision closes this request.
+    return any(
+        item.section is TutorContextSection.ACTION_RECEIPTS
+        and item.source_id.startswith("action-receipt:")
+        and is_current_verified_plan_draft_receipt(
+            item.content, input_revision=run.input_revision,
+        )
+        for item in context.items
+    )
+
+
+def _assert_plan_draft_not_repeated(
+    *, run: TutorRunSnapshot, context: TutorContextSelection, action: object,
+) -> None:
+    if (_is_verified_plan_completion(run=run, context=context) and isinstance(action, Mapping)
+        and action.get("type") == "request_capability"
+        and action.get("capability_id") == LEARNING_PLAN_DRAFT_CAPABILITY_ID
+    ):
+        raise TutorDecisionValidationError(
+            "Tutor attempted a completed learning-plan draft action",
+            issues=(TutorDecisionValidationIssue(
+                path="action.type", category="plan_draft_already_verified",
+            ),),
+        )
+
+
+def _assert_plan_domain_shape(decision: TutorDecision) -> None:
+    """Reject pure JSON/domain-shape failures before paid material review or writes."""
+    for request in decision.capability_requests:
+        if request.capability_id != LEARNING_PLAN_DRAFT_CAPABILITY_ID:
+            continue
+        try:
+            candidate = plan_draft_input_model(request.capability_version).model_validate(
+                payload_mapping_from_fields(request.arguments))
+        except ValidationError as exc:
+            raise TutorDecisionValidationError("Plan capability shape is invalid", issues=(
+                TutorDecisionValidationIssue(path="action.arguments", category="plan_domain_invalid"),
+            )) from exc
+        parts = (("profile_json", candidate.profile_json),
+                 *((f"module_{index}", value) for index, value in enumerate(candidate.module_values(), 1)))
+        for key, value in parts:
+            try:
+                if key == "profile_json":
+                    decode_compact_profile(value)
+                else:
+                    decode_compact_modules((value,))
+            except ValidationError as exc:
+                raise TutorDecisionValidationError("Plan domain shape is invalid",
+                    issues=plan_domain_validation_issues(exc, argument_key=key)) from exc
+            except ValueError as exc:
+                raise TutorDecisionValidationError("Plan argument is not a JSON object", issues=(
+                    TutorDecisionValidationIssue(path=f"action.arguments.{key}", category="plan_json_invalid"),
+                )) from exc
+
+
+def _selected_plan_draft_version(context: TutorContextSelection) -> str:
+    selected = any(
+        item.section is TutorContextSection.SYSTEM
+        and item.source_id == "catalog:selected:tutor.learning-plan-draft@1.1.0"
+        and is_complete_selected_skill(item.source_id, item.content)
+        for item in context.items
+    )
+    if selected:
+        for item in context.items:
+            if (item.section is TutorContextSection.CAPABILITY_SCHEMAS
+                    and item.source_id == "catalog:capability:learning.plan.draft@1.1.0"):
+                try:
+                    if json.loads(item.content) == CapabilitySchemaExporter.export(LEARNING_PLAN_DRAFT_V110_DESCRIPTOR):
+                        return "1.1.0"
+                except (TypeError, ValueError):
+                    pass
+    return "1.0.0"
+
+
 class PrimaryTutorProviderGateway:
     """Use exactly the configured provider and assemble control fields server-side."""
 
@@ -152,6 +241,7 @@ class PrimaryTutorProviderGateway:
         client: TutorJsonClient | None = None,
         max_output_tokens: int | None = None,
         timeout_seconds: float | None = None,
+        decision_validator: Callable[[TutorRunSnapshot, TutorContextSelection, TutorDecision, int], str | None] | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         resolved_max_output_tokens = self._settings.tutor_decision_max_output_tokens
@@ -169,6 +259,19 @@ class PrimaryTutorProviderGateway:
         self._timeout_seconds = timeout_seconds
         self._output_schema = tutor_provider_output_schema()
         self._output_schema_hash = tutor_provider_output_schema_hash()
+        self._decision_validator = decision_validator
+
+    def with_decision_validator(
+        self, validator: Callable[[TutorRunSnapshot, TutorContextSelection, TutorDecision, int], str | None],
+    ) -> PrimaryTutorProviderGateway:
+        """Bind an internal validator without changing the ordinary gateway."""
+        if self._decision_validator is not None:
+            raise ValueError("decision validator already bound")
+        return PrimaryTutorProviderGateway(
+            settings=self._settings, client=self._client,
+            max_output_tokens=self._max_output_tokens, timeout_seconds=self._timeout_seconds,
+            decision_validator=validator,
+        )
 
     def decide(
         self,
@@ -187,6 +290,8 @@ class PrimaryTutorProviderGateway:
             messages = _build_messages(run=run, context=context)
             protocol = select_llm_protocol(self._settings).value
             provider_type = self._settings.llm_provider_type
+            plan_completion = _is_verified_plan_completion(run=run, context=context)
+            plan_draft_version = _selected_plan_draft_version(context)
             supports_visible_stream = (
                 thinking_sink is not None
                 and protocol in {"responses", "deepseek_responses"}
@@ -210,6 +315,7 @@ class PrimaryTutorProviderGateway:
             )
 
         replacement_issues: tuple[TutorDecisionValidationIssue, ...] = ()
+        rejected_planning = False
         for attempt_index in range(1, PRIMARY_PROVIDER_DECISION_ATTEMPTS + 1):
             response: LLMJsonResponse | None = None
             rejected_capture: ProviderBodyCapture | None = None
@@ -228,16 +334,35 @@ class PrimaryTutorProviderGateway:
                         "content": build_tutor_replacement_message(
                             replacement_issues,
                             teaching_policy=TUTOR_TEACHING_POLICY,
+                            planning_capability_active=rejected_planning,
+                            plan_draft_version=plan_draft_version,
                         ),
                     }
+                )
+            policy = run.policy.context_budget_policy
+            if policy is None:
+                from app.agents.harness.context_budget import resolve_tutor_provider_context_capability
+                capability = resolve_tutor_provider_context_capability(self._settings)
+            else:
+                capability = policy.capability
+            try:
+                assert_tutor_provider_request_budget(messages, capability=capability)
+            except TutorContextError as exc:
+                if projector is not None and thinking_sink is not None:
+                    thinking_sink.discard_attempt(attempt_index)
+                return TutorProviderResult(
+                    decision=None, terminal_outcome=TutorTerminalOutcome.FAILED,
+                    safe_code=exc.safe_code, attempts=tuple(attempts),
                 )
             try:
                 thinking_mode: Literal["enabled", "disabled"] | None = (
                     "disabled"
                     if (
-                        attempt_index > 1
-                        and provider_type == "deepseek"
-                        and self._settings.tutor_deepseek_repair_thinking_disabled
+                        provider_type == "deepseek"
+                        and (plan_completion or (
+                            attempt_index > 1
+                            and self._settings.tutor_deepseek_repair_thinking_disabled
+                        ))
                     )
                     else None
                 )
@@ -265,9 +390,11 @@ class PrimaryTutorProviderGateway:
                         visible_output_observer=projector,
                     )
                 _assert_raw_provider_text_safe(response.content)
-                decision = parse_tutor_provider_items(response.content, run=run)
+                _assert_plan_draft_not_repeated(run=run, context=context, action=response.content.get("action"))
+                decision = parse_tutor_provider_items(response.content, run=run, plan_draft_version=plan_draft_version)
                 _assert_decision_text_safe(decision)
                 _assert_selected_teaching_action(context=context, decision=decision)
+                _assert_plan_domain_shape(decision)
                 if projector is not None and thinking_sink is not None:
                     raw_message = response.content.get("message")
                     raw_thinking = (
@@ -285,6 +412,16 @@ class PrimaryTutorProviderGateway:
                                 ),
                             ),
                         )
+                if self._decision_validator is not None:
+                    material_issue = self._decision_validator(run, context, decision, attempt_index)
+                    if material_issue is not None:
+                        raise TutorDecisionValidationError(
+                            "Internal planning output failed material consistency",
+                            issues=(TutorDecisionValidationIssue(
+                                path="action.arguments.profile_json", category=material_issue,
+                            ),),
+                        )
+                if projector is not None and thinking_sink is not None:
                     # ``complete`` is the public validation barrier, not merely the
                     # provider transport EOF. Invalid attempts must go straight from
                     # provisional append events to discard without becoming visible.
@@ -377,7 +514,8 @@ class PrimaryTutorProviderGateway:
             except TutorDecisionValidationError as exc:
                 diagnostic_code = validation_diagnostic_code(exc.issues)
                 exception_type = type(exc).__name__
-                repairable = True
+                repairable = not any(issue.category.startswith("material_review_uncertain")
+                                     for issue in exc.issues)
                 replacement_issues = exc.issues
                 rejected_capture = (
                     response.diagnostic_capture
@@ -500,6 +638,18 @@ class PrimaryTutorProviderGateway:
                     diagnostic_code=diagnostic_code,
                 )
             )
+            rejected_action = response.content.get("action") if response is not None else None
+            rejected_planning = (
+                isinstance(rejected_action, Mapping)
+                and rejected_action.get("type") == "request_capability"
+                and rejected_action.get("capability_id") == "learning.plan.draft"
+                and not any(
+                    issue.category == "plan_draft_already_verified"
+                    for issue in replacement_issues
+                )
+                and any(item.section is TutorContextSection.CAPABILITY_SCHEMAS
+                        and "learning.plan.draft" in item.content for item in context.items)
+            )
             for issue in replacement_issues[:8]:
                 details = validation_log_fields(issue)
                 log_safe_event(
@@ -521,6 +671,12 @@ class PrimaryTutorProviderGateway:
                     expected_values=details.get("expected_values"),
                     expected_rule=details.get("expected_rule"),
                     expected_type=details.get("expected_type"),
+                    expected_types=details.get("expected_types"),
+                    observed_type=details.get("observed_type"),
+                    string_length=details.get("string_length"),
+                    serialized_length=details.get("serialized_length"),
+                    list_count=details.get("list_count"),
+                    argument_key=details.get("argument_key"),
                 )
             logger.warning(
                 "Tutor primary model response was rejected (%s/%s): %s [%s] "

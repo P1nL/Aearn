@@ -39,6 +39,18 @@ SCHEMA_FRAGMENT_NAMES: tuple[str, ...] = (
     '290_rag_discovery_context.sql',
     '300_rag_candidate_policy.sql',
     '310_rag_campaign_authority.sql',
+    '320_rag_registered_source.sql',
+    '330_rag_source_admission.sql',
+    '340_rag_c_capture_capacity.sql',
+    '350_rag_c_supplemental_dispatch.sql',
+    '360_rag_candidate_use_grants.sql',
+    '370_rag_plan_material_bindings.sql',
+    '380_rag_material_semantic_reviews.sql',
+    '390_rag_c_supplemental_recovery.sql',
+    '400_rag_c_final_followup.sql',
+    '410_rag_c_deployment_correction.sql',
+    '420_rag_c_expired_source_refresh.sql',
+    '430_rag_tavily_extraction.sql',
 )
 
 

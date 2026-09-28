@@ -1,0 +1,26 @@
+{
+  "id": "tutor.learning-plan-draft",
+  "version": "1.1.0",
+  "owner": "aearn-core",
+  "kind": "tutoring",
+  "summary": "Create one bounded material-aware learning plan with exact goals, semantic review, and current source authority.",
+  "instruction_file": "instructions.md",
+  "evaluation_suite_file": "evals.json",
+  "content_hashes": {
+    "instructions.md": "0ac2b1fbe7a5dccbd550559ab785e236059fbe87bf2ba7c9543088823cc7dd00",
+    "evals.json": "f0b04c962715629634eff4f8d08677d07c44551103350f4a90499d7e2148430a"
+  },
+  "resource_refs": [
+    "registry:grounding_sources"
+  ],
+  "requires_capabilities": [
+    "learning.plan.draft"
+  ],
+  "allowed_effect_types": [],
+  "policy_tags": [
+    "plan-drafting"
+  ],
+  "input_contract": "tutor.skill-input.v1",
+  "output_contract": "tutor.skill-decision.v1",
+  "deprecated": false
+}

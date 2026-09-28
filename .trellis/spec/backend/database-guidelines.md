@@ -60,6 +60,8 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 - question transition 追加 event。current question state 从没有 successor 的 leaf 沿 `previous_event_id` lineage 解析；`reasked_blocked` 只保留审计，公开 current state 回退到其 predecessor。
 - PostgreSQL `now()` 在一个事务内稳定，不能用 `created_at`、UUID 大小或二者组合作为同事务事件先后 authority。`previous_event_id` 必须有唯一 successor 约束，防止 lineage 分叉。
 - confirmed facts 进入 `required_facts`，在 optional history/summary/memory 前完整选中；无法完整表示时 fail closed。
+- `PlanningFact.as_context_source()` 明确输出 `profile_field` 与 `profile_value_policy="copy_exact"`：`pace_constraints` 映射为 `profile_json.pace_summary`，其他事实同名。模型必须原样复制当前 confirmed value，只有缺失或显式 reopened 字段可生成；不得改写事实、自动覆盖模型输出或放宽 `validate_profile()`。
+- `learning_plan_draft_invalid` 保留 DENIED 和现有公开错误码；内部诊断仅传白名单 stage/field_path/静态 repair_guidance，不输出原始参数或异常文本。confirmed pace 冲突定位为 `confirmed_fact_conflict` / `profile.pace_summary`，不是 JSON 协议错误。
 - unresolved/reopened answer 的 source message 在没有 replacement fact/summary 时必须进入 compaction protection；export 省略 value/event hash 和 gate reason。
 - plan draft 保存生成时 facts fingerprint/revision；confirm 必须与 current facts 相同。
 

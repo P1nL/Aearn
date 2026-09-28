@@ -332,6 +332,9 @@ def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[s
         "planning_intake_facts": _count(conn, "SELECT count(*) AS count FROM tutor_planning_intake_facts WHERE user_id = %s", user_id),
         "planning_question_events": _count(conn, "SELECT count(*) AS count FROM tutor_planning_question_events WHERE user_id = %s", user_id),
         "learning_plan_drafts": _count(conn, "SELECT count(*) AS count FROM tutor_learning_plan_drafts WHERE user_id = %s", user_id),
+        "rag_material_selections": _count(conn, "SELECT count(*) AS count FROM rag_material_selections WHERE user_id = %s", user_id),
+        "rag_plan_material_bindings": _count(conn, "SELECT count(*) AS count FROM rag_plan_material_bindings WHERE user_id = %s", user_id),
+        "rag_material_semantic_reviews": _count(conn, "SELECT count(*) AS count FROM rag_material_semantic_reviews WHERE user_id = %s", user_id),
         "learning_tracks": _count(conn, "SELECT count(*) AS count FROM tutor_learning_tracks WHERE user_id = %s", user_id),
         "learning_track_plan_revisions": _count(conn, "SELECT count(*) AS count FROM tutor_track_plan_revisions WHERE user_id = %s", user_id),
         "learning_track_nodes": _count(conn, "SELECT count(*) AS count FROM tutor_track_plan_nodes WHERE user_id = %s", user_id),
@@ -1714,6 +1717,27 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
             "DELETE FROM tutor_planning_intake_facts WHERE id = %s AND user_id = %s",
             (row["id"], user_id),
         )
+    # D receipts are learner-owned, not part of the shared corpus. The purge
+    # flag set above is transaction-local and authorizes this user only.
+    conn.execute("DELETE FROM rag_plan_material_bindings WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM rag_material_semantic_reviews WHERE user_id = %s", (user_id,))
+    conn.execute("DELETE FROM rag_material_selections WHERE user_id = %s", (user_id,))
+    # A draft_ready/confirmed session still points at its current draft. The
+    # scoped FK uses RESTRICT, so deferring constraints cannot make deleting the
+    # draft first safe. Retire only this user's soon-to-be-deleted sessions in
+    # the same authorized purge transaction; cancelled is valid with no draft
+    # and does not collide with the one-active-session unique index.
+    conn.execute(
+        """
+        UPDATE tutor_learning_plan_sessions
+        SET status = 'cancelled', current_draft_id = NULL,
+            confirmed_track_id = NULL, confirmed_at = NULL,
+            cancelled_at = COALESCE(cancelled_at, now())
+        WHERE user_id = %s AND current_draft_id IS NOT NULL
+          AND tutor_learning_track_purge_allowed(user_id)
+        """,
+        (user_id,),
+    )
     conn.execute("DELETE FROM tutor_learning_plan_drafts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_learning_plan_sessions WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_run_learning_scopes WHERE user_id = %s", (user_id,))

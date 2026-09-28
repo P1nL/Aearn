@@ -31,7 +31,7 @@ _NUMBER_FIELDS = frozenset({
     "required_fact_count", "required_fact_selected_count", "required_fact_missing_count",
     "confirmed_question_reasked_count", "summary_blocked_by_unprojected_fact",
     "decision_iteration", "max_attempts", "repair_attempt", "remaining_repair_attempts",
-    "captured_bytes",
+    "captured_bytes", "string_length", "serialized_length", "list_count",
 })
 
 
@@ -74,6 +74,17 @@ def log_safe_event(
     if isinstance(values, (tuple, list)) and len(values) <= 32:
         if all(isinstance(value, str) and _IDENTIFIER.fullmatch(value) for value in values):
             data["expected_values"] = list(values)
+    json_types = {"null", "string", "integer", "number", "boolean", "array", "object"}
+    observed = fields.get("observed_type")
+    if isinstance(observed, str) and observed in json_types:
+        data["observed_type"] = observed
+    types = fields.get("expected_types")
+    if (isinstance(types, (tuple, list)) and len(types) <= len(json_types)
+            and all(isinstance(item, str) and item in json_types for item in types)):
+        data["expected_types"] = list(types)
+    argument = fields.get("argument_key")
+    if isinstance(argument, str) and re.fullmatch(r"profile_json|module_[1-8]", argument):
+        data["argument_key"] = argument
     if exception is not None:
         data["exception_class"] = safe_diagnostic_identifier(type(exception).__name__)
         if exception.__cause__ is not None:

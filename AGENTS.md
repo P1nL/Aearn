@@ -15,6 +15,12 @@ Aearn 是面向 AI 编程的编程语言学习 Agent MVP。当前正式实现目
 - 后端依赖以 `aearn/services/api/pyproject.toml` 为准，前端与桌面端依赖以 `aearn/package.json` 和 workspace 配置为准。
 - 本地密钥、`.env`、缓存、构建产物和工具 worktree 不进入 Git。
 
+## 开发期联网与真实 API 授权
+
+- 持续授权以 `docs/setup/project-external-resource-policy.md` 为准，外部资源操作前读取该政策及其核算状态登记。
+- 跨会话/任务累计300元，240元为参考提醒线，由用户自行监控供应商账单；免费搜索耗尽后existing_only，不逐次重复申请范围内联网/真实API权限。
+- 开发期采用人工监控，不以先建设自动计费/预留/硬封顶阻塞已授权调用；合理控制规模与有界重试，不重置预算、不把unknown当零。用户叫停或已知额度耗尽时停止新增付费调用；生产、隐私和Trellis实施门禁仍独立。
+
 ## 常用命令
 
 ```powershell

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from urllib.parse import urlparse
 
@@ -14,7 +15,7 @@ from app.agents.harness.capabilities import (
     GroundingCitationOutput,
     GroundingRetrieveInput,
     GroundingRetrieveOutput,
-    LearningPlanDraftCapabilityInput,
+    plan_draft_input_model,
     LearningPlanDraftCapabilityOutput,
 )
 from app.agents.harness.contracts import (
@@ -27,6 +28,7 @@ from app.agents.harness.contracts import (
     TutorRunSnapshot,
 )
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot
+from app.core.safe_diagnostics import log_safe_event
 from app.services.grounding.grounding_sources import GroundingSource, get_grounding_source, sources_for_language
 from app.services.learning.plan_capability import (
     LearningPlanDraftCapabilityError,
@@ -64,7 +66,9 @@ class CatalogCapabilityGateway:
         policy = self._policy_resolver.resolve(run=run, catalog=self._catalog)
         if not policy.matches(run=run, catalog=self._catalog):
             return _denied(request, "policy_context_stale")
-        descriptor = self._catalog.capability(request.capability_id)
+        descriptor = self._catalog.capability(
+            request.capability_id, request.capability_version if request.capability_id == LEARNING_PLAN_DRAFT_CAPABILITY_ID else None,
+        )
         if descriptor is None:
             return _denied(request, "unknown_capability")
         if descriptor.mode is not CapabilityMode.READ:
@@ -86,6 +90,8 @@ class CatalogCapabilityGateway:
             return _denied(request, "skill_not_policy_eligible")
         if descriptor.capability_id not in skill.manifest.requires_capabilities:
             return _denied(request, "capability_not_required_by_skill")
+        if descriptor != self._catalog.capability_for_skill(request.capability_id, skill.reference):
+            return _denied(request, "capability_version_not_selected")
 
         arguments = _decode_declared_arguments(request=request, declared_fields=descriptor.input_field_names)
         if arguments is None:
@@ -172,16 +178,23 @@ class CatalogCapabilityGateway:
         if self._learning_plan_handler is None:
             return _unavailable(request, "learning_plan_handler_unavailable")
         try:
-            capability_input = LearningPlanDraftCapabilityInput.model_validate(arguments)
+            capability_input = plan_draft_input_model(request.capability_version).model_validate(arguments)
         except ValidationError:
             return _denied(request, "learning_plan_input_invalid")
         try:
             output = self._learning_plan_handler.generate(run=run, capability_input=capability_input)
         except LearningPlanDraftCapabilityError as exc:
+            if exc.safe_diagnostics:
+                diagnostics = {field.key: field.value for field in exc.safe_diagnostics}
+                log_safe_event(
+                    logging.getLogger(__name__), "learning_plan_draft_validation_failed",
+                    code=exc.code, stage=diagnostics["stage"], field_path=diagnostics["field_path"],
+                    run_id=run.run_id, input_revision=run.input_revision,
+                )
             return TutorCapabilityResult(
                 request_id=request.request_id,
                 status=exc.status,
-                safe_result=(TutorPayloadField(key="code", value=exc.code),),
+                safe_result=(TutorPayloadField(key="code", value=exc.code), *exc.safe_diagnostics),
                 diagnostic_code=exc.diagnostic_code,
             )
         return TutorCapabilityResult(

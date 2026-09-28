@@ -255,3 +255,173 @@ def test_new_sidecar_modules_remain_read_only_offline_and_without_entrypoints() 
     assert not violations, "phase-I sidecar acquired mutation/IO/entrypoint:\n" + "\n".join(
         violations
     )
+
+# D is a distinct, default-off internal consumer. It does not become a phase-I
+# read-only sidecar merely because planning reuses that package's draft authority.
+D_GROUNDING_MODULES = frozenset({
+    "material_contracts_v2", "evidence_binding_v2", "current_authorization",
+    "material_binding_repository",
+})
+D_LEARNING_MODULES = frozenset({"material_selection", "material_planning_composition",
+                               "material_semantics"})
+D_GROUNDING_OWNER = "app.services.grounding"
+
+
+def _d_imports(tree: ast.Module, path: Path) -> list[tuple[int, str, str | None]]:
+    """Report imported symbols separately from actual module-wide access."""
+    references: list[tuple[int, str, str | None]] = []
+    imported_names: list[tuple[int, str]] = []
+    try:
+        package_parts = ["app", *path.resolve().relative_to(APP_DIR.resolve()).parts[:-1]]
+    except ValueError:
+        package_parts = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_names.extend((node.lineno, alias.name) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                if not package_parts or node.level > len(package_parts):
+                    continue
+                parent = package_parts[:len(package_parts) - node.level + 1]
+                base = ".".join((*parent, base)).rstrip(".")
+            # Do not emit a synthetic base-module reference for a symbol import.
+            # `from package import module` still resolves to an actual module
+            # reference below, as do Import and literal dynamic imports.
+            imported_names.extend((node.lineno, f"{base}.{alias.name}")
+                                  for alias in node.names)
+        elif isinstance(node, ast.Call) and _dotted(node.func) in LOADERS and node.args:
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                imported_names.append((node.lineno, first.value))
+    for line, imported in imported_names:
+        for package, names in ((D_GROUNDING_OWNER, D_GROUNDING_MODULES),
+                               (PACKAGE, D_LEARNING_MODULES)):
+            for module in names:
+                full = f"{package}.{module}"
+                if imported == full or imported.startswith(full + "."):
+                    symbol = imported[len(full) + 1:] if imported != full else None
+                    references.append((line, full, symbol))
+    return references
+
+
+def _d_allowed(path: Path, module: str, symbol: str | None) -> bool:
+    path = path.resolve()
+    if path.parent == (APP_DIR / "services" / "grounding").resolve():
+        # Only D's own files may depend on its D sibling modules. No B/C source
+        # actor may reverse-import a planning consumer to confer authority.
+        return path.stem in D_GROUNDING_MODULES and module.startswith(D_GROUNDING_OWNER + ".")
+    internal = (LEARNING_DIR / path.name).resolve() == path
+    if internal and path.stem == "material_semantics":
+        # A probabilistic reviewer may read the strict snapshot/hash contract,
+        # never call source authorization or publication authority directly.
+        return (module == f"{D_GROUNDING_OWNER}.material_contracts_v2"
+                and symbol in {"digest", "MaterialSelectionResult"})
+    if internal and path.stem in D_LEARNING_MODULES:
+        return True
+    # These two integration files may map only the named safe exceptions. No
+    # module import (symbol=None), wildcard, resolver or authority class is granted.
+    exception_consumers = {
+        (LEARNING_DIR / "plan_capability.py").resolve(),
+        (APP_DIR / "services" / "tutor" / "interactive.py").resolve(),
+    }
+    exceptions = {
+        f"{D_GROUNDING_OWNER}.material_binding_repository": "MaterialBindingConflict",
+        f"{D_GROUNDING_OWNER}.current_authorization": "EvidenceDenied",
+    }
+    if path in exception_consumers and module in exceptions:
+        return symbol == exceptions[module]
+    if path == (APP_DIR / "services" / "tutor" / "interactive.py").resolve():
+        return (module == f"{PACKAGE}.material_selection"
+                and symbol == "PostgresMaterialPlanningConsumer")
+    if internal and path.stem == "plan_capability":
+        return (module == f"{PACKAGE}.material_selection"
+                and symbol in {"PostgresMaterialPlanningConsumer", "material_transaction"})
+    return False
+
+
+def test_d_import_audit_detects_forbidden_routes_workers_and_source_reverse_imports() -> None:
+    samples = (
+        (APP_DIR / "routes" / "learning.py",
+         "from app.services.grounding.evidence_binding_v2 import EvidenceSelection\n"),
+        (WORKER_DIR / "worker_app.py",
+         "import app.services.learning.material_selection\n"),
+        (APP_DIR / "services" / "grounding" / "autonomous" / "source_policy.py",
+         "from ..material_binding_repository import MaterialBindingRepository\n"),
+    )
+    for path, source in samples:
+        refs = _d_imports(ast.parse(source), path)
+        assert refs and any(not _d_allowed(path, module, symbol)
+                            for _, module, symbol in refs)
+    allowed_path = LEARNING_DIR / "material_selection.py"
+    assert _d_allowed(allowed_path, f"{D_GROUNDING_OWNER}.evidence_binding_v2",
+                      "EvidenceSelection")
+    assert not _d_imports(ast.parse("# evidence_binding_v2 in comment\npass\n"), allowed_path)
+
+
+def test_d_exception_imports_do_not_grant_module_or_authority_access() -> None:
+    paths = (LEARNING_DIR / "plan_capability.py",
+             APP_DIR / "services" / "tutor" / "interactive.py")
+    for path in paths:
+        for module, exception in (
+            ("current_authorization", "EvidenceDenied"),
+            ("material_binding_repository", "MaterialBindingConflict"),
+        ):
+            full = f"{D_GROUNDING_OWNER}.{module}"
+            for source in (
+                f"from {full} import {exception} as SafeError",
+                f"from ..grounding.{module} import {exception}",
+            ):
+                refs = _d_imports(ast.parse(source), path)
+                assert refs == [(1, full, exception)]
+                assert all(_d_allowed(path, name, symbol) for _, name, symbol in refs)
+            unsafe_sources = (
+                f"import {full} as authority\nauthority.resolve_evidence()",
+                f"from {D_GROUNDING_OWNER} import {module} as authority\n"
+                "authority.check_current_authorization()",
+                f"from ..grounding import {module} as authority\n"
+                "authority.assert_publication_fence()",
+                f"authority = importlib.import_module('{full}')\n"
+                "authority.authorize_binding()",
+                f"from {full} import *",
+                f"from {full} import {exception}, resolve_evidence\nresolve_evidence()",
+                f"from {full} import check_current_authorization\ncheck_current_authorization()",
+                f"from {full} import assert_publication_fence\nassert_publication_fence()",
+                f"from {full} import authorize_binding\nauthorize_binding()",
+                f"from {full} import CurrentAuthorization",
+                f"from {full} import PostgresMaterialBindingRepository",
+            )
+            for source in unsafe_sources:
+                refs = _d_imports(ast.parse(source), path)
+                assert refs and any(not _d_allowed(path, name, symbol)
+                                    for _, name, symbol in refs), source
+            # The exception allowlist is file-scoped, not a learning/tutor grant.
+            for other in (LEARNING_DIR / "plan_service.py",
+                          APP_DIR / "services" / "tutor" / "context.py"):
+                assert not _d_allowed(other, full, exception)
+
+
+def test_semantic_reviewer_only_reads_material_contract_symbols() -> None:
+    path = LEARNING_DIR / "material_semantics.py"
+    contract = f"{D_GROUNDING_OWNER}.material_contracts_v2"
+    assert _d_allowed(path, contract, "digest")
+    assert _d_allowed(path, contract, "MaterialSelectionResult")
+    for symbol in (None, "*", "CurrentMaterialAuthorizationReceipt", "EvidenceBindingV2"):
+        assert not _d_allowed(path, contract, symbol)
+    assert not _d_allowed(path, f"{D_GROUNDING_OWNER}.current_authorization", "CurrentAuthorization")
+
+
+def test_d_modules_have_only_exact_internal_import_consumers() -> None:
+    assert all((APP_DIR / "services" / "grounding" / f"{name}.py").is_file()
+               for name in D_GROUNDING_MODULES)
+    roots = (APP_DIR, WORKER_DIR)
+    violations = [
+        f"{path}:{line}: {module}{'.' + symbol if symbol else ''}"
+        for root in roots for path in sorted(root.rglob("*.py"))
+        for line, module, symbol in _d_imports(_parse(path), path)
+        if not _d_allowed(path, module, symbol)
+    ]
+    assert not violations, "D authority imported outside exact internal seams:\n" + "\n".join(violations)
+    startup = START_DEV.read_text(encoding="utf-8").splitlines()
+    assert not [line for line in startup if not line.lstrip().startswith("#")
+                and any(name in line for name in D_GROUNDING_MODULES | D_LEARNING_MODULES)]

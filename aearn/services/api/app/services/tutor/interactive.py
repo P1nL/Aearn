@@ -16,7 +16,9 @@ from uuid import uuid4
 
 from psycopg import Connection
 
+from app.agents.harness.actions import is_current_verified_plan_draft_receipt
 from app.agents.harness.catalog_context import CatalogContextLoader
+from app.agents.harness.capabilities import LEARNING_PLAN_DRAFT_CAPABILITY_ID
 from app.agents.harness.context_budget import TutorContextBudgetPlanner
 from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
 from app.agents.harness.contracts import (
@@ -42,6 +44,9 @@ from app.db.connection import connect
 from app.services.learning.context_adapter import TutorLearningContextAdapter
 from app.services.learning.context_references import PostgresTutorContextReferenceRepository
 from app.services.learning.plan_capability import LearningPlanDraftCapabilityHandler
+from app.services.learning.material_selection import PostgresMaterialPlanningConsumer
+from app.services.grounding.material_binding_repository import MaterialBindingConflict
+from app.services.grounding.current_authorization import EvidenceDenied
 from app.services.learning.planning_facts import (
     PlanningFactField,
     PlanningQuestionDecisionGate,
@@ -87,6 +92,7 @@ from app.services.tutor.ports import (
     Clock,
     DefaultDenyEffectCommitter,
     NoopTutorCompactionPublisher,
+    TutorContextLoader,
     TutorProviderGateway,
 )
 from app.services.tutor.grounding_lookup import InMemoryGroundingLookup
@@ -542,6 +548,7 @@ class PostgresTutorLearningContextLoader:
         conn: Connection[dict[str, object]],
         base_loader: PostgresTutorContextLoader,
         settings: Settings | None = None,
+        material_feedback_consumer: PostgresMaterialPlanningConsumer | None = None,
     ) -> None:
         resolved_settings = settings or get_settings()
         self._conn = conn
@@ -552,6 +559,7 @@ class PostgresTutorLearningContextLoader:
         self._facts = PostgresPlanningFactRepository(conn)
         self._actions = PostgresActionReceiptStore(conn)
         self._base_loader = base_loader
+        self._material_feedback_consumer = material_feedback_consumer
 
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
         base = self._base_loader.load_context(snapshot, input_revision=input_revision)
@@ -720,6 +728,19 @@ class PostgresTutorLearningContextLoader:
                             },
                         )
                     )
+                if self._material_feedback_consumer is not None:
+                    try:
+                        feedback, parent_facts = self._material_feedback_consumer.context_for_run(snapshot, session)
+                    except (MaterialBindingConflict, EvidenceDenied) as exc:
+                        raise TutorContextError("TUTOR_MATERIAL_FEEDBACK_STALE") from exc
+                    if feedback is not None:
+                        # This is required input to the approved feedback turn.
+                        # SYSTEM has a fixed item limit; appending there can silently
+                        # drop it behind the catalog and existing descriptors.
+                        required_facts = (*required_facts, *parent_facts, TutorContextSource(
+                            source_id=f"material-feedback:{snapshot.run_id}:{input_revision}",
+                            content=feedback,
+                        ))
                 plan_context: dict[str, object] = {
                     "status": str(session["status"]),
                     "preferred_language_id": session.get("preferred_language_id"),
@@ -1047,6 +1068,30 @@ class PlanDraftingProviderGateway:
         return replace(result, decision=replace(decision, continuation_kind=None, checkpoint_reason=None))
 
 
+class _PlanDraftCompletionContextLoader:
+    """Remove the consumed draft affordance while retaining its selected Skill."""
+
+    def __init__(self, *, base_loader: TutorContextLoader) -> None:
+        self._base_loader = base_loader
+
+    def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
+        context = self._base_loader.load_context(snapshot, input_revision=input_revision)
+        if not any(
+            is_current_verified_plan_draft_receipt(source, input_revision=input_revision)
+            for source in context.action_receipts
+        ):
+            return context
+        schemas = tuple(
+            source
+            for source in context.capability_schemas
+            if not (
+                isinstance(source.content, Mapping)
+                and source.content.get("name") == LEARNING_PLAN_DRAFT_CAPABILITY_ID
+            )
+        )
+        return replace(context, capability_schemas=schemas)
+
+
 class TutorInteractiveRunDispatcher:
     """Execute one persisted interactive run through the finite Harness loop.
 
@@ -1062,7 +1107,11 @@ class TutorInteractiveRunDispatcher:
         settings: Settings,
         provider_factory: ProviderFactory | None = None,
         clock: Clock | None = None,
+        material_consumer_factory: Callable[[Connection[dict[str, object]]], PostgresMaterialPlanningConsumer] | None = None,
+        material_provider_binder: Callable[[TutorProviderGateway, PostgresMaterialPlanningConsumer], TutorProviderGateway] | None = None,
     ) -> None:
+        self._material_provider_binder = material_provider_binder
+        self._material_consumer_factory = material_consumer_factory
         self._settings = settings
         self._provider_factory = provider_factory or _primary_provider
         self._clock = clock or UtcClock()
@@ -1073,12 +1122,18 @@ class TutorInteractiveRunDispatcher:
             # or hold a foreground-run lock. Repository lifecycle methods open their
             # own short atomic transactions around each durable boundary.
             conn.autocommit = True
+            material_consumer = (self._material_consumer_factory(conn)
+                                 if self._material_consumer_factory is not None else None)
+            provider = self._provider_factory(self._settings)
+            if material_consumer is not None and self._material_provider_binder is not None:
+                provider = self._material_provider_binder(provider, material_consumer)
             repository = PostgresTutorRepository(conn, settings=self._settings)
             learner_state = TutorLearnerStateRepository(conn)
             catalog = compile_published_skill_catalog()
             policy_resolver = InteractiveLearningCapabilityPolicyResolver(
                 conn,
                 settings=self._settings,
+                material_plan_v110=material_consumer is not None,
             )
             selection_store = PostgresTutorSkillSelectionStore(repository=repository, user_id=user_id)
             planning_facts = PostgresPlanningFactRepository(conn)
@@ -1087,19 +1142,31 @@ class TutorInteractiveRunDispatcher:
                 conn=conn,
                 base_loader=base_loader,
                 settings=self._settings,
+                material_feedback_consumer=material_consumer,
             )
             loop = TutorRunLoop(
                 store=repository.as_run_store(user_id=user_id),
-                context_loader=CatalogContextLoader(
-                    base_loader=learning_loader,
-                    catalog=catalog,
-                    policy_resolver=policy_resolver,
-                    selection_store=selection_store,
+                context_loader=_PlanDraftCompletionContextLoader(
+                    base_loader=CatalogContextLoader(
+                        base_loader=learning_loader,
+                        catalog=catalog,
+                        policy_resolver=policy_resolver,
+                        selection_store=selection_store,
+                    ),
                 ),
-                context_builder=TutorContextBuilder(),
+                context_builder=TutorContextBuilder(config=TutorContextBuilderConfig(
+                    # Internal D carries confirmed facts, the immutable parent,
+                    # and exact material-feedback parts. Keep per-source and
+                    # token limits unchanged; the ordinary lane still has 8 slots.
+                    section_item_limits=tuple(
+                        (section, 24 if material_consumer is not None
+                         and section is TutorContextSection.REQUIRED_FACTS else limit)
+                        for section, limit in TutorContextBuilderConfig().section_item_limits
+                    ),
+                )),
                 context_budget_planner=TutorContextBudgetPlanner(),
                 provider=PlanDraftingProviderGateway(
-                    delegate=self._provider_factory(self._settings),
+                    delegate=provider,
                     plans=PostgresLearningPlanSessionRepository(conn),
                 ),
                 capability_gateway=ControlledCapabilityGateway(
@@ -1111,7 +1178,9 @@ class TutorInteractiveRunDispatcher:
                         policy_resolver=policy_resolver,
                         selection_store=selection_store,
                         grounding_lookup=InMemoryGroundingLookup(),
-                        learning_plan_handler=LearningPlanDraftCapabilityHandler(conn),
+                        learning_plan_handler=LearningPlanDraftCapabilityHandler(
+                            conn, material_feedback_consumer=material_consumer,
+                        ),
                     ),
                     authority_recorder=repository,
                     receipt_store=PostgresActionReceiptStore(conn),

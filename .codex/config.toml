@@ -32,6 +32,7 @@ approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
 model_reasoning_summary = "detailed"
+model_verbosity = "medium"
 [shell_environment_policy]
 inherit = "core"
 

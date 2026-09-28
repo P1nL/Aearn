@@ -7,14 +7,17 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import Annotated, Literal, TypeAlias
+from dataclasses import dataclass, replace
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from app.agents.harness.contracts import (
     MAX_TUTOR_PAYLOAD_FIELDS,
     MAX_TUTOR_PAYLOAD_VALUE_LENGTH,
+    MAX_PLAN_DRAFT_STRING_TRANSPORT_LENGTH,
+    MAX_PLAN_DRAFT_V110_RAW_LENGTH,
+    MAX_PLAN_DRAFT_V110_TRANSPORT_LENGTH,
     MAX_TUTOR_PUBLIC_MESSAGE_LENGTH,
     MAX_TUTOR_PUBLIC_THINKING_TEXT_LENGTH,
     TUTOR_PLANNING_QUESTION_KEYS,
@@ -101,6 +104,37 @@ _TEACHING_SEMANTIC_REPAIR_GUIDANCE: Mapping[str, str] = {
     ),
 }
 
+_MATERIAL_SEMANTIC_REPAIR_GUIDANCE: Mapping[str, str] = {
+    "plan_draft_already_verified": (
+        "The learning.plan.draft action already succeeded and is no longer available in this run. "
+        "Tell the learner the saved plan is ready to review and use action.type=turn_completed. "
+        "Do not emit capability arguments or ask for new learner input."
+    ),
+    "material_facet_meaning_mismatch": (
+        "Revise the same learning.plan.draft capability using current required_facts: "
+        "Subject/facets name course material topics and purposes, not learner location. "
+        "For SQL, WHERE means the filtering clause and schema means database structure "
+        "as taught content. Keep every parent goal, node identity and prerequisite; "
+        "do not convert missing material into a learner attribute."
+    ),
+    "material_readiness_overclaim": (
+        "Revise the same learning.plan.draft capability. A gap or partial material "
+        "selection is not ready; do not promise complete coverage or scoring rights. "
+        "Correct only the identified semantic overclaim; preserve the other valid compact plan fields. "
+        "Put longer material availability and gap explanations in the top-level message.text, "
+        "not in profile_json or module_N. Return the complete plan with each raw JSON string "
+        "within the selected capability's raw-character bound before outer escaping; "
+        "do not truncate or remove goals or prerequisites. "
+        "Use only current source authority; the replacement still requires semantic review."
+    ),
+    "material_other_contradiction": (
+        "Revise the same learning.plan.draft capability to match the exact server "
+        "material facts and parent goals. Keep every node and prerequisite; do not "
+        "invent source approval or substitute a different learner preference."
+    ),
+}
+
+
 _ALLOWLISTED_TEACHING_VALIDATION_ISSUES: Mapping[str, tuple[str, str]] = {
     "current teaching_step requires the v3 interaction contract": (
         "action.interaction",
@@ -131,6 +165,12 @@ class TutorDecisionValidationIssue:
 
     path: str
     category: str
+    observed_type: str | None = None
+    string_length: int | None = None
+    serialized_length: int | None = None
+    list_count: int | None = None
+    argument_key: str | None = None
+    argument_raw_limit: int | None = None
 
 
 class TutorDecisionValidationError(LLMInvalidResponseError):
@@ -169,7 +209,7 @@ class TutorProviderPayloadField(_StrictProviderModel):
 
     @field_validator("value")
     @classmethod
-    def _bound_list_value(cls, value: TutorProviderValue) -> TutorProviderValue:
+    def _bound_list_value(cls, value: TutorProviderValue, info: ValidationInfo) -> TutorProviderValue:
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError("payload number must be finite")
         if isinstance(value, list) and (
@@ -178,6 +218,34 @@ class TutorProviderPayloadField(_StrictProviderModel):
             raise ValueError("oversized payload list")
         serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         if len(serialized) > MAX_TUTOR_PAYLOAD_VALUE_LENGTH:
+            raise ValueError("oversized payload value")
+        return value
+
+
+class TutorProviderCapabilityPayloadField(TutorProviderPayloadField):
+    """Transport allowance; only plan-string fields may consume it."""
+
+    @field_validator("value")
+    @classmethod
+    def _bound_list_value(cls, value: TutorProviderValue, info: ValidationInfo) -> TutorProviderValue:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("payload number must be finite")
+        if isinstance(value, list) and (
+            len(value) > 4 or any(len(item) > 120 for item in value)
+        ):
+            raise ValueError("oversized payload list")
+        serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        key = info.data.get("key")
+        is_plan_string = isinstance(value, str) and (
+            key == "profile_json" or (isinstance(key, str) and re.fullmatch(r"module_[1-8]", key))
+        )
+        expanded = is_plan_string and (info.context or {}).get("plan_draft_version") == "1.1.0"
+        raw_limit = MAX_PLAN_DRAFT_V110_RAW_LENGTH if expanded else MAX_TUTOR_PAYLOAD_VALUE_LENGTH
+        if isinstance(value, str) and len(value) > raw_limit:
+            raise ValueError("oversized payload raw string")
+        limit = (MAX_PLAN_DRAFT_V110_TRANSPORT_LENGTH if expanded else
+                 MAX_PLAN_DRAFT_STRING_TRANSPORT_LENGTH if is_plan_string else MAX_TUTOR_PAYLOAD_VALUE_LENGTH)
+        if len(serialized) > limit:
             raise ValueError("oversized payload value")
         return value
 
@@ -205,7 +273,7 @@ class TutorProviderSelectSkillItem(_StrictProviderModel):
 class TutorProviderRequestCapabilityItem(_StrictProviderModel):
     type: Literal["request_capability"]
     capability_id: str = Field(min_length=1, max_length=120)
-    arguments: list[TutorProviderPayloadField] = Field(
+    arguments: list[TutorProviderCapabilityPayloadField] = Field(
         max_length=MAX_TUTOR_PAYLOAD_FIELDS
     )
 
@@ -217,6 +285,22 @@ class TutorProviderRequestCapabilityItem(_StrictProviderModel):
     ) -> list[TutorProviderPayloadField]:
         _ensure_unique_provider_keys(value, label="capability arguments")
         return value
+
+    @model_validator(mode="after")
+    def _bound_argument_transport(self, info: ValidationInfo) -> "TutorProviderRequestCapabilityItem":
+        for field in self.arguments:
+            value = field.value
+            if (self.capability_id == "learning.plan.draft"
+                    and (field.key == "profile_json" or re.fullmatch(r"module_[1-8]", field.key))
+                    and isinstance(value, str)):
+                raw_limit = (MAX_PLAN_DRAFT_V110_RAW_LENGTH
+                             if (info.context or {}).get("plan_draft_version") == "1.1.0"
+                             else MAX_TUTOR_PAYLOAD_VALUE_LENGTH)
+                if len(value) > raw_limit:
+                    raise ValueError("oversized plan draft raw string")
+            elif len(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) > MAX_TUTOR_PAYLOAD_VALUE_LENGTH:
+                raise ValueError("oversized payload value")
+        return self
 
 
 class TutorProviderProposeEffectItem(_StrictProviderModel):
@@ -767,15 +851,26 @@ def parse_tutor_provider_items(
     payload: Mapping[str, object],
     *,
     run: TutorRunSnapshot,
+    plan_draft_version: str = "1.0.0",
 ) -> TutorDecision:
     """Validate typed provider items and assemble server-owned control fields."""
 
+    if plan_draft_version not in {"1.0.0", "1.1.0"}:
+        raise ValueError("unsupported plan draft parser version")
+    raw_action = payload.get("action")
+    plan_request = (isinstance(raw_action, Mapping) and raw_action.get("type") == "request_capability"
+                    and raw_action.get("capability_id") == "learning.plan.draft")
+    effective_version = plan_draft_version if plan_request else "1.0.0"
     try:
-        envelope = TutorProviderItemsEnvelope.model_validate(payload)
+        envelope = TutorProviderItemsEnvelope.model_validate(payload, context={"plan_draft_version": effective_version})
     except ValidationError as exc:
         raise TutorDecisionValidationError(
             "Tutor provider items failed strict schema validation",
-            issues=_sanitize_validation_issues(exc),
+            issues=tuple(
+                replace(issue, argument_raw_limit=MAX_PLAN_DRAFT_V110_RAW_LENGTH)
+                if effective_version == "1.1.0" and issue.argument_key is not None else issue
+                for issue in _sanitize_validation_issues(exc, payload=payload)
+            ),
         ) from exc
 
     message = envelope.message
@@ -802,8 +897,10 @@ def parse_tutor_provider_items(
                 TutorCapabilityRequest(
                     request_id=_server_action_id(run=run, prefix="capability"),
                     capability_id=action.capability_id,
+                    capability_version=effective_version,
                     arguments=payload_fields_from_mapping(
-                        _payload_mapping(action.arguments)
+                        _payload_mapping(action.arguments), capability_id=action.capability_id,
+                        capability_version=effective_version,
                     ),
                 ),
             )
@@ -902,20 +999,78 @@ def build_tutor_replacement_message(
     issues: Sequence[TutorDecisionValidationIssue],
     *,
     teaching_policy: str,
+    planning_capability_active: bool = False,
+    plan_draft_version: str = "1.0.0",
 ) -> str:
     """Build a fresh replacement request from safe paths/categories only."""
 
-    issue_text = (
-        ", ".join(f"{issue.path}:{issue.category}" for issue in issues[:8])
-        or "root:invalid_contract"
-    )
+    # Only schema-derived paths, trusted categories and fixed planning keys enter
+    # the prompt. Never repeat a provider-chosen key, value or Pydantic message.
+    from app.services.tutor.validation_diagnostics import validation_log_fields
+
+    safe_issues = []
+    for issue in issues[:8]:
+        fields = validation_log_fields(issue)
+        path = fields.get("field_path", "root")
+        if not isinstance(path, str) or path.startswith("sha256:"):
+            path = "unknown_field"
+        rule = fields.get("expected_rule")
+        types = fields.get("expected_types")
+        if not types and fields.get("expected_type"):
+            types = (fields["expected_type"],)
+        detail = f"{path}:{issue.category}"
+        if fields.get("argument_key"):
+            detail += f" ({fields['argument_key']})"
+        if fields.get("observed_type"):
+            detail += f"; observed JSON type {fields['observed_type']}"
+        if issue.string_length is not None:
+            detail += f"; string characters {issue.string_length}"
+        if issue.serialized_length is not None:
+            detail += f"; serialized characters {issue.serialized_length}"
+        if issue.list_count is not None:
+            detail += f"; list items {issue.list_count}"
+        if isinstance(types, tuple | list) and all(isinstance(item, str) for item in types):
+            detail += f"; allowed JSON types {', '.join(types)}"
+        if rule:
+            detail += f"; {rule}"
+        safe_issues.append(detail)
+    issue_text = "; ".join(safe_issues) or "root: invalid_contract"
     repair_guidance = " ".join(
         dict.fromkeys(
             guidance
             for issue in issues[:8]
-            if (guidance := _TEACHING_SEMANTIC_REPAIR_GUIDANCE.get(issue.category))
+            if (guidance := (_TEACHING_SEMANTIC_REPAIR_GUIDANCE.get(issue.category)
+                             or _MATERIAL_SEMANTIC_REPAIR_GUIDANCE.get(issue.category)))
         )
     )
+    common = (
+        "Your previous candidate was rejected. Generate a fresh replacement, not a patch or quote. "
+        f"Return one JSON object with schema_version={TUTOR_PROVIDER_ITEMS_SCHEMA_VERSION}, "
+        "message (type=agent_message, public_thinking_text, text, conversation_title string or null) "
+        "and one typed action. No additional keys or Markdown. "
+        "The server owns request_id, effect_id, expected_input_revision, checkpoints, revisions and terminal state; never emit them. "
+        "Choose its wording, paragraphs, line breaks, tone, and granularity naturally; "
+        "do not force numbered steps or a fixed linguistic template. "
+        f"Safe validation findings: {issue_text}. "
+    )
+    if planning_capability_active:
+        raw_limit = MAX_PLAN_DRAFT_V110_RAW_LENGTH if plan_draft_version == "1.1.0" else MAX_TUTOR_PAYLOAD_VALUE_LENGTH
+        return (
+            common + "For this selected learning.plan.draft capability, use "
+            "action.type=request_capability, capability_id=learning.plan.draft and "
+            "arguments as an array of {key,value} objects, not payload or an object map. "
+            "profile_json, module_1 and module_2 are required JSON-encoded STRING values; "
+            "preserve all required profile/module/node fields and parent goals. "
+            f"For profile_json/module_N the advertised {raw_limit}-character limit applies to the raw JSON "
+            "string before outer argument escaping; do not truncate or silently omit fields. "
+            "Use only current server facts, source authority and advertised capability schema. "
+            + repair_guidance
+        )
+    # A pure extra-key rejection needs no teaching examples; the large generic
+    # replacement would crowd out the unchanged context and can overflow the
+    # request before a valid second attempt is sent.
+    if issues and all(issue.category == "extra" for issue in issues):
+        return common + "Remove the unrecognized key(s); keep exactly the advertised schema fields."
     repair_guidance_text = (
         f" Exact repair guidance: {repair_guidance}" if repair_guidance else ""
     )
@@ -1005,22 +1160,102 @@ def _allowlisted_teaching_validation_issue(
 
 
 def _sanitize_validation_issues(
-    exc: ValidationError,
+    exc: ValidationError, *, payload: Mapping[str, object] | None = None,
 ) -> tuple[TutorDecisionValidationIssue, ...]:
     issues: list[TutorDecisionValidationIssue] = []
-    for error in exc.errors(
-        include_url=False, include_context=True, include_input=False
-    )[:8]:
+    seen: set[tuple[str, str]] = set()
+    # A single union failure produces five errors with different expected branches.
+    # Collapse by path/category; the source value is used solely for safe shape counts.
+    for error in exc.errors(include_url=False, include_context=True, include_input=False):
         allowlisted_issue = _allowlisted_teaching_validation_issue(error)
         if allowlisted_issue is not None:
-            issues.append(allowlisted_issue)
+            issue = allowlisted_issue
+        else:
+            raw_location = error.get("loc", ())
+            location = tuple(raw_location) if isinstance(raw_location, tuple | list) else ()
+            path = ".".join(str(part) for part in location if str(part)) or "root"
+            category = _validation_category(str(error.get("type", "")))
+            # The union branch segment (sometimes followed by an item index)
+            # is not an input key. Never infer the observed type from the
+            # branch Pydantic happened to report first.
+            branch_names = {"constrained-str", "int", "float", "bool", "list[constrained-str]"}
+            if "value" in location:
+                value_index = location.index("value")
+                if len(location) > value_index + 1 and location[value_index + 1] in branch_names:
+                    location = (*location[:value_index + 1], *location[value_index + 2:])
+                    path = ".".join(str(part) for part in location)
+            shape = _safe_value_shape(payload, location)
+            issue = TutorDecisionValidationIssue(path=path[:160], category=category, **shape)
+        identity = (issue.path, issue.category)
+        if identity in seen:
             continue
-        raw_location = error.get("loc", ())
-        path = ".".join(str(part) for part in raw_location if str(part)) or "root"
-        raw_type = str(error.get("type", ""))
-        category = _validation_category(raw_type)
-        issues.append(TutorDecisionValidationIssue(path=path[:160], category=category))
+        seen.add(identity)
+        issues.append(issue)
+        if len(issues) == 8:
+            break
     return tuple(issues)
+
+
+def _safe_value_shape(
+    payload: Mapping[str, object] | None, location: tuple[object, ...],
+) -> dict[str, Any]:
+    """Permit only closed JSON shape/size metadata for an allowlisted wire path."""
+    if payload is None or not location:
+        return {}
+    if location[0] not in {"action", "message"}:
+        return {}
+    current: object = payload
+    for offset, part in enumerate(location):
+        if (offset == 1 and location[0] == "action" and isinstance(current, Mapping)
+                and current.get("type") == part):
+            continue  # Pydantic discriminated-union branch, not a JSON key.
+        if isinstance(current, Mapping) and isinstance(part, str):
+            if part not in current:
+                return {}
+            current = current[part]
+        elif isinstance(current, list) and type(part) is int and 0 <= part < len(current):
+            current = current[part]
+        else:
+            return {}
+    if current is None:
+        observed = "null"
+    elif type(current) is str:
+        observed = "string"
+    elif type(current) is bool:
+        observed = "boolean"
+    elif type(current) is int:
+        observed = "integer"
+    elif type(current) is float:
+        observed = "number"
+    elif type(current) is list:
+        observed = "array"
+    elif type(current) is dict:
+        observed = "object"
+    else:
+        return {}
+    result: dict[str, Any] = {"observed_type": observed}
+    if type(current) is str:
+        result["string_length"] = len(current)
+    if type(current) is list:
+        result["list_count"] = len(current)
+    if location[-1] == "value" and len(location) == 5 and location[:3] in {
+        ("action", "request_capability", "arguments"),
+        ("action", "propose_effect", "payload"),
+    }:
+        try:
+            result["serialized_length"] = len(json.dumps(current, ensure_ascii=False, separators=(",", ":")))
+        except (TypeError, ValueError):
+            pass
+        action = payload.get("action")
+        if isinstance(action, Mapping) and action.get("type") == "request_capability" and action.get("capability_id") == "learning.plan.draft":
+            args = action.get("arguments")
+            if isinstance(args, list) and type(location[3]) is int and 0 <= location[3] < len(args):
+                field = args[location[3]]
+                if isinstance(field, Mapping):
+                    key = field.get("key")
+                    if key == "profile_json" or (isinstance(key, str) and re.fullmatch(r"module_[1-8]", key)):
+                        result["argument_key"] = key
+    return result
 
 
 def _validation_category(raw_type: str) -> str:

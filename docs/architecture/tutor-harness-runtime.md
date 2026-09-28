@@ -787,11 +787,19 @@ The corrected Skill and exported capability schema both declare the complete opa
 
 Capability result fields are bounded raw strings, so the Action adapter maps draft id/version/hash directly before constructing `plan_draft` authority; it never reuses the JSON argument decoder. Structured context-summary curation keys include exact run/input identity, preventing fresh retries with the same retired history from conflicting with another run while still deduplicating high-water and terminal triggers inside one run.
 
+After a server-owned executed-action receipt verifies `learning.plan.draft` with `plan_draft` authority, the interactive context removes only that consumed capability schema while retaining the selected Skill and receipt. The provider no longer receives conflicting instructions to draft again. A duplicate request from stale context produces `plan_draft_already_verified` and a bounded completion repair requiring `turn_completed`, not another profile/module payload. This does not force a terminal state or alter historical failed runs. Active drafting semantic repairs obey the trusted selected capability version's raw plan-string bound; additional transport space is for outer JSON escaping only.
+
+For DeepSeek, a strictly verified same-revision plan-save receipt with a nonempty authority ID makes only the acknowledgement request non-reasoning (`thinking_mode="disabled"`, mapped by the existing Responses transport to `reasoning.effort="none"`). Selection/draft requests retain normal thinking, and the formal input/output limits are unchanged. The actual model must still return a valid completion message; the server does not manufacture a successful terminal or treat an incomplete response as completed.
+
+Pure CompactPlanProfile/Module validation is reused before paid material-semantic review and capability execution. Invalid field shape or length enters the same bounded provider repair with allowlisted paths, observed types/counts and bounds derived from the actual local schemas; candidate values never enter diagnostics. Domain limits such as `pace_summary`240 remain unchanged, and the handler still performs final server-fact, goal and current-authority validation. Already-verified repeated draft actions take the completion-repair path before even parsing an oversized repeated payload.
+
 ### LessonDocument authoring boundary (2026-08-11)
 
 Lesson authoring is a separate server-owned artifact workflow, not an expansion of the generic Tutor capability payload. A durable run is created and committed before dispatch. The dispatcher claims a lease, reads only persisted registry-owned grounding, assigns short evidence handles, calls the configured primary provider through a strict JSON port, applies deterministic schema/citation/coverage/Gate quality gates, rechecks track/progress/source versions, and publishes standard + personalized documents, snapshots, assignment, and terminal run state in one final transaction.
 
-There is no provider/model fallback and no static lesson template fallback. Provider calls happen outside long PostgreSQL transactions. Attempt receipts contain only safe provider/model/protocol/outcome/usage/hash metadata. The interactive Tutor context limit and `12 × 360` generic capability envelope are unchanged; ordinary Tutor context does not receive full Lesson blocks or source excerpts.
+There is no provider/model fallback and no static lesson template fallback. Provider calls happen outside long PostgreSQL transactions. Attempt receipts contain only safe provider/model/protocol/outcome/usage/hash metadata. The generic capability envelope remains at 12 fields with a 360-character serialized-value bound; ordinary Tutor context does not receive full Lesson blocks or source excerpts. Legacy `learning.plan.draft@1.0.0` JSON-string fields remain at360 raw characters and2162 outer-escaped characters. Explicit internal D material planning selects the new Skill and capability1.1.0: `LearningPlanDraftCapabilityInputV110` permits1024 raw and6146 escaped characters for profile/module JSON strings only, with action input bytes capped65536 instead of legacy16384. Version comes from complete hash-valid selected Skill and exact server capability schema, not model hints; dispatch rechecks it. Ordinary planning remains on Skill1.0.3/capability1.0.0 with unchanged published hashes. Neither version broadens other capabilities/results/effects, coerces objects into strings, truncates goals, or skips domain/semantic/current-source validation.
+
+For normal internal D verification, the operator imports a strict allowlisted snapshot of the effective runtime Settings; it must not silently substitute a 4096-output/8192-input boundary profile or disable first-call thinking. Explicit boundary tests are separately labelled. Selected catalog Skill instructions must retain verified identity and instruction digest and enter mandatory context intact; insufficient budget fails before provider IO. Capability schemas are atomic JSON, not prose to clip. Safe repair diagnostics retain only closed type/length/count metadata and allowlisted paths; logs and repair prompts must not include rejected values. A successful protocol parse is distinct from plan business validation, material review, and persisted bindings.
 
 ### Exercise Gate execution reuse boundary (2026-08-11)
 
@@ -1056,3 +1064,18 @@ facet。本仓库此阶段没有真实 embedding 索引回执或 pgvector 部署
 四个route Subject仍为shadow，六个生态仍为fixture_only。active fixture corpus仅表示operator指针，不代表课程公开、Lesson可交付或runtime健康。没有新公开route、计划确认拦截、worker schedule或Desktop管理入口；既有Lesson、Tutor及citation链保持原实现。
 
 [架构讲解与可重复离线演示](rag-v2-interview-guide.md)是面试/工程说明，不替代本文和验收计划。真实抓取、真实embedding、来源证据绑定及逐scope消费者启用仍属于后续单独验收。
+
+
+## 2026-09-27 RAG D 内部规划材料反馈接缝
+
+D以 `build_internal_material_planning_dispatcher` 在现有TutorInteractiveRunDispatcher上做明确内部注入。现有 `rag_evidence_consumer_enabled`、server opt-in及受信RequirementResolver/EvidenceSelection依赖缺一不接入；旧公开factory、DTO、v1 hash和历史active plan不变。模型与网络许可不隐式打开公开consumer。
+
+内部流程：当前草案→服务端逐节点/用途需求→实际来源/缺口结果→持久认领到指定新planning run/revision→安全反馈context→既有Skill选择/能力调用协议→保留核心目标与前置关系的新稿→新scope重新selection/授权→持久冻结。旧handle不能直接批准新稿，源/版本/用途不能由模型自报。source/document handles等安全有界元数据可进入反馈，网页指令、全文和私密数据不进入该投影。
+
+模型调用继续在数据库事务外。内部材料操作仅在IDLE边界暂切短事务并恢复，final current check/fence不能另开连接或绕过C隔离guard。发布fence只证明该事务核验点，真实题库发布/供题仍由E及owner接入并重验，评分缺受信claim/执行resolver时拒绝。
+
+具体可执行合同与正反例见 `.trellis/spec/backend/grounding-plan-material-consumption.md`；测试/真实证据分层见D任务记录。本节描述代码接缝，不宣称真实provider、业务库或公开消费者已验收。
+
+追加语义检查：D材料驱动的修订候选（含同次公开消息/公开解释）经独立模型请求对照完整服务端材料事实复核；明确不一致通过安全诊断进入既有至多两次候选循环，不确定/无效/不可用拒绝。审查是概率性语义检查，不能替代C来源权限或目标/用途等确定性校验。派发与结果审计绑定run/revision、selection/parent/candidate哈希，append还核验已接受provider attempt；已有草案未关联材料反馈时不能旁路追加。另行生成的终结自由文本不在本候选审查范围。
+
+每次真实provider发送前重算完整消息输入预算，包含第二次追加的修复指令；超限终止而不是越界发送。reviewer使用相同配置的服务、实例级单HTTP尝试和有界输出，协议的合法verdict/reason枚举也写入系统消息，不能假定所有JSON模式都会传输schema参数。费用usage已知/未知分别保留，不提供人民币硬封顶。

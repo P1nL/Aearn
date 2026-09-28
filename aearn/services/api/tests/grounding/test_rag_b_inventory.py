@@ -46,12 +46,14 @@ def test_pg_staging_tables_are_separate_from_active_corpus() -> None:
         names = {row["tablename"] for row in conn.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname=current_schema() AND tablename LIKE 'rag_%'"
         ).fetchall()}
-        assert names == _SHARED | _PRIVATE
+        # Later C tables are a separate layer; keep B inventory exhaustive for B rows.
+        assert _SHARED | _PRIVATE <= names
         fks = conn.execute(
             "SELECT conrelid::regclass::text AS child, confrelid::regclass::text AS parent "
             "FROM pg_constraint WHERE contype='f' AND conrelid::regclass::text LIKE 'rag_%'"
         ).fetchall()
-        assert all(not row["parent"].startswith("grounding_") for row in fks)
+        assert all(not row["parent"].startswith("grounding_")
+                   for row in fks if row["child"] in _SHARED | _PRIVATE)
         assert conn.execute("SELECT count(*) AS n FROM rag_candidate_captures").fetchone()["n"] >= 0
 
 

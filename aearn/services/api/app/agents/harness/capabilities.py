@@ -115,7 +115,9 @@ class GroundingRetrieveOutput(_FrozenSchema):
 
 _LEARNING_PLAN_PROFILE_JSON_DESCRIPTION = (
     "Compact JSON object with exactly language_id, goal_text, target_level, weekly_minutes, "
-    "experience_level, teaching_preferences, pace_summary, and title."
+    "experience_level, teaching_preferences, pace_summary, and title. "
+    "Copy confirmed fact values exactly: pace_constraints maps to pace_summary; other keys stay unchanged. "
+    "Never paraphrase or summarize; generate only missing or explicitly reopened fields."
 )
 _LEARNING_PLAN_MODULE_JSON_DESCRIPTION = (
     "JSON: module_key,title,description,is_core,is_skippable,nodes. Node: knowledge_key (step ID),title,description,"
@@ -181,6 +183,28 @@ class LearningPlanDraftCapabilityInput(_FrozenSchema):
             )
             if value is not None
         )
+
+
+class LearningPlanDraftCapabilityInputV110(LearningPlanDraftCapabilityInput):
+    """Version 1.1.0: bounded full-plan strings; all domain rules remain downstream."""
+
+    profile_json: str = Field(min_length=2, max_length=1024, description=_LEARNING_PLAN_PROFILE_JSON_DESCRIPTION)
+    module_1: str = Field(min_length=2, max_length=1024, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_2: str = Field(min_length=2, max_length=1024, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_3: str | None = Field(default=None, min_length=2, max_length=1024, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_4: str | None = Field(default=None, min_length=2, max_length=1024, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_5: str | None = Field(default=None, min_length=2, max_length=1024, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_6: str | None = Field(default=None, min_length=2, max_length=1024, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_7: str | None = Field(default=None, min_length=2, max_length=1024, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+    module_8: str | None = Field(default=None, min_length=2, max_length=1024, description=_LEARNING_PLAN_MODULE_JSON_DESCRIPTION)
+
+
+def plan_draft_input_model(version: str) -> type[LearningPlanDraftCapabilityInput]:
+    if version == "1.0.0":
+        return LearningPlanDraftCapabilityInput
+    if version == "1.1.0":
+        return LearningPlanDraftCapabilityInputV110
+    raise ValueError("unsupported plan draft capability version")
 
 
 class LearningPlanDraftCapabilityOutput(_FrozenSchema):
@@ -628,6 +652,17 @@ LEARNING_PLAN_DRAFT_DESCRIPTOR = CapabilityDescriptor(
 )
 
 
+LEARNING_PLAN_DRAFT_V110_DESCRIPTOR = CapabilityDescriptor(
+    capability_id=LEARNING_PLAN_DRAFT_CAPABILITY_ID,
+    version="1.1.0",
+    mode=CapabilityMode.READ,
+    description="Validate and persist one bounded material-aware learning plan draft for the active planning session.",
+    input_model=LearningPlanDraftCapabilityInputV110,
+    result_model=LearningPlanDraftCapabilityOutput,
+    policy_tags=("plan-drafting",),
+)
+
+
 GROUNDING_RETRIEVE_CAPABILITY_ID = "grounding.retrieve"
 GROUNDING_RETRIEVE_DESCRIPTOR = CapabilityDescriptor(
     capability_id=GROUNDING_RETRIEVE_CAPABILITY_ID,
@@ -643,7 +678,7 @@ GROUNDING_RETRIEVE_DESCRIPTOR = CapabilityDescriptor(
 def default_capability_descriptors() -> tuple[CapabilityDescriptor, ...]:
     """Return the approved bounded capability descriptors."""
 
-    return (GROUNDING_RETRIEVE_DESCRIPTOR, LEARNING_PLAN_DRAFT_DESCRIPTOR)
+    return (GROUNDING_RETRIEVE_DESCRIPTOR, LEARNING_PLAN_DRAFT_DESCRIPTOR, LEARNING_PLAN_DRAFT_V110_DESCRIPTOR)
 
 
 def default_effect_descriptors() -> tuple[EffectDescriptor, ...]:

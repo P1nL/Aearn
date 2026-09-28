@@ -216,9 +216,9 @@ class SkillCatalogSnapshot:
         skill_keys = tuple(skill.reference.key for skill in self.skills)
         if len(skill_keys) != len(set(skill_keys)):
             raise ValueError("Skill catalog contains duplicate id/version pairs")
-        capability_ids = tuple(descriptor.capability_id for descriptor in self.capability_descriptors)
+        capability_ids = tuple(descriptor.reference for descriptor in self.capability_descriptors)
         if len(capability_ids) != len(set(capability_ids)):
-            raise ValueError("Skill catalog contains duplicate capability ids")
+            raise ValueError("Skill catalog contains duplicate capability id/version pairs")
         effect_types = tuple(descriptor.effect_type for descriptor in self.effect_descriptors)
         if len(effect_types) != len(set(effect_types)):
             raise ValueError("Skill catalog contains duplicate effect types")
@@ -233,11 +233,18 @@ class SkillCatalogSnapshot:
                 return skill
         return None
 
-    def capability(self, capability_id: str) -> CapabilityDescriptor | None:
+    def capability(self, capability_id: str, version: str | None = None) -> CapabilityDescriptor | None:
+        if capability_id == "learning.plan.draft" and version is None:
+            version = "1.0.0"
         for descriptor in self.capability_descriptors:
-            if descriptor.capability_id == capability_id:
+            if descriptor.capability_id == capability_id and (version is None or descriptor.version == version):
                 return descriptor
         return None
+
+    def capability_for_skill(self, capability_id: str, reference: CatalogSkillReference) -> CapabilityDescriptor | None:
+        version = ("1.1.0" if capability_id == "learning.plan.draft"
+                   and reference.key == "tutor.learning-plan-draft@1.1.0" else "1.0.0")
+        return self.capability(capability_id, version if capability_id == "learning.plan.draft" else None)
 
     def effect(self, effect_type: str) -> EffectDescriptor | None:
         for descriptor in self.effect_descriptors:
@@ -259,7 +266,7 @@ class SkillCatalogCompiler:
         self._capability_descriptors = tuple(capability_descriptors or default_capability_descriptors())
         self._effect_descriptors = tuple(effect_descriptors if effect_descriptors is not None else default_effect_descriptors())
         self._allowed_resource_refs = frozenset(allowed_resource_refs)
-        _ensure_unique_descriptors(self._capability_descriptors, attribute="capability_id")
+        _ensure_unique_descriptors(self._capability_descriptors, attribute="reference")
         _ensure_unique_descriptors(self._effect_descriptors, attribute="effect_type")
 
     def compile(self, source_root: Path) -> SkillCatalogSnapshot:

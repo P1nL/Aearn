@@ -165,17 +165,21 @@ def test_catalog_gate_denies_unversioned_unknown_mixed_and_effect_decisions() ->
     resolver = InMemoryCapabilityPolicyResolver([_policy(catalog, run)])
     store = InMemoryTutorSkillSelectionStore()
     gate = CatalogTutorDecisionGate(catalog=catalog, policy_resolver=resolver, selection_store=store)
+    context = TutorContextBuilder().build(_context(), token_budget=3000)
 
     unversioned = gate.validate(
         run=run,
+        context=context,
         decision=TutorDecision(skill_references=(TutorSkillReference("tutor.registry-grounding", "current"),)),
     )
     unknown = gate.validate(
         run=run,
+        context=context,
         decision=TutorDecision(skill_references=(TutorSkillReference("tutor.unknown", "1.0.0"),)),
     )
     mixed = gate.validate(
         run=run,
+        context=context,
         decision=TutorDecision(
             skill_references=(TutorSkillReference("tutor.registry-grounding", "1.0.0"),),
             capability_requests=(_request(),),
@@ -190,6 +194,7 @@ def test_catalog_gate_denies_unversioned_unknown_mixed_and_effect_decisions() ->
 
     selected = gate.validate(
         run=run,
+        context=context,
         decision=TutorDecision(skill_references=(TutorSkillReference("tutor.registry-grounding", "1.0.0"),)),
     )
     assert selected.status is TutorDecisionGateStatus.REBUILD_CONTEXT
@@ -197,10 +202,12 @@ def test_catalog_gate_denies_unversioned_unknown_mixed_and_effect_decisions() ->
 
     extra_field = gate.validate(
         run=run,
+        context=context,
         decision=TutorDecision(capability_requests=(_request(extra={"user_id": "other-user"}),)),
     )
     effect = gate.validate(
         run=run,
+        context=context,
         decision=TutorDecision(effect_proposals=(TutorEffectProposal("effect-1", "note.write", 0),)),
     )
     assert extra_field.diagnostic_code == "capability_arguments_invalid"
@@ -231,6 +238,7 @@ def test_catalog_gate_denies_ambiguous_action_skill_inference() -> None:
         eligible_skill_references=(registry_skill.reference, alternate_skill.reference),
     )
     store = InMemoryTutorSkillSelectionStore()
+    context = TutorContextBuilder().build(_context(), token_budget=3000)
     gate = CatalogTutorDecisionGate(
         catalog=ambiguous_catalog,
         policy_resolver=InMemoryCapabilityPolicyResolver([policy]),
@@ -239,6 +247,7 @@ def test_catalog_gate_denies_ambiguous_action_skill_inference() -> None:
 
     result = gate.validate(
         run=run,
+        context=context,
         decision=TutorDecision(capability_requests=(_request(),)),
     )
 

@@ -22,6 +22,8 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 | [Grounding Shadow Integration](./grounding-shadow-integration.md) | Internal legacy-shape adapters, disposable fixture demo and no public release authority | Filled |
 | [Grounding Material Contracts](./grounding-material-contracts.md) | Package A strict material/source contracts and default-deny authority ports; B is documented separately | Filled |
 | [Grounding Controlled Discovery](./grounding-controlled-discovery.md) | B1 durable search/budget and B2 candidate-specific lease, safe fetch, quarantine, egress and default-off worker contracts | Filled |
+| [Grounding Source Admission](./grounding-source-admission.md) | C default-off registered-source, Unix bridge, review, retention and corpus governance contracts; live acceptance remains separate | Filled |
+| [Grounding Plan Material Consumption](./grounding-plan-material-consumption.md) | D internal default-off material feedback, successor bindings, same-transaction authorization and private receipt lifecycle | Filled |
 | [Error Handling](./error-handling.md) | Error types and safe failure mapping | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, scenarios, and validation gates | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging and redaction | Filled |

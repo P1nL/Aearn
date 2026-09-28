@@ -75,6 +75,17 @@ class TutorProviderRequestSerializer:
             "propose an effect. Do not select a Skill when a normal direct reply is sufficient. "
             "For a normal non-teaching direct reply, use action.type=turn_completed. "
         )
+        if any(item.section is TutorContextSection.CAPABILITY_SCHEMAS
+               and 'learning.plan.draft' in item.content for item in context.items):
+            system += (
+                "To create or revise a learning plan after selecting its Skill, use action.type=request_capability "
+                "with capability_id=learning.plan.draft and arguments, NEVER propose_effect or payload. "
+                "The server owns draft persistence; a model effect proposal cannot create a draft. "
+                "For learning.plan.draft, profile_json and module_1/module_2 (and optional module_N) "
+                "must be compact JSON-encoded STRINGS in action.arguments[].value, not nested objects "
+                "or arrays. Escape internal quotes in the outer JSON; keep each string within its "
+                "advertised maximum length and include all required fields. module_2 is required. "
+            )
         # Teaching has its own mandatory typed action and canonical example.
         # Unrelated direct-reply / generic continuation examples duplicated
         # several hundred required tokens and crowded out real lesson facts.

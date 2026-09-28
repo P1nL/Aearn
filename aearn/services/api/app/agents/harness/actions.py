@@ -17,6 +17,7 @@ from app.agents.harness.capabilities import (
     GROUNDING_RETRIEVE_DESCRIPTOR,
     LEARNING_PLAN_DRAFT_DESCRIPTOR,
     LearningPlanDraftCapabilityOutput,
+    plan_draft_input_model,
     contains_forbidden_execution_target,
     is_catalog_identifier,
     is_exact_semver,
@@ -633,6 +634,14 @@ class ActionReceipt:
         }
 
     def as_context_source(self) -> TutorContextSource:
+        safe_summary = self.safe_summary
+        if (self.action_id == "learning.plan.draft"
+                and self.status is ActionLifecycleStatus.VERIFIED
+                and self.verification_status is ActionVerificationStatus.VERIFIED):
+            safe_summary = (
+                "Draft persisted and verified. Do not call learning.plan.draft again this run. "
+                "Reply, then turn_completed. A new revision requires new learner input."
+            )
         return TutorContextSource(
             source_id=f"action-receipt:{self.invocation_id}",
             content={
@@ -644,7 +653,7 @@ class ActionReceipt:
                 "input_revision": self.input_revision,
                 "action_generation": self.action_generation,
                 "retry_index": self.retry_index,
-                "safe_summary": self.safe_summary,
+                "safe_summary": safe_summary,
                 "authority_kind": self.authority.kind.value if self.authority else None,
                 "authority_id": self.authority.reference_id if self.authority else None,
                 "verification_status": self.verification_status.value,
@@ -653,6 +662,50 @@ class ActionReceipt:
                 "recovery_code": self.recovery.code,
             },
         )
+
+
+def is_verified_plan_draft_receipt(value: object) -> bool:
+    """Recognize the server-owned context projection that closes one draft action."""
+
+    if isinstance(value, TutorContextSource):
+        value = value.content
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return False
+    return (
+        isinstance(value, Mapping)
+        and value.get("kind") == "executed_action_receipt"
+        and value.get("action_id") == "learning.plan.draft"
+        and value.get("status") == ActionLifecycleStatus.VERIFIED.value
+        and value.get("verification_status") == ActionVerificationStatus.VERIFIED.value
+        and value.get("authority_kind") == ActionAuthorityKind.PLAN_DRAFT.value
+    )
+
+
+def is_current_verified_plan_draft_receipt(
+    value: object, *, input_revision: int,
+) -> bool:
+    """Require an exact current-revision plan authority before closing its affordance."""
+
+    if isinstance(value, TutorContextSource):
+        if not value.source_id.startswith("action-receipt:"):
+            return False
+        value = value.content
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return False
+    return (
+        isinstance(value, Mapping)
+        and is_verified_plan_draft_receipt(value)
+        and type(value.get("input_revision")) is int
+        and value.get("input_revision") == input_revision
+        and isinstance(value.get("authority_id"), str)
+        and bool(str(value["authority_id"]).strip())
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,7 +795,7 @@ def action_arguments_from_payload_fields(fields: Sequence[TutorPayloadField]) ->
     return {field.key: field.value for field in fields}
 
 
-def default_action_descriptors() -> tuple[ActionDescriptor, ...]:
+def default_action_descriptors(*, plan_draft_version: str = "1.0.0") -> tuple[ActionDescriptor, ...]:
     grounding = ActionDescriptor(
         action_id=GROUNDING_RETRIEVE_DESCRIPTOR.capability_id,
         version=GROUNDING_RETRIEVE_DESCRIPTOR.version,
@@ -773,18 +826,18 @@ def default_action_descriptors() -> tuple[ActionDescriptor, ...]:
     )
     plan = ActionDescriptor(
         action_id=LEARNING_PLAN_DRAFT_DESCRIPTOR.capability_id,
-        version=LEARNING_PLAN_DRAFT_DESCRIPTOR.version,
-        input_model=LEARNING_PLAN_DRAFT_DESCRIPTOR.input_model,
+        version=plan_draft_version,
+        input_model=plan_draft_input_model(plan_draft_version),
         output_model=LearningPlanDraftCapabilityOutput,
         owner_adapter_id="learning-plan-authority",
         owner_adapter_version="1.0.0",
         allowed_origins=("interactive",),
         allowed_task_kinds=("plan_drafting",),
         resource_profile=ActionResourceProfile(
-            profile_id="learning-plan-draft-v1",
+            profile_id="learning-plan-draft-v110" if plan_draft_version == "1.1.0" else "learning-plan-draft-v1",
             allow_approved_sources=True,
             allowed_artifact_kinds=("planning_facts", "plan_draft"),
-            max_input_bytes=16_384,
+            max_input_bytes=65_536 if plan_draft_version == "1.1.0" else 16_384,
             max_output_bytes=16_384,
         ),
         timeout_seconds=30,

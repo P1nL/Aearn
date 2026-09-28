@@ -6,16 +6,21 @@ from contextlib import nullcontext
 from collections.abc import Iterable, Mapping
 
 from psycopg import Connection
+from pydantic import ValidationError
 
 from app.agents.harness.capabilities import (
     LearningPlanDraftCapabilityInput,
     LearningPlanDraftCapabilityOutput,
 )
-from app.agents.harness.contracts import TutorCapabilityStatus, TutorRunSnapshot
+from app.agents.harness.contracts import TutorCapabilityStatus, TutorPayloadField, TutorRunSnapshot
 from app.services.grounding.grounding_sources import GroundingSource, sources_for_language
 from app.services.learning.contracts import LearningPlanNode, stable_key
+from app.services.learning.material_selection import PostgresMaterialPlanningConsumer, material_transaction
+from app.services.grounding.material_binding_repository import MaterialBindingConflict
+from app.services.grounding.current_authorization import EvidenceDenied
 from app.services.learning.plan_drafting import (
     CompactPlanModule,
+    CompactPlanNode,
     CompactPlanProfile,
     LearningPlanDraftArtifact,
     LearningPlanSourceSummary,
@@ -39,6 +44,32 @@ from app.services.runners.language_capabilities import (
 
 PLANNING_CATALOG_DESCRIPTOR_SCHEMA_VERSION = "learning-plan-catalog-descriptor-v1"
 PLANNING_CATALOG_DESCRIPTOR_LIMIT = 8
+
+# Only server-owned stages, fields and guidance may cross the capability boundary.
+_INVALID_GUIDANCE = {
+    "compact_profile": "Repair profile_json using the compact profile schema.",
+    "compact_modules": "Repair module JSON using the compact module and node schemas.",
+    "plan_domain": "Use unique module/node keys and an acyclic graph with existing prerequisites.",
+    "catalog_mapping": "Use only exact published catalog mappings and their required capabilities.",
+    "session_language": "Keep profile.language_id aligned with the planning session language.",
+    "confirmed_fact_conflict": "Copy the exact confirmed planning fact; do not paraphrase or replace it.",
+    "confirmed_fact_validation": "Check the profile against authoritative confirmed planning facts.",
+}
+_PROFILE_FIELDS = {name: f"profile.{name}" for name in CompactPlanProfile.model_fields}
+_MODULE_FIELDS = {name: f"modules.{name}" for name in CompactPlanModule.model_fields}
+_NODE_FIELDS = {name: f"modules.nodes.{name}" for name in CompactPlanNode.model_fields}
+_KNOWN_VALIDATION_FIELDS = {"profile", "modules", "plan"} | set(
+    (*_PROFILE_FIELDS.values(), *_MODULE_FIELDS.values(), *_NODE_FIELDS.values())
+)
+_FACT_CONFLICT_FIELDS = {
+    f"plan profile conflicts with confirmed fact {fact}": _PROFILE_FIELDS[profile]
+    for fact, profile in (
+        ("language_id", "language_id"), ("goal_text", "goal_text"),
+        ("target_level", "target_level"), ("weekly_minutes", "weekly_minutes"),
+        ("experience_level", "experience_level"), ("teaching_preferences", "teaching_preferences"),
+        ("pace_constraints", "pace_summary"),
+    )
+}
 
 _PLANNING_CATALOG_DESCRIPTOR_SQL = """
 WITH latest_published AS (
@@ -95,18 +126,30 @@ class LearningPlanDraftCapabilityError(ValueError):
         code: str,
         diagnostic_code: str,
         status: TutorCapabilityStatus,
+        validation_stage: str | None = None,
+        validation_field: str | None = None,
     ) -> None:
         super().__init__(code)
         self.code = code
         self.diagnostic_code = diagnostic_code
         self.status = status
+        self.safe_diagnostics: tuple[TutorPayloadField, ...] = ()
+        if validation_stage in _INVALID_GUIDANCE and validation_field in _KNOWN_VALIDATION_FIELDS:
+            assert validation_stage is not None and validation_field is not None
+            self.safe_diagnostics = (
+                TutorPayloadField(key="stage", value=validation_stage),
+                TutorPayloadField(key="field_path", value=validation_field),
+                TutorPayloadField(key="repair_guidance", value=_INVALID_GUIDANCE[validation_stage]),
+            )
 
 
 class LearningPlanDraftCapabilityHandler:
     """Validate nested compact input and persist only the typed domain artifact."""
 
-    def __init__(self, conn: Connection[dict[str, object]]) -> None:
+    def __init__(self, conn: Connection[dict[str, object]], *,
+                 material_feedback_consumer: PostgresMaterialPlanningConsumer | None = None) -> None:
         self._conn = conn
+        self._material_feedback_consumer = material_feedback_consumer
         self._repository = PostgresLearningPlanSessionRepository(conn)
         self._facts = PostgresPlanningFactRepository(conn)
 
@@ -118,7 +161,8 @@ class LearningPlanDraftCapabilityHandler:
     ) -> LearningPlanDraftCapabilityOutput:
         session_id: str | None = None
         try:
-            with self._conn.transaction():
+            with (material_transaction(self._conn) if self._material_feedback_consumer is not None
+                  else self._conn.transaction()):
                 session = self._repository.active_session_for_run(
                     user_id=run.user_id,
                     run_id=run.run_id,
@@ -133,6 +177,8 @@ class LearningPlanDraftCapabilityHandler:
                     profile=artifact.profile.model_dump(mode="json"),
                     require_complete=False,
                 )
+                feedback = (self._material_feedback_consumer.validate_successor_before_append(
+                    run, session, artifact, capability_input) if self._material_feedback_consumer is not None else None)
                 row, _replayed = self._repository.append_draft(
                     user_id=run.user_id,
                     run_id=run.run_id,
@@ -141,6 +187,10 @@ class LearningPlanDraftCapabilityHandler:
                     facts_fingerprint=facts_fingerprint,
                     facts_revision=facts_revision,
                 )
+                if feedback is not None and not _replayed and self._material_feedback_consumer is not None:
+                    self._material_feedback_consumer.after_successor_append(
+                        run=run, row=row, feedback=feedback,
+                    )
                 return LearningPlanDraftCapabilityOutput(
                     status="completed",
                     draft_id=str(row["id"]),
@@ -155,7 +205,13 @@ class LearningPlanDraftCapabilityHandler:
                     session_id=session_id,
                     code="LEARNING_PLAN_DRAFT_INVALID",
                 )
-            raise _invalid() from exc
+            # Exact fixed-message matching only: never expose exception text or values.
+            field = next((field for message, field in _FACT_CONFLICT_FIELDS.items()
+                          if exc.args == (message,)), None)
+            raise _invalid(
+                stage="confirmed_fact_conflict" if field is not None else "confirmed_fact_validation",
+                field=field or "profile",
+            ) from exc
         except LearningPlanDraftCapabilityError as exc:
             if session_id is not None:
                 self._repository.record_safe_error(
@@ -170,7 +226,7 @@ class LearningPlanDraftCapabilityHandler:
                 diagnostic_code="learning_plan_session_unavailable",
                 status=TutorCapabilityStatus.DENIED,
             ) from exc
-        except (LearningPlanDraftConflict, LearningPlanSessionConflict) as exc:
+        except (LearningPlanDraftConflict, LearningPlanSessionConflict, MaterialBindingConflict, EvidenceDenied) as exc:
             if session_id is not None:
                 self._repository.record_safe_error(
                     user_id=run.user_id,
@@ -189,14 +245,18 @@ class LearningPlanDraftCapabilityHandler:
         session: dict[str, object],
         capability_input: LearningPlanDraftCapabilityInput,
     ) -> LearningPlanDraftArtifact:
+        stage = "compact_profile"
         try:
             profile = decode_compact_profile(capability_input.profile_json)
+            stage = "compact_modules"
             modules = decode_compact_modules(capability_input.module_values())
+            stage = "plan_domain"
             artifact = build_validated_learning_plan_artifact(
                 session=session,
                 profile=profile,
                 modules=modules,
             )
+            stage = "catalog_mapping"
             validate_planning_catalog_mappings(
                 self._conn,
                 language_id=artifact.profile.language_id,
@@ -206,7 +266,18 @@ class LearningPlanDraftCapabilityHandler:
         except LearningPlanDraftCapabilityError:
             raise
         except ValueError as exc:
-            raise _invalid() from exc
+            field = "profile" if stage == "compact_profile" else "modules"
+            if isinstance(exc, ValidationError):
+                # Locations are input-controlled for extra keys. Render only exact known shapes.
+                location = exc.errors(include_input=False, include_context=False, include_url=False)[0]["loc"]
+                if location and isinstance(location[0], str):
+                    fields = _PROFILE_FIELDS if stage == "compact_profile" else _MODULE_FIELDS
+                    field = fields.get(location[0], field)
+                    if (stage == "compact_modules" and len(location) >= 3
+                            and location[0] == "nodes" and isinstance(location[1], int)
+                            and isinstance(location[2], str)):
+                        field = _NODE_FIELDS.get(location[2], field)
+            raise _invalid(stage=stage, field=field) from exc
 
 
 def build_validated_learning_plan_artifact(
@@ -227,7 +298,7 @@ def build_validated_learning_plan_artifact(
         )
     preferred = str(session.get("preferred_language_id") or "")
     if preferred and preferred != canonical:
-        raise _invalid()
+        raise _invalid(stage="session_language", field="profile.language_id")
     sources = _source_summaries(language_capabilities)
     if not sources:
         raise LearningPlanDraftCapabilityError(
@@ -491,11 +562,13 @@ def _validate_quality(
         raise _quality_blocked()
 
 
-def _invalid() -> LearningPlanDraftCapabilityError:
+def _invalid(*, stage: str, field: str) -> LearningPlanDraftCapabilityError:
     return LearningPlanDraftCapabilityError(
         code="LEARNING_PLAN_DRAFT_INVALID",
         diagnostic_code="learning_plan_draft_invalid",
         status=TutorCapabilityStatus.DENIED,
+        validation_stage=stage,
+        validation_field=field,
     )
 
 

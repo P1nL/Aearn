@@ -54,12 +54,19 @@ class CatalogContextLoader:
                 *base.system_descriptors,
             )
 
+        references = (selected[0].reference,) if selected is not None else policy.eligible_skill_references
+        visible_descriptors = {
+            descriptor.reference: descriptor
+            for reference in references
+            for capability_id in policy.eligible_capability_ids
+            if (descriptor := self._catalog.capability_for_skill(capability_id, reference)) is not None
+        }
         capability_schemas = tuple(
             TutorContextSource(
                 source_id=f"catalog:capability:{descriptor.reference}",
                 content=CapabilitySchemaExporter.export(descriptor),
             )
-            for descriptor in self._catalog.capability_descriptors
+            for descriptor in visible_descriptors.values()
             if policy.allows_descriptor(descriptor)
             and policy.runtime_supports(descriptor)
             and policy.remaining_capability_budget > 0

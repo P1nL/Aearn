@@ -27,6 +27,7 @@ from app.agents.harness.contracts import (
     TutorContextSource,
     build_compaction_request,
     build_tutor_context_summary_source_hash,
+    is_complete_selected_skill,
 )
 from app.core.teaching_safety import limit_text, redact_value, sanitize_message_content, sanitize_summary_text
 
@@ -66,6 +67,27 @@ _HARNESS_REDACTED_FIELD_NAMES = frozenset(
         "fullconversation",
     }
 )
+
+# Published, content-hashed lesson Skills use the phrase "hidden test(s)" only as a
+# prohibition. The generic learner-data redactor treats even that mention as
+# private content. Pin the reviewed bytes; do not exempt newly edited Skills or
+# model/user supplied instructions from redaction.
+_REVIEWED_LESSON_SKILL_INSTRUCTION_HASHES = frozenset({
+    "528b3537a6cc0c38f95260a29bcabcce2fcda7ebbd990c589365e53dcc1e9f80",
+    "93a6ddb6c8ab7b925d0fcf9a44ec1251c233b4c2a64fd4f752684b0dafbc409d",
+    "30e45196fc90916f19baad0beb67fa548a4766cd7e8241eb455817cb61a66a5d",
+    "d6af28de9f31657508fdd72c19142e13cdfbdbab38f6bec30e9564d121a5f7e9",
+})
+
+
+def _reviewed_lesson_skill_marker_only(content: Mapping[str, object], redacted: object) -> bool:
+    if (content.get("id") != "tutor.lesson-teaching"
+            or content.get("instruction_hash") not in _REVIEWED_LESSON_SKILL_INSTRUCTION_HASHES
+            or not isinstance(redacted, Mapping)):
+        return False
+    # Other metadata must still pass the normal redactor. The instruction hash
+    # was checked against its bytes by is_complete_selected_skill above.
+    return all(redacted.get(key) == value for key, value in content.items() if key != "instruction")
 
 
 @dataclass(frozen=True)
@@ -155,6 +177,15 @@ class TutorContextBuilder:
             selected_count = 0
             skipped_count = 0
             item_limit = self._config.item_limit_for(section)
+            if section is TutorContextSection.SYSTEM:
+                selected_skill_indexes = [
+                    index for index, source in enumerate(sources)
+                    if source.source_id.startswith("catalog:selected:")
+                ]
+                if len(selected_skill_indexes) > 1 or (
+                    selected_skill_indexes and selected_skill_indexes[0] >= item_limit
+                ):
+                    raise TutorContextError("TUTOR_SELECTED_SKILL_UNREPRESENTABLE")
 
             if section in {TutorContextSection.TEACHING_SESSION, TutorContextSection.REQUIRED_FACTS}:
                 error_code = (
@@ -225,7 +256,16 @@ class TutorContextBuilder:
                 for source in bounded_sources:
                     content, truncated = self._serialize_source(section, source)
                     estimate = max(1, self._estimator.estimate_tokens(content))
-                    if not self._optional_item_fits(
+                    selected_skill = (
+                        section is TutorContextSection.SYSTEM
+                        and source.source_id.startswith("catalog:selected:")
+                    )
+                    if selected_skill:
+                        # The catalog-selected executable Skill is required input,
+                        # including during the planner's optional_budget=0 dry run.
+                        if consumed_tokens + estimate > token_budget:
+                            raise TutorContextError("TUTOR_SELECTED_SKILL_UNREPRESENTABLE")
+                    elif not self._optional_item_fits(
                         consumed_tokens=consumed_tokens,
                         optional_consumed_tokens=optional_consumed_tokens,
                         estimate=estimate,
@@ -248,7 +288,8 @@ class TutorContextBuilder:
                     selected_hashes.append(source_hash)
                     selected_count += 1
                     consumed_tokens += estimate
-                    optional_consumed_tokens += estimate
+                    if not selected_skill:
+                        optional_consumed_tokens += estimate
                     truncated_count += int(truncated)
 
             section_metadata.append(
@@ -474,6 +515,35 @@ class TutorContextBuilder:
             if serialized != safe_serialized:
                 raise TutorContextError("TUTOR_REQUIRED_FACTS_PROTECTED")
             return serialized, len(serialized) > self._config.max_source_characters
+        if section is TutorContextSection.SYSTEM and source.source_id.startswith("catalog:selected:"):
+            if not isinstance(source.content, Mapping) or not is_complete_selected_skill(source.source_id, source.content):
+                raise TutorContextError("TUTOR_SELECTED_SKILL_UNREPRESENTABLE")
+            # Do not weaken the shared secret policy for executable instructions.
+            # Any redaction, key removal, or shortening makes the Skill unusable.
+            redacted = _redact_harness_sensitive_fields(redact_value(source.content))
+            if redacted != source.content and not _reviewed_lesson_skill_marker_only(source.content, redacted):
+                raise TutorContextError("TUTOR_SELECTED_SKILL_PROTECTED")
+            try:
+                serialized = json.dumps(source.content, ensure_ascii=False, sort_keys=True,
+                                        separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise TutorContextError("TUTOR_SELECTED_SKILL_UNREPRESENTABLE") from exc
+            return serialized, False
+        if section is TutorContextSection.CAPABILITY_SCHEMAS:
+            # Catalog schemas are server-owned executable contracts, not prose to
+            # summarize. Include the exact safe JSON or omit by token budget below;
+            # a 1200-character fragment can remove the capability name/required fields.
+            if not isinstance(source.content, Mapping):
+                raise TutorContextError("TUTOR_CAPABILITY_SCHEMA_UNREPRESENTABLE")
+            redacted = _redact_harness_sensitive_fields(redact_value(source.content))
+            if redacted != source.content:
+                raise TutorContextError("TUTOR_CAPABILITY_SCHEMA_UNREPRESENTABLE")
+            try:
+                serialized = json.dumps(source.content, ensure_ascii=False, sort_keys=True,
+                                        separators=(",", ":"), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise TutorContextError("TUTOR_CAPABILITY_SCHEMA_UNREPRESENTABLE") from exc
+            return serialized, False
         safe_value = _sanitize_source_value(
             section=section,
             value=source.content,

@@ -1,0 +1,8 @@
+# Offline-only image. The B rule installer is reused, but this image has no
+# capture worker, HTTP client, database credentials, or live entry point.
+ARG AEARN_EGRESS_BASE
+FROM ${AEARN_EGRESS_BASE}
+COPY aearn/infra/rag-b-egress/attestor.py /opt/rag-c-live/attestor.py
+COPY aearn/infra/rag-c-live/offline_preflight.py /opt/rag-c-live/offline_preflight.py
+ENV PYTHONDONTWRITEBYTECODE=1
+ENTRYPOINT ["python3", "/opt/rag-c-live/offline_preflight.py"]

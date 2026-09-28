@@ -1,0 +1,11 @@
+# Operator-reviewed local runtime. Building/importing never starts a worker.
+# Base identity must be verified before/after local build and final image pinned.
+ARG AEARN_C_BASE
+FROM ${AEARN_C_BASE}
+COPY aearn/services/api/app /opt/aearn/services/api/app
+COPY aearn/infra/rag-b-egress/attestor.py /opt/rag-egress/attestor.py
+COPY aearn/infra/rag-c-source-control/*.py /opt/rag-c-source-control/
+COPY aearn/infra/rag-c-live/*.py /opt/rag-c-live/
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/aearn/services/api:/opt/rag-c-source-control:/opt/rag-c-live:/opt/rag-egress
+ENTRYPOINT ["python3"]
+CMD ["-c", "raise SystemExit('C_RUNTIME_DEFAULT_OFF')"]

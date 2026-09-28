@@ -184,7 +184,9 @@ class CatalogTutorDecisionGate:
         policy: CapabilityPolicyContext,
     ) -> TutorDecisionGateResult | None:
         for request in decision.capability_requests:
-            descriptor = self._catalog.capability(request.capability_id)
+            descriptor = self._catalog.capability(
+                request.capability_id, request.capability_version if request.capability_id == "learning.plan.draft" else None,
+            )
             if descriptor is None:
                 return _deny("unknown_capability")
             if not policy.allows_descriptor(descriptor):
@@ -227,9 +229,11 @@ class CatalogTutorDecisionGate:
         policy: CapabilityPolicyContext,
     ) -> TutorDecisionGateResult | None:
         for request in decision.capability_requests:
-            descriptor = self._catalog.capability(request.capability_id)
+            descriptor = self._catalog.capability_for_skill(request.capability_id, skill.reference)
             if descriptor is None:
                 return _deny("unknown_capability")
+            if request.capability_id == "learning.plan.draft" and descriptor.version != request.capability_version:
+                return _deny("capability_version_not_selected")
             if request.capability_id not in skill.manifest.requires_capabilities:
                 return _deny("capability_not_required_by_skill")
             if not policy.allows_descriptor(descriptor):

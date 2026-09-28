@@ -47,6 +47,18 @@ EXPECTED_SCHEMA_FRAGMENT_NAMES = (
     "290_rag_discovery_context.sql",
     "300_rag_candidate_policy.sql",
     "310_rag_campaign_authority.sql",
+    "320_rag_registered_source.sql",
+    "330_rag_source_admission.sql",
+    "340_rag_c_capture_capacity.sql",
+    "350_rag_c_supplemental_dispatch.sql",
+    "360_rag_candidate_use_grants.sql",
+    "370_rag_plan_material_bindings.sql",
+    "380_rag_material_semantic_reviews.sql",
+    "390_rag_c_supplemental_recovery.sql",
+    "400_rag_c_final_followup.sql",
+    "410_rag_c_deployment_correction.sql",
+    "420_rag_c_expired_source_refresh.sql",
+    "430_rag_tavily_extraction.sql",
 )
 
 
@@ -71,18 +83,30 @@ def test_schema_combined_view_and_apply_order_match_the_manifest() -> None:
     assert tuple(fragment.name for fragment in fragments) == EXPECTED_SCHEMA_FRAGMENT_NAMES
     assert load_schema_text() == "".join(fragment.sql for fragment in fragments)
     assert fragments[0].sql.startswith("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    assert "Child 09 conversation-native SQL workspace" in fragments[-12].sql
-    assert "tutor_branch_authority_replacement_valid" in fragments[-11].sql
-    assert "tutor_plan_catalog_knowledge_key" in fragments[-10].sql
-    assert "tutor_artifact_supersession_successor" in fragments[-9].sql
-    assert "deepseek-flash" in fragments[-8].sql
-    assert "source_inspection" in fragments[-7].sql
-    assert "grounding_corpus_versions" in fragments[-6].sql
-    assert "rag_budget_periods" in fragments[-5].sql
-    assert "rag_candidate_captures" in fragments[-4].sql
-    assert "rag_discovery_private_contexts" in fragments[-3].sql
-    assert "rag_candidate_access_policies" in fragments[-2].sql
-    assert "rag_campaign_principals" in fragments[-1].sql
+    by_name = {fragment.name: fragment.sql for fragment in fragments}
+    assert 'Child 09 conversation-native SQL workspace' in by_name['200_sql_learning_workspace.sql']
+    assert 'tutor_branch_authority_replacement_valid' in by_name['210_tutor_branch_supersession.sql']
+    assert 'tutor_plan_catalog_knowledge_key' in by_name['220_plan_catalog_knowledge_scope.sql']
+    assert 'tutor_artifact_supersession_successor' in by_name['230_artifact_authority_supersession.sql']
+    assert 'deepseek-flash' in by_name['240_deepseek_flash_runtime_cutover.sql']
+    assert 'source_inspection' in by_name['250_source_inspection_artifacts.sql']
+    assert 'grounding_corpus_versions' in by_name['260_rag_subject_corpus.sql']
+    assert 'rag_budget_periods' in by_name['270_rag_discovery_jobs.sql']
+    assert 'rag_candidate_captures' in by_name['280_rag_candidate_staging.sql']
+    assert 'rag_discovery_private_contexts' in by_name['290_rag_discovery_context.sql']
+    assert 'rag_candidate_access_policies' in by_name['300_rag_candidate_policy.sql']
+    assert 'rag_campaign_principals' in by_name['310_rag_campaign_authority.sql']
+    assert 'rag_registered_source_policies' in by_name['320_rag_registered_source.sql']
+    assert 'rag_source_reviews' in by_name['330_rag_source_admission.sql']
+    assert 'chk_rag_c_capture_body_8m' in by_name['340_rag_c_capture_capacity.sql']
+    assert 'rag_registered_supplemental_authorizations' in by_name['350_rag_c_supplemental_dispatch.sql']
+    assert 'rag_candidate_use_grants' in by_name['360_rag_candidate_use_grants.sql']
+    assert 'rag_material_selections' in by_name['370_rag_plan_material_bindings.sql']
+    assert 'rag_plan_material_bindings' in by_name['370_rag_plan_material_bindings.sql']
+    assert 'rag_registered_supplemental_revocations' in by_name['390_rag_c_supplemental_recovery.sql']
+    assert 'rag_registered_final_followup_allowances' in by_name['410_rag_c_deployment_correction.sql']
+    assert 'rag_provider_extraction_attempts' in by_name['430_rag_tavily_extraction.sql']
+    assert "evidence_level='provider_extracted'" in by_name['430_rag_tavily_extraction.sql']
 
     recorder = RecordingConnection()
     apply_schema(cast(Connection[dict[str, object]], recorder))
@@ -144,3 +168,15 @@ def test_bootstrap_retries_the_complete_transaction_after_deadlock(monkeypatch) 
 
     assert sleeps == [bootstrap._BOOTSTRAP_RETRY_DELAY_SECONDS]
     assert not connections
+
+
+def test_c_capture_capacity_upgrade_has_new_idempotent_constraints() -> None:
+    sql = {fragment.name: fragment.sql for fragment in load_schema_fragments()}[
+        "340_rag_c_capture_capacity.sql"
+    ]
+    assert "DROP CONSTRAINT IF EXISTS rag_registered_source_policies_max_captured_bytes_check" in sql
+    assert "DROP CONSTRAINT IF EXISTS rag_registered_fetch_attempts_response_bytes_check" in sql
+    assert "DROP CONSTRAINT IF EXISTS rag_registered_source_captures_captured_bytes_check" in sql
+    assert sql.count("BETWEEN 1 AND 8388608") == 2
+    assert "response_bytes BETWEEN 0 AND 8388608" in sql
+    assert sql.count("IF NOT EXISTS (SELECT 1 FROM pg_constraint") == 3

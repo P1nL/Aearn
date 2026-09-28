@@ -117,6 +117,10 @@ class PlanningFact:
             content={
                 "kind": "confirmed_planning_fact",
                 "field_key": self.field_key.value,
+                "profile_field": (
+                    "pace_summary" if self.field_key is PlanningFactField.PACE_CONSTRAINTS else self.field_key.value
+                ),
+                "profile_value_policy": "copy_exact",
                 "value": self.value,
                 "fact_revision": self.revision,
                 "policy_version": self.policy_version,

@@ -88,6 +88,20 @@ async def test_live_is_always_closed_even_with_mock_ports():
 
 
 @pytest.mark.asyncio
+async def test_gzip_negotiation_is_not_a_b_fetch_permission():
+    fetch, resolver, connector, _ = rig(response())
+    fetch.request_gzip = True
+    with pytest.raises(SafeFetchDenied, match="CAPTURE_SCOPE_INVALID"):
+        await fetch.fetch(URL)
+    assert not resolver.calls and not connector.calls
+    with pytest.raises(SafeFetchDenied, match="CAPTURE_SCOPE_INVALID"):
+        await fetch.fetch(URL, capture_kind="none")
+    with pytest.raises(SafeFetchDenied, match="CAPTURE_SCOPE_INVALID"):
+        await fetch.fetch(URL, capture_kind="prefix", prefix_bytes=5)
+    assert not resolver.calls and not connector.calls
+
+
+@pytest.mark.asyncio
 async def test_public_pin_tls_peer_and_bounded_hash():
     fetch, resolver, connector, egress = rig(response(body=b"hello"))
     result = await fetch.fetch(URL)

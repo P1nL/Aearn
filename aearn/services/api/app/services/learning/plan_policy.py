@@ -31,10 +31,12 @@ class InteractiveLearningCapabilityPolicyResolver:
         conn: Connection[dict[str, object]],
         *,
         settings: Settings | None = None,
+        material_plan_v110: bool = False,
     ) -> None:
         resolved_settings = settings or get_settings()
         self._repository = PostgresLearningPlanSessionRepository(conn)
         self._teaching = TeachingSessionRepository(conn, settings=resolved_settings)
+        self._plan_skill_version = "1.1.0" if material_plan_v110 else self._SKILL_VERSION
 
     def resolve(
         self,
@@ -69,8 +71,9 @@ class InteractiveLearningCapabilityPolicyResolver:
             )
         except LearningPlanSessionNotFound:
             return denied
-        skill = catalog.resolve_skill(self._SKILL_ID, self._SKILL_VERSION)
-        descriptor = catalog.capability(LEARNING_PLAN_DRAFT_CAPABILITY_ID)
+        skill = catalog.resolve_skill(self._SKILL_ID, self._plan_skill_version)
+        descriptor = (catalog.capability_for_skill(LEARNING_PLAN_DRAFT_CAPABILITY_ID, skill.reference)
+                      if skill is not None else None)
         if skill is None or descriptor is None:
             return denied
         return CapabilityPolicyContext(

@@ -1,0 +1,7 @@
+# Offline-only image: operator must review and pin the exact base digest and
+# final image digest. No package installation or live worker is included.
+ARG AEARN_CONTROL_BASE
+FROM ${AEARN_CONTROL_BASE}
+COPY aearn/infra/rag-c-live/control_peer.py /opt/rag-c-live/control_peer.py
+ENV PYTHONDONTWRITEBYTECODE=1
+ENTRYPOINT ["python3", "/opt/rag-c-live/control_peer.py"]

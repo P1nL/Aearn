@@ -152,9 +152,11 @@ def test_outer_failure_retains_actual_stage_and_public_mapping(monkeypatch, capl
     if stage == 'source':
         repo.read_scope.side_effect = ValueError('SECRET source')
     else:
-        repo.read_scope.return_value = SimpleNamespace(language_id='python', knowledge_key='python.variables',
+        repo.read_scope.return_value = SimpleNamespace(user_id='user-1', track_id='track-1',
+            active_plan_revision_id='revision-1', language_id='python', knowledge_key='python.variables',
             node_title='Title', goal_text='Goal', target_level='beginner', required_capabilities=(),
             mastery_level='unseen', mastery_confidence=0)
+        monkeypatch.setattr(lesson, 'resolve_catalog_knowledge_key', lambda *args, **kwargs: 'python.variables')
         repo.read_lesson_state.return_value = {}
         monkeypatch.setattr(lesson, '_load_evidence_snapshots', lambda *args: (SimpleNamespace(source_id='source'),))
         monkeypatch.setattr(lesson, 'canonical_source_set_hash', lambda snapshots: 'hash')

@@ -12,11 +12,14 @@ from app.agents.harness.context_budget import (
     resolve_tutor_provider_context_capability,
 )
 from app.agents.harness.context_builder import TutorContextBuilder, Utf8ByteTokenEstimator
+from app.agents.harness.capabilities import CapabilitySchemaExporter, LEARNING_PLAN_DRAFT_DESCRIPTOR
+from app.agents.harness.skill_catalog import compile_published_skill_catalog
 from app.agents.harness.contracts import (
     TutorContextBudgetMode,
     TutorContextBudgetPolicy,
     TutorContextError,
     TutorContextInput,
+    TutorContextSection,
     TutorContextSource,
     TutorPolicySnapshot,
     TutorProviderContextCapability,
@@ -86,7 +89,7 @@ def _context(*, current: str = "Help me understand this function.", source_count
             for index in range(source_count)
         ),
         activity_facts=(TutorContextSource("activity", "a" * 1_000),),
-        capability_schemas=(TutorContextSource("schema", "s" * 1_000),),
+        capability_schemas=(TutorContextSource("schema", {"name": "synthetic.schema", "description": "s" * 1_000}),),
     )
 
 
@@ -291,6 +294,60 @@ def test_required_serialized_request_overflow_fails_before_any_provider_boundary
     assert exc_info.value.safe_code == "TUTOR_CONTEXT_REQUIRED_OVERFLOW"
 
 
+def test_required_request_exact_fit_and_one_token_below_are_distinct() -> None:
+    # No optional sources: binary-search the actual serialized request boundary
+    # instead of assuming a fixed prompt size. Required facts must stay intact.
+    context_input = replace(
+        _context(),
+        required_facts=(TutorContextSource("required-a", {"fact": "bounded"}),),
+        system_descriptors=(),
+        activity_facts=(),
+        capability_schemas=(),
+    )
+    planner = TutorContextBudgetPlanner()
+    builder = TutorContextBuilder()
+
+    def select(input_limit: int):
+        policy = _policy(capability=_capability(
+            input_hard_limit=input_limit, maximum_dynamic_target=100,
+        ))
+        run = _run(policy)
+        return run, planner.build_context(run=run, context_input=context_input, builder=builder)
+
+    lower, upper = 500, 4_096
+    while lower < upper:
+        middle = (lower + upper) // 2
+        try:
+            select(middle)
+        except TutorContextError as error:
+            assert error.safe_code == "TUTOR_CONTEXT_REQUIRED_OVERFLOW"
+            lower = middle + 1
+        else:
+            upper = middle
+
+    run, selection = select(lower)
+    assert selection.checkpoint_metadata.required_fact_selected_count == 1
+    assert selection.checkpoint_metadata.required_fact_missing_count == 0
+    required_items = [
+        item for item in selection.items
+        if item.section is TutorContextSection.REQUIRED_FACTS
+    ]
+    assert len(required_items) == 1
+    assert required_items[0].source_id == "required-a"
+    assert json.loads(required_items[0].content) == {"fact": "bounded"}
+    serialized = json.dumps(
+        TutorProviderRequestSerializer().build_messages(run=run, context=selection),
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    exact = (Utf8ByteTokenEstimator().estimate_tokens(serialized)
+             + run.policy.context_budget_policy.capability.protocol_reserve_tokens
+             + run.policy.context_budget_policy.capability.safety_margin_tokens)
+    assert exact == lower == selection.checkpoint_metadata.estimated_total_input_tokens
+    with pytest.raises(TutorContextError) as exc_info:
+        select(lower - 1)
+    assert exc_info.value.safe_code == "TUTOR_CONTEXT_REQUIRED_OVERFLOW"
+
+
 def test_calibration_uses_provider_input_as_physical_total_without_adding_cached_tokens_again() -> None:
     policy = build_tutor_context_budget_policy(
         Settings(llm_type="deepseek", deepseek_model="deepseek-flash")
@@ -319,3 +376,71 @@ def test_calibration_uses_provider_input_as_physical_total_without_adding_cached
     assert calibration.cached_input_tokens == max(0, estimated - 20)
     assert calibration.absolute_error_tokens == 5
     assert calibration.within_safety_margin is True
+
+
+def _published_planning_context() -> tuple[TutorContextInput, str, dict[str, object]]:
+    skill = compile_published_skill_catalog().resolve_skill("tutor.learning-plan-draft", "1.0.3")
+    assert skill is not None
+    instruction = skill.instruction
+    schema = CapabilitySchemaExporter.export(LEARNING_PLAN_DRAFT_DESCRIPTOR)
+    facts = tuple(
+        TutorContextSource(f"fact:{key}", {"kind": "planning_fact", "key": key, "value": value})
+        for key, value in (
+            ("language_id", "python"), ("goal_text", "learn Python"),
+            ("weekly_minutes", 180), ("experience_level", "beginner"),
+            ("parent_profile", "current parent profile"),
+            ("parent_plan", "current parent plan"),
+            ("material_feedback", "partial source coverage; preserve core goals"),
+        )
+    )
+    return replace(
+        _context(),
+        required_facts=facts,
+        system_descriptors=(TutorContextSource(
+            f"catalog:selected:{skill.reference.key}",
+            {"id": skill.manifest.id, "version": skill.manifest.version,
+             "manifest_hash": skill.manifest_hash, "instruction_hash": skill.instruction_hash,
+             "instruction": instruction},
+        ),),
+        capability_schemas=(TutorContextSource("catalog:capability:learning.plan.draft", schema),),
+    ), instruction, schema
+
+
+def test_published_planning_skill_and_real_exported_schema_fit_formal_profile_intact() -> None:
+    context, instruction, schema = _published_planning_context()
+    settings = Settings(llm_type="deepseek", deepseek_model="deepseek-flash")
+    policy = build_tutor_context_budget_policy(settings)
+    assert settings.tutor_decision_max_output_tokens == 16_384
+    assert policy.capability.input_hard_limit == 131_072
+    selection = TutorContextBudgetPlanner().build_context(
+        run=_run(policy), context_input=context, builder=TutorContextBuilder(),
+    )
+    skill_items = [item for item in selection.items if item.source_id.startswith("catalog:selected:")]
+    schema_items = [item for item in selection.items if item.section is TutorContextSection.CAPABILITY_SCHEMAS]
+    assert len(skill_items) == len(schema_items) == 1
+    assert json.loads(skill_items[0].content)["instruction"] == instruction
+    assert "never use `continuation_kind=approval`" in skill_items[0].content
+    assert "every `value` is a JSON string" in skill_items[0].content
+    assert json.loads(schema_items[0].content) == schema
+    wire = TutorProviderRequestSerializer().build_messages(run=_run(policy), context=selection)
+    sent_items = json.loads(wire[1]["content"])["context"]
+    assert json.loads(next(item["content"] for item in sent_items if item["source_id"] == skill_items[0].source_id))["instruction"] == instruction
+    assert json.loads(next(item["content"] for item in sent_items if item["source_id"] == schema_items[0].source_id)) == schema
+    assert len([item for item in sent_items if item["section"] == TutorContextSection.REQUIRED_FACTS.value]) == 7
+    assert len([item for item in selection.items if item.section is TutorContextSection.REQUIRED_FACTS]) == 7
+    metadata = selection.checkpoint_metadata
+    assert metadata.truncated_count == 0
+    assert metadata.estimated_total_input_tokens is not None
+    assert metadata.estimated_total_input_tokens <= policy.capability.input_hard_limit
+    assert metadata.required_fact_missing_count == 0
+    assert next(item for item in metadata.sections if item.section is TutorContextSection.SYSTEM).selected_count == 1
+    assert next(item for item in metadata.sections if item.section is TutorContextSection.CAPABILITY_SCHEMAS).selected_count == 1
+
+
+def test_published_planning_skill_tight_formal_limit_fails_before_any_partial_skill() -> None:
+    context, _, _ = _published_planning_context()
+    with pytest.raises(TutorContextError, match="TUTOR_SELECTED_SKILL_UNREPRESENTABLE"):
+        TutorContextBudgetPlanner().build_context(
+            run=_run(_policy(capability=_capability(input_hard_limit=500, maximum_dynamic_target=300))),
+            context_input=context, builder=TutorContextBuilder(),
+        )

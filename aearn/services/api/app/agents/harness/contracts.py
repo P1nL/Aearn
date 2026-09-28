@@ -30,6 +30,10 @@ MAX_TUTOR_PUBLIC_THINKING_STEP_LENGTH = 320
 MAX_TUTOR_CONVERSATION_TITLE_LENGTH = 48
 MAX_TUTOR_PAYLOAD_FIELDS = 12
 MAX_TUTOR_PAYLOAD_VALUE_LENGTH = 360
+# Only plan-draft JSON string arguments use this bounded escape capacity.
+MAX_PLAN_DRAFT_STRING_TRANSPORT_LENGTH = 6 * MAX_TUTOR_PAYLOAD_VALUE_LENGTH + 2
+MAX_PLAN_DRAFT_V110_RAW_LENGTH = 1024
+MAX_PLAN_DRAFT_V110_TRANSPORT_LENGTH = 6146
 TUTOR_CONTEXT_SUMMARY_SCHEMA_VERSION = "tutor_context_summary_v2"
 TUTOR_CONTEXT_SUMMARY_POLICY_VERSION = "tutor_context_summary_policy_v2"
 MAX_TUTOR_CONTEXT_COMPACTION_MESSAGES = 24
@@ -562,6 +566,38 @@ class TutorContextInput:
         )
 
 
+def is_complete_selected_skill(source_id: str, content: object) -> bool:
+    """Recognize only an exact catalog-selected Skill with intact instructions.
+
+    This verifies the catalog loader's identity and content digest, not catalog
+    authorization (which is enforced before context construction).
+    """
+    if not source_id.startswith("catalog:selected:"):
+        return False
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (ValueError, TypeError):
+            return False
+    if not isinstance(content, Mapping) or set(content) != {
+        "id", "version", "manifest_hash", "instruction_hash", "instruction"
+    }:
+        return False
+    skill_id, version = content["id"], content["version"]
+    instruction, instruction_hash = content["instruction"], content["instruction_hash"]
+    manifest_hash = content["manifest_hash"]
+    if not all(isinstance(value, str) for value in content.values()):
+        return False
+    if not skill_id or not version or not instruction.strip():
+        return False
+    if source_id != f"catalog:selected:{skill_id}@{version}":
+        return False
+    if any(len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
+           for value in (instruction_hash, manifest_hash)):
+        return False
+    return hashlib.sha256(instruction.encode("utf-8")).hexdigest() == instruction_hash
+
+
 @dataclass(frozen=True)
 class TutorContextItem:
     section: TutorContextSection
@@ -572,7 +608,13 @@ class TutorContextItem:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_id", _safe_identifier(self.source_id))
-        object.__setattr__(self, "content", limit_text(self.content, MAX_TUTOR_PUBLIC_MESSAGE_LENGTH))
+        # Executable contracts are selected atomically by the builder. Never
+        # turn a selected Skill or capability schema into partial instructions.
+        if self.section is not TutorContextSection.CAPABILITY_SCHEMAS and not (
+            self.section is TutorContextSection.SYSTEM
+            and is_complete_selected_skill(self.source_id, self.content)
+        ):
+            object.__setattr__(self, "content", limit_text(self.content, MAX_TUTOR_PUBLIC_MESSAGE_LENGTH))
         if self.token_estimate < 1:
             raise ValueError("token_estimate must be positive")
 
@@ -918,15 +960,60 @@ class TutorPayloadField:
 
 
 @dataclass(frozen=True)
+class TutorPlanDraftPayloadField(TutorPayloadField):
+    """A validated raw-360 plan string in bounded JSON-string storage."""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", _safe_identifier(self.key))
+        object.__setattr__(self, "value", sanitize_summary_text(
+            self.value, max_length=MAX_PLAN_DRAFT_STRING_TRANSPORT_LENGTH,
+        ))
+
+
+@dataclass(frozen=True)
+class TutorPlanDraftV110PayloadField(TutorPlanDraftPayloadField):
+    """Version-bound escape storage; reject overflow instead of truncating JSON."""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", _safe_identifier(self.key))
+        safe = sanitize_summary_text(self.value, max_length=MAX_PLAN_DRAFT_V110_TRANSPORT_LENGTH)
+        if safe != self.value:
+            raise ValueError("plan draft transport must remain exact and bounded")
+
+
+@dataclass(frozen=True)
 class TutorCapabilityRequest:
     request_id: str
     capability_id: str
     arguments: tuple[TutorPayloadField, ...] = ()
+    capability_version: str = "1.0.0"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_id", _safe_identifier(self.request_id))
         object.__setattr__(self, "capability_id", _safe_identifier(self.capability_id))
-        object.__setattr__(self, "arguments", _bounded_payload_fields(self.arguments))
+        if self.capability_version not in {"1.0.0", "1.1.0"} or (
+            self.capability_version == "1.1.0" and self.capability_id != "learning.plan.draft"
+        ):
+            raise ValueError("unsupported capability request version")
+        arguments = _bounded_payload_fields(self.arguments)
+        for field in arguments:
+            if isinstance(field, TutorPlanDraftPayloadField):
+                expanded = isinstance(field, TutorPlanDraftV110PayloadField)
+                if expanded != (self.capability_version == "1.1.0"):
+                    raise ValueError("plan transport field does not match capability version")
+                if self.capability_id != "learning.plan.draft" or not (
+                    field.key == "profile_json" or re.fullmatch(r"module_[1-8]", field.key)
+                ):
+                    raise ValueError("plan transport capacity is restricted to plan draft arguments")
+                try:
+                    raw = json.loads(field.value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("plan transport argument is not a JSON string") from exc
+                if not isinstance(raw, str):
+                    raise ValueError("plan transport argument is not a JSON string")
+                if len(raw) > (MAX_PLAN_DRAFT_V110_RAW_LENGTH if expanded else MAX_TUTOR_PAYLOAD_VALUE_LENGTH):
+                    raise ValueError("plan transport raw string exceeds its business bound")
+        object.__setattr__(self, "arguments", arguments)
 
 
 @dataclass(frozen=True)
@@ -939,7 +1026,10 @@ class TutorCapabilityResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_id", _safe_identifier(self.request_id))
-        object.__setattr__(self, "safe_result", _bounded_payload_fields(self.safe_result))
+        safe_result = _bounded_payload_fields(self.safe_result)
+        if any(isinstance(field, TutorPlanDraftPayloadField) for field in safe_result):
+            raise ValueError("plan transport capacity is not valid for capability results")
+        object.__setattr__(self, "safe_result", safe_result)
         if self.diagnostic_code is not None:
             object.__setattr__(self, "diagnostic_code", _safe_identifier(self.diagnostic_code))
 
@@ -956,7 +1046,10 @@ class TutorEffectProposal:
             raise ValueError("expected_input_revision must be non-negative")
         object.__setattr__(self, "effect_id", _safe_identifier(self.effect_id))
         object.__setattr__(self, "effect_type", _safe_identifier(self.effect_type))
-        object.__setattr__(self, "payload", _bounded_payload_fields(self.payload))
+        payload = _bounded_payload_fields(self.payload)
+        if any(isinstance(field, TutorPlanDraftPayloadField) for field in payload):
+            raise ValueError("plan transport capacity is not valid for effects")
+        object.__setattr__(self, "payload", payload)
 
 
 @dataclass(frozen=True)
@@ -1424,7 +1517,10 @@ def normalize_tutor_conversation_title(value: object) -> str:
     return normalized
 
 
-def payload_fields_from_mapping(value: Mapping[str, object] | None) -> tuple[TutorPayloadField, ...]:
+def payload_fields_from_mapping(
+    value: Mapping[str, object] | None, *, capability_id: str | None = None,
+    capability_version: str = "1.0.0",
+) -> tuple[TutorPayloadField, ...]:
     if not isinstance(value, Mapping):
         return ()
     fields: list[TutorPayloadField] = []
@@ -1434,7 +1530,17 @@ def payload_fields_from_mapping(value: Mapping[str, object] | None) -> tuple[Tut
             serialized = json.dumps(raw_value, ensure_ascii=False, sort_keys=True, default=str)
         except (TypeError, ValueError):
             serialized = str(raw_value)
-        fields.append(TutorPayloadField(key=str(raw_key), value=serialized))
+        is_plan_string = (capability_id == "learning.plan.draft"
+                and (raw_key == "profile_json" or re.fullmatch(r"module_[1-8]", str(raw_key)))
+                and isinstance(raw_value, str))
+        if is_plan_string and capability_version == "1.1.0":
+            if len(str(raw_value)) > MAX_PLAN_DRAFT_V110_RAW_LENGTH:
+                raise ValueError("plan draft raw string exceeds its version bound")
+            fields.append(TutorPlanDraftV110PayloadField(key=str(raw_key), value=serialized))
+        elif is_plan_string and len(str(raw_value)) <= MAX_TUTOR_PAYLOAD_VALUE_LENGTH:
+            fields.append(TutorPlanDraftPayloadField(key=str(raw_key), value=serialized))
+        else:
+            fields.append(TutorPayloadField(key=str(raw_key), value=serialized))
     return tuple(fields)
 
 

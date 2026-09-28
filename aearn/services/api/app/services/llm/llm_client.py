@@ -165,7 +165,11 @@ class OpenAICompatibleClient:
         transport: JsonTransport | None = None,
         stream_transport: TextStreamTransport | None = None,
         diagnostic_store: ProviderDiagnosticStore | None = None,
+        max_http_attempts: int = LLM_PROVIDER_RETRY_ATTEMPTS,
     ) -> None:
+        if not 1 <= max_http_attempts <= LLM_PROVIDER_RETRY_ATTEMPTS:
+            raise ValueError("max_http_attempts outside configured provider retry bound")
+        self._max_http_attempts = max_http_attempts
         self._settings = settings or get_settings()
         if not self._settings.openai_compatible_configured:
             raise LLMConfigurationError("OpenAI-compatible LLM settings are incomplete")
@@ -481,6 +485,7 @@ class OpenAICompatibleClient:
             timeout,
             diagnostic_capture=diagnostic_capture,
             visible_output_observer=visible_output_observer,
+            max_attempts=self._max_http_attempts,
         )
 
     def _complete_deepseek_chat_json(
@@ -533,6 +538,7 @@ class OpenAICompatibleClient:
                 payload,
                 timeout,
                 diagnostic_capture=diagnostic_capture,
+                max_attempts=self._max_http_attempts,
             )
         usage = _extract_llm_usage(provider_response, protocol=LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS)
         model = _response_model(provider_response) or self.model
@@ -558,6 +564,7 @@ def _post_json_stream(
     *,
     diagnostic_capture: ProviderBodyCapture | None = None,
     visible_output_observer: LLMVisibleOutputObserver | None = None,
+    max_attempts: int = LLM_PROVIDER_RETRY_ATTEMPTS,
 ) -> Mapping[str, object]:
     request_count = 0
 
@@ -583,6 +590,7 @@ def _post_json_stream(
         "JSON stream",
         request_once,
         diagnostic_capture=diagnostic_capture,
+        max_attempts=max_attempts,
     )
 
 
@@ -593,6 +601,7 @@ def _post_json(
     timeout: float,
     *,
     diagnostic_capture: ProviderBodyCapture | None = None,
+    max_attempts: int = LLM_PROVIDER_RETRY_ATTEMPTS,
 ) -> Mapping[str, object]:
     def request_once() -> str:
         request = _provider_request(url, headers, payload)
@@ -608,6 +617,7 @@ def _post_json(
         "JSON",
         request_once,
         diagnostic_capture=diagnostic_capture,
+        max_attempts=max_attempts,
     )
 
     if not body:
@@ -727,17 +737,20 @@ def _request_with_retries(
     request_once: Callable[[], T],
     *,
     diagnostic_capture: ProviderBodyCapture | None = None,
+    max_attempts: int = LLM_PROVIDER_RETRY_ATTEMPTS,
 ) -> T:
-    for attempt in range(1, LLM_PROVIDER_RETRY_ATTEMPTS + 1):
+    if not 1 <= max_attempts <= LLM_PROVIDER_RETRY_ATTEMPTS:
+        raise ValueError("max_attempts outside provider retry bound")
+    for attempt in range(1, max_attempts + 1):
         try:
             return request_once()
         except urllib.error.HTTPError as exc:
             _capture_http_error_body(exc, diagnostic_capture)
-            if not _should_retry_http_error(exc) or attempt >= LLM_PROVIDER_RETRY_ATTEMPTS:
+            if not _should_retry_http_error(exc) or attempt >= max_attempts:
                 raise LLMCallError(f"LLM provider returned HTTP {exc.code}") from exc
             _log_retry(operation_name, attempt, f"HTTP {exc.code}")
         except _RETRYABLE_TRANSPORT_ERRORS as exc:
-            if attempt >= LLM_PROVIDER_RETRY_ATTEMPTS:
+            if attempt >= max_attempts:
                 logger.warning("LLM provider %s request failed: %s", operation_name, _safe_transport_error(exc))
                 raise LLMCallError("LLM provider request failed") from exc
             _log_retry(operation_name, attempt, _safe_transport_error(exc))
