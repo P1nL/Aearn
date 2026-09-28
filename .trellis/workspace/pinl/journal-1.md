@@ -358,3 +358,43 @@ Delivered default-off B1 Tavily ledger/worker and B2 signed-egress bounded fetch
 ### Status
 
 [OK] **Completed**
+
+
+## Session 14: Close RAG C/D with real Tavily plan acceptance
+<!-- trellis-session: v=2 fp=7c12b0b319216952 -->
+
+**Date**: 2026-09-29
+**Task**: Close RAG C/D with real Tavily plan acceptance
+**Branch**: `codex/rag-source-admission-corpus-governance`
+
+### Summary
+
+Completed internal real parent-successor acceptance and archived C/D; preserved legacy contracts, gaps, failed evidence and usage; committed worktree without push.
+
+### Main Changes
+
+Completed the user-authorized current/prior C-D repair, acceptance and worktree closeout.
+
+- Work commit: ed5ec9e (173 files; includes accumulated C/D code, infra, tests, specs/policy and prior small Codex verbosity setting).
+- Archive commit: 59e8f59. C's already-passed isolated ACs and D's final internal real ACs are completed; other planning tasks and future E/public rollout remain open.
+- Final evidence: .trellis/tasks/archive/2026-09/09-27-rag-plan-material-evidence-binding/research/d-final-closeout.md and d-final-acceptance.json.
+- Real parent ff77fb4a-8167-4c5b-94f2-45fcff37eb3f and successor a23e03e8-4a45-4106-9222-c9f8992542a7 completed naturally. Both executed exactly one draft capability. Exact predecessor/goals, one current SQL supplementary binding and consistent semantic review confirmed by separate DB read.
+- Repaired consumed-capability visibility/current-revision guards, completion-only thinking, versioned internal plan1.1.0 payload capacity, exact feedback parts and early reuse of pure domain validation. Legacy published contracts and formal limits preserved; real pace_summary repair succeeded.
+- Focused final tests9 passed, isolated PG3 passed; earlier version/adjacent subset32 passed. Ruff app/tests/C-D infra, Mypy329 source files, lock and diff checks passed. Did not rerun the earlier broad matrix.
+- GPT-5.6 Sol independently reviewed version/scope changes. Its quota exhausted during the last pure-domain patch; no provider switch or top-up. Main completed that patch and its tests/real verification, without overstating independent review scope.
+- Final chain8 model HTTP, historical69, currency cost unknown/user-monitored. No new source request. Failed attempts and direct source histories retained.
+- Root .runtime ignored. Secret scan281 candidate/task files had no configured secret or credential-pattern hits.
+- Trellis archive moved both tasks but auto-commit referenced ignored old paths and failed. Committed the verified archive destinations explicitly; no duplicate archive or history rewrite.
+- Stopped owned model/test-PG containers after verifying zero other clients; retained all data/evidence volumes. Business aearn_postgres and aearn_redis remain running.
+- No remote push, public consumer, E release or Gate completion claim.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ed5ec9e` | feat: complete guarded RAG C/D and reliable plan closure |
+
+### Status
+
+[OK] **Completed**
