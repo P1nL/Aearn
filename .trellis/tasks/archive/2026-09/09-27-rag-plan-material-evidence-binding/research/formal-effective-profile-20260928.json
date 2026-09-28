@@ -1,0 +1,43 @@
+{
+  "observed_at": "2026-09-28T09:41:55.423199+00:00",
+  "source": "local project Settings effective resolver; no acceptance overrides",
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "effective_context_capacity": 192512,
+  "decision_max_output_tokens": 16384,
+  "budget_policy": {
+    "capability": {
+      "context_window_tokens": 192512,
+      "max_output_reserve_tokens": 61440,
+      "protocol_reserve_tokens": 128,
+      "safety_margin_tokens": 256,
+      "maximum_dynamic_target_tokens": 130688,
+      "capability_version": "deepseek-flash-responses-v2"
+    },
+    "mode_targets": [
+      [
+        "compact",
+        16000
+      ],
+      [
+        "normal",
+        64000
+      ],
+      [
+        "complex",
+        96000
+      ],
+      [
+        "extended",
+        130688
+      ]
+    ],
+    "warning_ratio": 0.8,
+    "critical_ratio": 0.95,
+    "max_expansions": 1,
+    "estimator_version": "utf8_bytes_v1",
+    "policy_version": "tutor_context_budget_v1",
+    "fixed_mode": null
+  },
+  "api_call_made": false
+}

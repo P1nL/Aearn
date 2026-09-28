@@ -1,0 +1,30 @@
+{
+  "id": "rag-plan-material-evidence-binding",
+  "name": "rag-plan-material-evidence-binding",
+  "title": "RAG D：规划教材反馈与精确证据绑定消费",
+  "description": "交付默认关闭的教材需求反馈、草案修订及服务端重验冻结的精确证据绑定消费者，提供当前用途授权与发布fence接口及隔离验收，不启用公开D/E消费者。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "pinl",
+  "assignee": "pinl",
+  "createdAt": "2026-09-27",
+  "completedAt": "2026-09-29",
+  "branch": "codex/rag-source-admission-corpus-governance",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "ed5ec9e9fb8ec9a4f502f74e7d248b3dc979063d",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-03-rag-language-ecosystem-adaptive-retrieval",
+  "relatedFiles": [],
+  "notes": "2026-09-27追加修复：D全专项59passed/0skip，预算组合115passed，最终fresh专库广回归1304passed/55skip，Ruff/Mypy326通过。语义候选有界审查/修复及每次请求预算已修复；本修复真实reviewer3调用1239tokens，正反组件控制通过，费用未知。真实C来源首轮超时unknown，补充调用因operator同代配置不兼容在HTTP前拒绝；全真实C+D链未通过。独立终结自由文本不在候选审查范围。详见research/repair-verification.md；未commit/push/deploy，任务保持in_progress。\n2026-09-28 21时追加快速修复：真实诊断确认pace_constraints与pace_summary改写冲突，增加精确事实映射；补充已验证计划receipt收尾指令避免重复生成。6个针对性纯单测与定向Ruff/Mypy通过；最终真实模型3HTTP生成唯一首稿并terminal completed，独立DB确认capability_call_count=1、pace原值保留。本轮8HTTP累计28，人民币费用未知已登记；完整D仍待来源授权重验后修订/绑定。详见research/plan-draft-business-repair-result-20260928.md。无开发库清理、commit/push/release。\n2026-09-28完成D尝试：420单次到期来源刷新、parent/successor独立HTTP窗口桥接已落地；manifest5/来源专库3/窗口3项通过，定向Ruff及独立检查通过。新第五次真实取源94.763秒后BODY_DENIED，收到1507328/2033807 bytes，未生成新capture；已终结unknown，旧所有来源行hash不变，无第六次。目标修订仍queued/0模型调用，项目模型累计28不变。临时控制/出口/模型容器停止，数据保留。D未完成，详见research/d-completion-attempt-result-20260928.md；用户指定子代理5.6Sol，一次额度拒绝，不切模型/充值。\nTavily switch (UTC 2026-09-28, host Asia/Shanghai 2026-09-29): Search1+Extract probe1+formal Extract1 passed, 43729-byte native Markdown. Independent review and isolated corpus generation2 passed; 25 targeted tests passed. Real v2 successor and one supplementary binding persisted, goals preserved, semantic review consistent, current authorization reverified. Post-save duplicate drafting ended model_unavailable: D remains not full-pass. Fixed target-scoped feedback idempotency, exact feedback parts, and internal D required-fact slots. Model HTTP +5, cumulative33, monetary unknown. See research/tavily-switch-result-20260929.md. No further paid retry, commit, push, or public release.\nFinal internal real acceptance passed: both runs completed naturally, unique successor and one current supplementary binding, exact goals preserved. Legacy contracts unchanged; internal plan1.1.0, same-revision completion, completion-only non-reasoning and early pure-domain repair verified. Final chain8HTTP; historical69; monetary unknown. Prior failures preserved. User explicitly authorizes current/prior closeout and worktree commits; no push/public/E/Gate. See research/d-final-closeout.md.",
+  "meta": {
+    "latest_acceptance_status": "passed_internal_only",
+    "latest_acceptance_evidence": "research/d-final-acceptance.json",
+    "closeout_authorized": true
+  }
+}

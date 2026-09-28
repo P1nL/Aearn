@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend source-of-truth and scoped guideline index"}
+{"file": ".trellis/spec/backend/grounding-corpus-operations.md", "reason": "Preserve fixture-only CLI and single corpus lifecycle writer"}
+{"file": ".trellis/spec/backend/grounding-material-contracts.md", "reason": "A exact source admission/claim contracts and default-deny behavior"}
+{"file": ".trellis/spec/backend/grounding-controlled-discovery.md", "reason": "B1 B2 ledger staging signed egress and provenance invariants"}
+{"file": ".trellis/spec/backend/grounding-retrieval-v2.md", "reason": "Exact scope coverage and consumer isolation regression boundary"}
+{"file": ".trellis/tasks/09-25-rag-source-admission-corpus-governance/research/corpus-seams.md", "reason": "C input paths and existing fixture-only validator incompatibility"}
+{"file": ".trellis/tasks/09-25-rag-source-admission-corpus-governance/research/real-source-candidate.md", "reason": "Approved single-page SQLite real validation boundary"}
+{"file": ".trellis/tasks/09-25-rag-source-admission-corpus-governance/research/spec-context-pointers.md", "reason": "Exact line pointers for oversized DB and quality specs; read original sections on demand"}
+{"file": ".trellis/spec/backend/grounding-source-admission.md", "reason": "C one-shot bridge proof peer retention operator review and nonclaims contracts"}

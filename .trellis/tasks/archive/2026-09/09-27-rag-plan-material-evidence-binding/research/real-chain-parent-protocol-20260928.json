@@ -1,0 +1,38 @@
+{
+  "status": "failed",
+  "stage": "real_parent_dispatch",
+  "model_http_attempts": 3,
+  "usage_per_call": [
+    {
+      "cached_input_tokens": 256,
+      "input_tokens": 4954,
+      "output_tokens": 227,
+      "reasoning_tokens": 0,
+      "total_tokens": 5181
+    },
+    {
+      "cached_input_tokens": 4864,
+      "input_tokens": 6536,
+      "output_tokens": 185,
+      "reasoning_tokens": 0,
+      "total_tokens": 6721
+    },
+    {
+      "cached_input_tokens": 1536,
+      "input_tokens": 5121,
+      "output_tokens": 702,
+      "reasoning_tokens": 0,
+      "total_tokens": 5823
+    }
+  ],
+  "unknown_usage_count": 0,
+  "runs": [
+    {
+      "input_revision": 1,
+      "run_id": "e062b8a7-6175-45de-a4c7-fccd6af56a63"
+    }
+  ],
+  "phase_http_cap": 3,
+  "full_chain_passed": false,
+  "validation": "argument_protocol_rejected_then_phase_cap_stopped"
+}

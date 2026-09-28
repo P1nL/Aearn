@@ -1,0 +1,72 @@
+{
+  "status": "failed",
+  "stage": "real_parent_dispatch",
+  "model_http_attempts": 2,
+  "usage_per_call": [
+    {
+      "cached_input_tokens": 1792,
+      "input_tokens": 4957,
+      "output_tokens": 419,
+      "reasoning_tokens": 247,
+      "total_tokens": 5376
+    },
+    {
+      "cached_input_tokens": 3712,
+      "input_tokens": 6914,
+      "output_tokens": 4228,
+      "reasoning_tokens": 3558,
+      "total_tokens": 11142
+    }
+  ],
+  "unknown_usage_count": 0,
+  "runs": [
+    {
+      "input_revision": 1,
+      "run_id": "a1e8908b-d0ee-4c76-a4c6-53d38fbcf12d"
+    }
+  ],
+  "phase_http_cap": 4,
+  "prior_http_attempts": 18,
+  "cumulative_http_cap": 26,
+  "profile": "formal",
+  "runtime_profile": {
+    "effective": {
+      "deepseek_v4_flash_input_hard_limit_tokens": 131072,
+      "tutor_context_max_dynamic_target_capacity_tokens": 130688,
+      "tutor_context_output_reserve_tokens": 61440,
+      "tutor_context_window_capacity_tokens": 192512,
+      "tutor_decision_max_output_tokens": 16384
+    },
+    "fields": {
+      "tutor_context_compact_target_tokens": 16000,
+      "tutor_context_complex_target_tokens": 96000,
+      "tutor_context_critical_ratio": 0.95,
+      "tutor_context_extended_target_tokens": 130688,
+      "tutor_context_fixed_mode": null,
+      "tutor_context_max_dynamic_target_tokens": 512,
+      "tutor_context_max_expansions": 1,
+      "tutor_context_normal_target_tokens": 64000,
+      "tutor_context_protocol_reserve_tokens": 128,
+      "tutor_context_safety_margin_tokens": 256,
+      "tutor_context_warning_ratio": 0.8,
+      "tutor_deepseek_repair_thinking_disabled": true,
+      "tutor_deepseek_responses_json_schema_enabled": false,
+      "tutor_deepseek_v4_flash_context_window_tokens": 1000000,
+      "tutor_deepseek_v4_flash_decision_max_output_tokens": 16384,
+      "tutor_deepseek_v4_flash_input_limit_tokens": 131072,
+      "tutor_deepseek_v4_flash_max_dynamic_target_tokens": 130688,
+      "tutor_deepseek_v4_flash_max_output_tokens": 61440,
+      "tutor_default_context_window_tokens": 5296,
+      "tutor_default_decision_max_output_tokens": 1200,
+      "tutor_default_output_reserve_tokens": 1200
+    },
+    "format": "rag_d_runtime_profile_v1",
+    "model": "deepseek-flash",
+    "provider_type": "deepseek"
+  },
+  "protocol_request_accepted": true,
+  "capability_invoked": "learning.plan.draft",
+  "capability_status": "denied",
+  "capability_diagnostic_code": "learning_plan_draft_invalid",
+  "full_chain_passed": false
+}

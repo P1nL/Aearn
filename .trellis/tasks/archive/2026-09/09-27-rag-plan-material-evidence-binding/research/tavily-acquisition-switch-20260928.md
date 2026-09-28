@@ -1,0 +1,17 @@
+# Tavily acquisition switch — 2026-09-28
+
+User explicitly requests Tavily for body extraction and authorizes Tavily search testing. This updates the existing in-progress D task, not a new task or production release. Keep direct-fetch history unchanged; do not issue generation6 or reuse spent direct-fetch grants. Child agents remain GPT-5.6 Sol; no automatic model switch/top-up if that host quota refuses.
+
+## Immediate verified inputs
+- Existing aearn/.env contains TAVILY_API_KEY (value never printed).
+- Official GET /usage succeeded: Researcher plan, account usage2/limit1000, key search_usage2, extract_usage0, paygo_usage0. No search/extract request has yet been issued in this switch.
+- Official Extract contract checked via Context7 /websites/tavily: POST /extract, urls, extract_depth, format, timeout1..60, include_usage; query/chunks_per_source deliberately omitted so output is not query-trimmed chunks. HTTP200 alone is not success; inspect results/failed_results.
+
+## Narrow implementation contract
+1. Use existing HTTPX dependency and fixed api.tavily.com endpoints, not a new hand-written TLS/HTTP stack. Existing bounded Tavily search transport stays compatible. Add an opt-in, single-call Extract client: one public HTTPS URL, advanced depth, markdown/text format, bounded response, no automatic redirect/retry, stable safe errors; preserve request_id, provider usage (unknown remains unknown), exact returned content hash and response hash. Never log key/full response/content. Provider-extracted text is NOT complete origin HTML or independently attested origin TLS.
+2. New acquisition records use explicit provider_extracted evidence. Reuse registered source policies/roots and the existing corpus/review/selection/binding authorities. Add a small provider-extraction attempt record; reuse registered capture storage with a mutually exclusive provider-attempt FK and existing direct-fetch FK, rather than creating a second corpus/document system. Old direct captures/receipts/hashes/guards remain unchanged. No Tavily result is relabelled live_egress_attested.
+3. Existing trusted automated review remains separate from fetching. Add only the provider-native representation adapter/profile needed to validate exact SQLite WHERE/LIMIT excerpts and oracle facts in the returned text. Preserve supplementary-only scope and schema/main/scoring gaps. Hashes refer to stored Tavily text, never invented original HTML bytes; review receipts bind exact capture/provider request and current authority. Published/legacy review profiles remain valid and unchanged.
+4. New D operator acquisition defaults to Tavily; no silent direct-fetch fallback. Feed admitted exact material into the existing real parent/successor pipeline. Keep public consumers default-off. Reconcile all actual calls/usage, and retain failures. No checkout-wide rewrites, no broad regression, no commit/push.
+
+## Validation window
+At most one basic search probe and one advanced Extract probe initially (public synthetic query + exact SQLite URL only). Verify key/account usage and results. Store full extraction only in private operator storage; task artifacts contain hashes/counts/request IDs, not body/key. Use targeted HTTPX mock tests, a verified new isolated PG fixture, and a real pipeline check when source admission is valid. If current Tavily quota/auth is unavailable, report it; do not open paid search or bypass through another provider.

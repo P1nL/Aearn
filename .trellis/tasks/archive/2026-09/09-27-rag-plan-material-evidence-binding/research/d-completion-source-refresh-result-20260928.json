@@ -1,0 +1,57 @@
+{
+  "status": "failed_fresh_source_capture_no_D_successor",
+  "new_source_dispatches": 1,
+  "new_model_http_attempts": 0,
+  "cumulative_model_http_attempts": 28,
+  "source_worker_exit_code": 1,
+  "worker_elapsed_seconds": 94.7632137,
+  "source_error": "BODY_DENIED",
+  "wire_bytes_received": 1507328,
+  "declared_content_length": 2033807,
+  "attempts": [
+    {
+      "id": "0ffc109e-136b-4b99-b270-2896f8d92edd",
+      "generation": 1,
+      "state": "unknown",
+      "error_code": "DEADLINE_EXCEEDED",
+      "response_bytes": null
+    },
+    {
+      "id": "9ab67b2d-4d62-47be-8ae0-4df576b099e9",
+      "generation": 2,
+      "state": "unknown",
+      "error_code": "DEADLINE_EXCEEDED",
+      "response_bytes": null
+    },
+    {
+      "id": "c3cae434-cd25-47b9-b26a-1459e2dc3aa3",
+      "generation": 3,
+      "state": "unknown",
+      "error_code": "EGRESS_UNVERIFIED",
+      "response_bytes": null
+    },
+    {
+      "id": "fccb47a8-1f27-4318-b6e1-fabb3e3b9da2",
+      "generation": 4,
+      "state": "settled",
+      "error_code": null,
+      "response_bytes": 2033807
+    },
+    {
+      "id": "b474fa89-9da6-4a41-9981-b3dd3d8471ec",
+      "generation": 5,
+      "state": "unknown",
+      "error_code": "BODY_DENIED",
+      "response_bytes": null
+    }
+  ],
+  "capture_count": 1,
+  "target": {
+    "id": "2831cdec-ec3f-4047-9c84-d768d0ab6cea",
+    "status": "queued",
+    "terminal_outcome": null,
+    "model_call_count": 0,
+    "capability_call_count": 0
+  },
+  "all_preexisting_source_rows_unchanged": true
+}

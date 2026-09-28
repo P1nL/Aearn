@@ -1,0 +1,40 @@
+{
+  "recorded_on": "2026-09-27",
+  "status": "diagnostic_only_not_c_admission",
+  "attempts": [
+    {
+      "url": "https://www.sqlite.org/lang_select.html",
+      "transport": "httpx",
+      "outcome": "operator_aborted_after_excessive_elapsed_time",
+      "capture_kind": "unknown",
+      "captured_bytes": null,
+      "full_sha256": null
+    },
+    {
+      "url": "https://www.sqlite.org/lang_select.html",
+      "transport": "curl",
+      "outcome": "wall_timeout",
+      "http_status": 200,
+      "curl_exit": 28,
+      "capture_kind": "prefix",
+      "captured_bytes": 163840,
+      "declared_content_length": 2033807,
+      "prefix_sha256": "1d654b54c995d98f1b9d115e2b5f902b7f4b77635f82d0fac117a7e87b73feb5",
+      "full_sha256": null,
+      "elapsed_seconds": 20.002726
+    },
+    {
+      "http_status": 200,
+      "body_bytes": 7842,
+      "body_sha256": "11036891a888f19c77ec65956a8e6f355710cdecff4756f5f461353e638e4a31",
+      "url": "https://www.sqlite.org/quickstart.html",
+      "status": "fetched_unreviewed",
+      "transport": "curl",
+      "outcome": "complete_diagnostic_fetch",
+      "capture_kind": "full",
+      "elapsed_seconds": 4.127544,
+      "quality_review": "not_performed",
+      "formal_source_admission": false
+    }
+  ]
+}

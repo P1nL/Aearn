@@ -1,0 +1,30 @@
+{
+  "id": "rag-source-admission-corpus-governance",
+  "name": "rag-source-admission-corpus-governance",
+  "title": "RAG C：分用途来源审核与正式语料准入",
+  "description": "在A/B合同与B隔离候选之上，交付具体文档/版本的质量与用途审核、claim证据、正式来源池准入及沿既有corpus权威的验证/CAS激活/撤权回滚；默认关闭，不把暂存候选直接供课或评分。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "pinl",
+  "assignee": "pinl",
+  "createdAt": "2026-09-25",
+  "completedAt": "2026-09-29",
+  "branch": "codex/rag-source-admission-corpus-governance",
+  "base_branch": "codex/rag-controlled-discovery-ingestion",
+  "worktree_path": null,
+  "commit": "ed5ec9e9fb8ec9a4f502f74e7d248b3dc979063d",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-03-rag-language-ecosystem-adaptive-retrieval",
+  "relatedFiles": [],
+  "notes": "User authorized prior C closeout and worktree commit after D repair. C isolated ACs had already passed; normal independent automated review, exact supplementary excerpts and partial coverage retained. D now passed internal real chain using native Tavily extraction in the same single corpus authority. No production/public/Gate claim; all historical source failures remain.",
+  "meta": {
+    "latest_acceptance_status": "passed_isolated_source_admission",
+    "latest_acceptance_evidence": "research/c-acceptance-2026-09-25.md",
+    "closeout_authorized": true
+  }
+}

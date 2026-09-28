@@ -1,0 +1,52 @@
+{
+  "status": "failed",
+  "stage": "real_parent_dispatch",
+  "model_http_attempts": 4,
+  "usage_per_call": [
+    {
+      "cached_input_tokens": 256,
+      "input_tokens": 4085,
+      "output_tokens": 555,
+      "reasoning_tokens": 386,
+      "total_tokens": 4640
+    },
+    {
+      "cached_input_tokens": 1408,
+      "input_tokens": 3849,
+      "output_tokens": 489,
+      "reasoning_tokens": 214,
+      "total_tokens": 4338
+    },
+    {
+      "cached_input_tokens": 1280,
+      "input_tokens": 3994,
+      "output_tokens": 305,
+      "reasoning_tokens": 74,
+      "total_tokens": 4299
+    },
+    {
+      "cached_input_tokens": 1280,
+      "input_tokens": 4031,
+      "output_tokens": 817,
+      "reasoning_tokens": 426,
+      "total_tokens": 4848
+    }
+  ],
+  "unknown_usage_count": 0,
+  "runs": [
+    {
+      "input_revision": 1,
+      "run_id": "a135d5b2-d73d-48fb-89b2-b01cd4699aa2"
+    },
+    {
+      "input_revision": 1,
+      "run_id": "ccef979a-1c3b-42dc-9237-64c7c153ac36"
+    }
+  ],
+  "source_capture_id": "8f577959-f2dd-45f7-8b32-652af46dbdd8",
+  "corpus_id": "25b9629e-5e72-4714-aa7d-9175bd92d362",
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "failure": "PARENT_PROVIDER_STAGE_FAILED / unknown_effect_type",
+  "full_chain_passed": false
+}

@@ -1,0 +1,41 @@
+{
+  "tier": "real_reviewer_component_only_synthetic_public_sql_facts_not_C_D_e2e",
+  "started_at": "2026-09-27T12:46:26.731483+00:00",
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "max_calls": 2,
+  "calls": [
+    {
+      "case": "wrong_meaning",
+      "expected": "inconsistent",
+      "verdict": "inconsistent",
+      "reason_code": "facet_meaning_mismatch",
+      "model": "deepseek-flash",
+      "usage": {
+        "input_tokens": 425,
+        "cached_input_tokens": 0,
+        "output_tokens": 18,
+        "total_tokens": 443,
+        "reasoning_tokens": 0
+      },
+      "binding_matches": true
+    },
+    {
+      "case": "faithful_meaning",
+      "expected": "consistent",
+      "verdict": "consistent",
+      "reason_code": "supported",
+      "model": "deepseek-flash",
+      "usage": {
+        "input_tokens": 439,
+        "cached_input_tokens": 128,
+        "output_tokens": 11,
+        "total_tokens": 450,
+        "reasoning_tokens": 0
+      },
+      "binding_matches": true
+    }
+  ],
+  "monetary_cost_cny": null,
+  "passed": true
+}

@@ -1,0 +1,55 @@
+{
+  "observed_at": "2026-09-28 08:01:54.099292+00:00",
+  "counts": {
+    "rag_registered_fetch_attempts": 4,
+    "rag_registered_source_captures": 1,
+    "rag_source_reviews": 1,
+    "rag_source_admissions": 1,
+    "grounding_active_corpora": 1,
+    "tutor_learning_plan_drafts": 0,
+    "rag_material_selections": 0,
+    "rag_plan_material_bindings": 0,
+    "rag_material_semantic_reviews": 0
+  },
+  "attempts": [
+    {
+      "id": "0ffc109e-136b-4b99-b270-2896f8d92edd",
+      "generation": 1,
+      "state": "unknown",
+      "error_code": "DEADLINE_EXCEEDED",
+      "response_bytes": null
+    },
+    {
+      "id": "9ab67b2d-4d62-47be-8ae0-4df576b099e9",
+      "generation": 2,
+      "state": "unknown",
+      "error_code": "DEADLINE_EXCEEDED",
+      "response_bytes": null
+    },
+    {
+      "id": "c3cae434-cd25-47b9-b26a-1459e2dc3aa3",
+      "generation": 3,
+      "state": "unknown",
+      "error_code": "EGRESS_UNVERIFIED",
+      "response_bytes": null
+    },
+    {
+      "id": "fccb47a8-1f27-4318-b6e1-fabb3e3b9da2",
+      "generation": 4,
+      "state": "settled",
+      "error_code": null,
+      "response_bytes": 2033807
+    }
+  ],
+  "full_chain_passed": false,
+  "source_admission_passed": true,
+  "new_model_http_attempts": 15,
+  "new_model_total_tokens": 89570,
+  "model_monetary_cost_cny": null,
+  "model_calls_stopped": true,
+  "final_window_declared_total_cap": 20,
+  "earlier_declared_total_cap": 16,
+  "cap_adjustment": "bounded new validation window after recorded failures; no usage reset",
+  "source_capture_id": "8f577959-f2dd-45f7-8b32-652af46dbdd8",
+  "corpus_id": "25b9629e-5e72-4714-aa7d-9175bd92d362"
+}

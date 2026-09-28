@@ -1,0 +1,18 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "后端层及权威文档索引"}
+{"file": ".trellis/tasks/09-27-rag-plan-material-evidence-binding/research/scoped-db-quality-rules.md", "reason": "有界DB/质量现行规则及源文行号，避免注入大历史spec被截断"}
+{"file": ".trellis/spec/backend/grounding-material-contracts.md", "reason": "A材料、用途及授权端口"}
+{"file": ".trellis/spec/backend/grounding-controlled-discovery.md", "reason": "B existing_only和预算/授权边界"}
+{"file": ".trellis/spec/backend/grounding-source-admission.md", "reason": "C review/admission和当前用途授权"}
+{"file": ".trellis/spec/backend/grounding-retrieval-v2.md", "reason": "精确scope检索和覆盖"}
+{"file": ".trellis/spec/backend/plan-preflight-migration.md", "reason": "服务器事实、历史计划保护"}
+{"file": ".trellis/spec/backend/grounding-shadow-integration.md", "reason": "旧shadow隔离及引用审计兼容"}
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/phase-ii-design.md", "reason": "父阶段D设计与E边界"}
+{"file": ".trellis/tasks/09-03-rag-language-ecosystem-adaptive-retrieval/phase-ii-implement.md", "reason": "D消费者交付与验收范围"}
+{"file": ".trellis/tasks/09-27-rag-plan-material-evidence-binding/research/scope-and-acceptance.md", "reason": "本轮边界和证据分层"}
+{"file": ".trellis/tasks/09-27-rag-plan-material-evidence-binding/research/planning-consumer-seams.md", "reason": "现有草案、模型反馈与持久binding接缝"}
+{"file": ".trellis/tasks/09-27-rag-plan-material-evidence-binding/research/evidence-authorization-fence.md", "reason": "精确授权、锁矩阵、fence及隔离验收"}
+{"file": ".trellis/tasks/09-27-rag-plan-material-evidence-binding/research/planning-review.md", "reason": "独立规划复核与纠偏闭环，保留P1/P2防回归"}
+{"file": "docs/setup/project-external-resource-policy.md", "reason": "持续联网/API授权及跨任务费用边界，不重复逐次审批"}
+{"file": ".trellis/spec/backend/grounding-plan-material-consumption.md", "reason": "D实际接口、精确parent/材料上下文、授权事务和隔离验收合同"}
+{"file": ".trellis/tasks/09-27-rag-plan-material-evidence-binding/research/repair-acceptance-plan.md", "reason": "用户批准的三项追加修复及不得用组件测试冒充真实全链的门禁"}
+{"file": ".trellis/tasks/09-27-rag-plan-material-evidence-binding/research/repair-verification.md", "reason": "最新修复证据、最终专项和广回归、真实来源与终结自由文本保留边界"}

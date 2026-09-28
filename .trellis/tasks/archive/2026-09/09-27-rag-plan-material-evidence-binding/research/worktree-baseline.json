@@ -1,0 +1,276 @@
+{
+  "recorded_at": "2026-09-27",
+  "head": "6154746a067368025b9a9933a19f55ef0e05e2fe",
+  "branch": "codex/rag-source-admission-corpus-governance",
+  "purpose": "D planning baseline only. Existing C and unrelated files are not D deliverables. No product changes authorized.",
+  "files": [
+    {
+      "path": ".codex/config.toml",
+      "sha256": "c5b581f851b33e418e27046fca809f25babe6505e3d782fbea68ef72f5eef170"
+    },
+    {
+      "path": ".trellis/spec/backend/grounding-source-admission.md",
+      "sha256": "74e011f51693663176fd11f3d3cd0908228b2866b75daf1c7303bacc3045b0df"
+    },
+    {
+      "path": ".trellis/spec/backend/index.md",
+      "sha256": "664fd145d91c7745ee8c9c1557ff68112db3eb30209d70de469feea616027f43"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/Dockerfile.control",
+      "sha256": "9053f8690deee8c4cc11313123be98857b77933517ff7a81952263ffe2ed13f7"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/Dockerfile.egress",
+      "sha256": "cb46f3fe180d62b6cd03ef445f6f097280c9432a0921eae82ffb0924bee091eb"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/Dockerfile.runtime",
+      "sha256": "2a2671ddb3a250461439b34dc68fa1f24901a85c99721412f229a7dafb7623ef"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/Dockerfile.runtime.dockerignore",
+      "sha256": "92e6dd3aa11bc715ca4ae86340259cb7e2a5eba4f7fa6c74367b2f3e18fd68ed"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/README.md",
+      "sha256": "9ca4f0ea563f4425546ffa45584325ea95a6ce6c12c7123aefa767cd088b6e2b"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/automated_admission.py",
+      "sha256": "e63a3299c6068aed05e8728ea11daef0ebdcb82885dd94bae52e87e6c50afecd"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/check_inputs.py",
+      "sha256": "6751387e5f2740ce84c0fdcee99e0f6d31e2ec3da941c31e1b7ec56313e064c5"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/compose.offline.yaml",
+      "sha256": "d1984f5b131e9e4dbcda0a33dfafdeb4838e1337f289ab9305a3d465626fbe73"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/control_peer.py",
+      "sha256": "8a82469dfe6f4ac1cc92e6417434ab3fba2de48fd9cf7069827dfd1d9c9ea077"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/control_runtime.py",
+      "sha256": "3c2b45c12fe4430b741321cae7811c96ddcfe4997ea2d0e934a66ecf0da4122a"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/offline_preflight.py",
+      "sha256": "ae462d79fda80c8712923f2e1ca5bbcffa7cad556da62330df38913e9097abcf"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/review_operator.py",
+      "sha256": "53ac3b19156ed0b535a3a50f18f44a9bcc3ece8cad19088a201b03229523ef14"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/tests/test_automated_admission.py",
+      "sha256": "6070285837984f7b048cb12c0283b248729f9114c89f789503d71db6abf4c44c"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/tests/test_control_runtime.py",
+      "sha256": "0f76316dc67721a6a1ef0e62122a24c35cff91eeaf3066a92e4c796b6b64d17c"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/tests/test_preflight.py",
+      "sha256": "7934bc97efc8d868d2a91d49f2463848c0e2bf7852582e3a71da8712736839b1"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/tests/test_review_operator.py",
+      "sha256": "7238c7f31fa9e4093603a352963584e08f49e1ba6287374d35873bbe83b5ef32"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/tests/test_worker_once.py",
+      "sha256": "f2f8cad79ee12d1437b706f847a94d970c974225b77b91c3591f9d259bf85820"
+    },
+    {
+      "path": "aearn/infra/rag-c-live/worker_once.py",
+      "sha256": "aec9e8c71c250692b9bb00b0c2dec8fd4e2dcb0e969bddb90d3cd14c44a02e46"
+    },
+    {
+      "path": "aearn/infra/rag-c-source-control/README.md",
+      "sha256": "ace391a4fb0790a35fb24ee5edf37b49a33aea60f6e5d80f41bdc4508ab7ce55"
+    },
+    {
+      "path": "aearn/infra/rag-c-source-control/client.py",
+      "sha256": "2b1e6a58f03f669f9689add9b8b28c84e523e6b921b775a63c26d28e7a6da3ad"
+    },
+    {
+      "path": "aearn/infra/rag-c-source-control/protocol.py",
+      "sha256": "769bd867466ee97a6fbebbf5d83b063e6e3e2879627b58396e8478b9afb81aa1"
+    },
+    {
+      "path": "aearn/infra/rag-c-source-control/server.py",
+      "sha256": "e7028d5860545f2c6eb909a3346815f90ac120863163cf71ef98d88d10efec2e"
+    },
+    {
+      "path": "aearn/infra/rag-c-source-control/tests/test_bridge.py",
+      "sha256": "25d3130ca60fcaefb748897ef39b0e7d52f046b58f81b71a9555d9c52a109d87"
+    },
+    {
+      "path": "aearn/services/api/app/db/schema/320_rag_registered_source.sql",
+      "sha256": "0ae3df0a0c6c4e46cabf324fe01cf7999e941f5739a177bb580ae469d2694010"
+    },
+    {
+      "path": "aearn/services/api/app/db/schema/330_rag_source_admission.sql",
+      "sha256": "40e7c92c5889a2d0e3f16edbf8228a445adff378332c0bc97db96a3f383b19cf"
+    },
+    {
+      "path": "aearn/services/api/app/db/schema/340_rag_c_capture_capacity.sql",
+      "sha256": "ab9ae0edbcf601d4ecea028f81d97570b4fea834eb14f7cf09392e0575d63974"
+    },
+    {
+      "path": "aearn/services/api/app/db/schema/350_rag_c_supplemental_dispatch.sql",
+      "sha256": "c84cb61fc273fd6d5ad79863639a424160047597c712ede81a89550504fb63aa"
+    },
+    {
+      "path": "aearn/services/api/app/db/schema/360_rag_candidate_use_grants.sql",
+      "sha256": "712bfaeac812cf0658ee6a40db8fe44dcaae66216413b45db1104e15e14d3970"
+    },
+    {
+      "path": "aearn/services/api/app/db/schema/__init__.py",
+      "sha256": "550e369d351f251c5e06a3e55d3ea1b0d2958aa32f9cfcc5d6b3677578f48b08"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/candidate_use_grants.py",
+      "sha256": "831ad4936ab1a34824de72c2248284c85a9d8212e68362b082f248e1e4546010"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/claim_verification.py",
+      "sha256": "5e48f0d8f3eff102fa15c5b68ae7b8a9dce6da15b81a7aed04af8197bd09420e"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/corpus_governance.py",
+      "sha256": "8c8afc3c87076225ac772ae92204e82c6d6c2c323bbc7960eb92163d282dd067"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/live_egress.py",
+      "sha256": "dabd639de8fd315a4d55321754b7f5b96c830d04bff3463b6807ab01945c8267"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/pinned_tls_connector.py",
+      "sha256": "53d0872fc7f8cb34f9f23ee9b55b6d0b5189d753dda4701033e494aff1c14218"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/registered_source_bridge_host.py",
+      "sha256": "45dcc3b6d963d7df20ca80612cd5545556a012e7736c7cbe8acfd97f845c43f8"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/registered_source_policy.py",
+      "sha256": "bcad3c552dd1c23ff3a61ac65b747363928036765423ae56ed6243d843f2b82e"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/registered_source_provenance.py",
+      "sha256": "3b937930c665babbd99ca5c6267a3ef95ebc337959b339133547caf20995ae6f"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/registered_source_repository.py",
+      "sha256": "f4ab89704945b87a73e9b7fa90f0375d890908362d483d5fdbb6674380749a94"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/registered_source_retention.py",
+      "sha256": "d551ea99fb0e3f1020efc275d98b19c60c15480f1b5b493e7f70911068ed0695"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/safe_fetch.py",
+      "sha256": "12bd63509a695822705565c26f20755cbc7c5eae2a5df2afa8a2a5fccbbca7a9"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/source_assessment.py",
+      "sha256": "da49e47526c643390a2246f31f1eb89c169f94f62bbf57cea23a200e0c23daf7"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/source_review_repository.py",
+      "sha256": "6e2a69f3d90479f02c7e577bf2c8c62861a3211a5b547d72bac2daa85fccee62"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/sqlite_select_automated_review.py",
+      "sha256": "99f2211e78509ae19af8ff96a1bc8f9b34a2f5245a7ae848f2dd3fb17883129e"
+    },
+    {
+      "path": "aearn/services/api/app/services/grounding/autonomous/sqlite_select_quality.py",
+      "sha256": "e267305b5ee2afc4fe28d87c61b585ecab1ee334638034804b73832db80a1048"
+    },
+    {
+      "path": "aearn/services/api/tests/database/test_rag_c_schema.py",
+      "sha256": "505525c72b2b9d989e02fe7b8eedc4ef4cfe1b6f301b2c8f9bfb91126c257f33"
+    },
+    {
+      "path": "aearn/services/api/tests/database/test_schema_manifest.py",
+      "sha256": "1c2d6fb78aaf0d8eac47715c414f6d34a519c13f02425557026db5402c8e31b7"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_b_inventory.py",
+      "sha256": "f5fe92cda1a8e1ecfd497becad3645f55bfb33005471e1a91cdeb3dbf728f33b"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_b_pinned_tls_connector.py",
+      "sha256": "28699089de49e9580daf3dbf538dc07e1b6ff703e84c7b93a90eb401800308e6"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_candidate_use_grants.py",
+      "sha256": "ce97cdf4891c41395b551062f077910433abb62204b770f55269c6c0f60f615a"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_check_regressions.py",
+      "sha256": "9ff29f082ceb8450042464965cbf8a3d65ac5133fc68e47c5b9cc78ba5d5bfd6"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_claim_verification.py",
+      "sha256": "44d235f55717aabe7194d9b3a4fed5bea7971065a706289b2139c1c0cfcaa0c8"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_corpus_governance.py",
+      "sha256": "1234d6965169bac22b84c86c00dfea89b5c22ca932467a877b04ee99e3660ef2"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_inventory.py",
+      "sha256": "c5717f92071f50a9fe6eaa8d4d06f58ff17d77bc6a44ef5deb659d5b16e8bf00"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_registered_source_bridge_host.py",
+      "sha256": "2b941ff874ac5e5faa7dcabff7bde205cdd23477b442796ea86d30d9236bdc57"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_registered_source_policy.py",
+      "sha256": "7b3331b511d37a58c4424001e19742dd464345acdba08d0affaee4e9b7321f81"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_registered_source_provenance.py",
+      "sha256": "a2417c2a7ee1ddcb76c680003a4ad426dfa5b085505e5ccac7a396fb1d4fccf9"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_registered_source_repository.py",
+      "sha256": "325934a40efd63e8aee6876f39370db30c81c53540557ddbc8939e6a823da676"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_registered_source_retention.py",
+      "sha256": "9daaad1cbdc1524f16171d212cf13b4eac097417ae8170767cff50fd21aac094"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_signed_egress_proof.py",
+      "sha256": "51f9c2d15669dabc7423a1d0c86e5f1fa3f8f185e3af6214de48d93eef10170e"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_source_assessment.py",
+      "sha256": "f979e68ab449c2e2f8aa5cc1c31b8c0616ef8738cd08b8662b1ff5b2a58d681e"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_source_review_repository.py",
+      "sha256": "5c66c6a0fd713f9e60272629e6543e3ecba5d3ee80accb42866306734a994dfc"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_sqlite_select_automated_review.py",
+      "sha256": "1b627e2c8ed0bd363c7884d2fb57a6af6587eac5f8603aad2eac935612cef9c5"
+    },
+    {
+      "path": "aearn/services/api/tests/grounding/test_rag_c_sqlite_select_quality.py",
+      "sha256": "7882b4eb55599d7290a5cabe286a4fa943b6a48f50e0236b4854df7a51a0d95f"
+    },
+    {
+      "path": "docs/architecture/database-schema.md",
+      "sha256": "60e7161c3824a782269d1b30eddc8c2981a7977b6953db0046cbd5651ae2182f"
+    }
+  ]
+}

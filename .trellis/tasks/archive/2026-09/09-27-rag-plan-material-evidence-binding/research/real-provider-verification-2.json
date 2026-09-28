@@ -1,0 +1,43 @@
+{
+  "kind": "real_configured_provider_revision_probe_not_full_D_live_run",
+  "started_at": "2026-09-27T06:41:46.946289+00:00",
+  "configuration": {
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "host": "api.deepseek.com",
+    "key_present": true
+  },
+  "max_http_attempts": 1,
+  "max_output_tokens": 2048,
+  "source": {
+    "http_status": 200,
+    "body_bytes": 7842,
+    "body_sha256": "11036891a888f19c77ec65956a8e6f355710cdecff4756f5f461353e638e4a31",
+    "url": "https://www.sqlite.org/quickstart.html",
+    "status": "fetched_unreviewed"
+  },
+  "monetary_cost_cny": null,
+  "cost_mode": "user_monitored",
+  "public_consumer_enabled": false,
+  "usage": {
+    "input_tokens": 304,
+    "cached_input_tokens": 128,
+    "output_tokens": 825,
+    "total_tokens": 1129,
+    "reasoning_tokens": 760
+  },
+  "response_model": "deepseek-flash",
+  "response_diagnostics": {
+    "response_status": "completed",
+    "incomplete_reason": null,
+    "requested_max_output_tokens": 2048,
+    "requested_reasoning_effort": null,
+    "visible_output_chars": 193
+  },
+  "outcome": "real_revision_verified",
+  "goal_unchanged": true,
+  "nodes_unchanged": true,
+  "gaps_preserved": true,
+  "revised_pace_summary": "暂定每周四次聚焦学习；但资料审核、WHERE 条件过滤材料与表结构材料仍缺失，尚不能视为完整课程安排。",
+  "finished_at": "2026-09-27T06:41:51.471918+00:00"
+}

@@ -1,0 +1,26 @@
+{
+  "tier": "real_reviewer_component_only_synthetic_public_sql_facts_not_C_D_e2e",
+  "started_at": "2026-09-27T12:40:41.539603+00:00",
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "max_calls": 2,
+  "calls": [
+    {
+      "case": "wrong_meaning",
+      "expected": "inconsistent",
+      "verdict": "uncertain",
+      "reason_code": "invalid_response",
+      "model": "deepseek-flash",
+      "usage": {
+        "input_tokens": 324,
+        "cached_input_tokens": 0,
+        "output_tokens": 22,
+        "total_tokens": 346,
+        "reasoning_tokens": 0
+      },
+      "binding_matches": true
+    }
+  ],
+  "monetary_cost_cny": null,
+  "passed": false
+}

@@ -1,0 +1,75 @@
+{
+  "status": "failed",
+  "stage": "real_parent_dispatch",
+  "model_http_attempts": 3,
+  "usage_per_call": [
+    {
+      "cached_input_tokens": 256,
+      "input_tokens": 4960,
+      "output_tokens": 384,
+      "reasoning_tokens": 111,
+      "total_tokens": 5344
+    },
+    {
+      "cached_input_tokens": 1664,
+      "input_tokens": 6917,
+      "output_tokens": 6008,
+      "reasoning_tokens": 5375,
+      "total_tokens": 12925
+    },
+    {
+      "cached_input_tokens": 1920,
+      "input_tokens": 7270,
+      "output_tokens": 562,
+      "reasoning_tokens": 0,
+      "total_tokens": 7832
+    }
+  ],
+  "unknown_usage_count": 0,
+  "runs": [
+    {
+      "input_revision": 1,
+      "run_id": "4da7c6d2-e79c-463c-9f97-760c3513ce39"
+    }
+  ],
+  "phase_http_cap": 4,
+  "prior_http_attempts": 15,
+  "cumulative_http_cap": 23,
+  "profile": "formal",
+  "runtime_profile": {
+    "effective": {
+      "deepseek_v4_flash_input_hard_limit_tokens": 131072,
+      "tutor_context_max_dynamic_target_capacity_tokens": 130688,
+      "tutor_context_output_reserve_tokens": 61440,
+      "tutor_context_window_capacity_tokens": 192512,
+      "tutor_decision_max_output_tokens": 16384
+    },
+    "fields": {
+      "tutor_context_compact_target_tokens": 16000,
+      "tutor_context_complex_target_tokens": 96000,
+      "tutor_context_critical_ratio": 0.95,
+      "tutor_context_extended_target_tokens": 130688,
+      "tutor_context_fixed_mode": null,
+      "tutor_context_max_dynamic_target_tokens": 512,
+      "tutor_context_max_expansions": 1,
+      "tutor_context_normal_target_tokens": 64000,
+      "tutor_context_protocol_reserve_tokens": 128,
+      "tutor_context_safety_margin_tokens": 256,
+      "tutor_context_warning_ratio": 0.8,
+      "tutor_deepseek_repair_thinking_disabled": true,
+      "tutor_deepseek_responses_json_schema_enabled": false,
+      "tutor_deepseek_v4_flash_context_window_tokens": 1000000,
+      "tutor_deepseek_v4_flash_decision_max_output_tokens": 16384,
+      "tutor_deepseek_v4_flash_input_limit_tokens": 131072,
+      "tutor_deepseek_v4_flash_max_dynamic_target_tokens": 130688,
+      "tutor_deepseek_v4_flash_max_output_tokens": 61440,
+      "tutor_default_context_window_tokens": 5296,
+      "tutor_default_decision_max_output_tokens": 1200,
+      "tutor_default_output_reserve_tokens": 1200
+    },
+    "format": "rag_d_runtime_profile_v1",
+    "model": "deepseek-flash",
+    "provider_type": "deepseek"
+  },
+  "full_chain_passed": false
+}
