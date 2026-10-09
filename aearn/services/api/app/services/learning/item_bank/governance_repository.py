@@ -95,8 +95,21 @@ class PostgresLearningItemGovernanceRepository:
         self._conn = conn
         self._items = PostgresLearningItemBankRepository(conn)
 
+    def _deny_native(self, handle: str) -> None:
+        # V2 native versions have a different concrete current-facts publisher.
+        # Never feed their SQL/Python into the legacy V1 validator, fabricate V1
+        # review/pilot authority, or reach automatic materialization/promotion.
+        row = self._conn.execute(
+            "SELECT 1 FROM tutor_learning_item_validation_receipts r "
+            "JOIN tutor_learning_item_versions v ON v.id=r.version_id "
+            "WHERE v.handle=%s AND r.schema_version='candidate_validation_v2' LIMIT 1", (handle,),
+        ).fetchone()
+        if row is not None:
+            raise LearningItemGovernanceError("Native Learning Item requires current native publication authority")
+
     def load_review_subject(self, *, handle: str) -> LearningItemReviewSubject:
         item_handle = _handle(handle)
+        self._deny_native(item_handle)
         row = self._conn.execute(
             """
             SELECT versions.id,versions.creator_identity,versions.handle,versions.content_hash,
@@ -320,6 +333,7 @@ class PostgresLearningItemGovernanceRepository:
         occurred_at: datetime,
     ) -> LearningItemPublicationResult:
         item_handle = _handle(handle)
+        self._deny_native(item_handle)
         key = stable_key(transition_key, label="Learning Item pilot transition key")
         row = self._conn.execute(
             """SELECT id,adjudication_hash FROM tutor_learning_item_review_adjudications
@@ -616,6 +630,7 @@ class PostgresLearningItemGovernanceRepository:
         *,
         occurred_at: datetime,
     ) -> LearningItemPracticeMaterializationResult | None:
+        self._deny_native(subject.item_handle)
         material = build_exercise_authority(subject.source)
         if material is None:
             return None
@@ -696,6 +711,7 @@ class PostgresLearningItemGovernanceRepository:
         *,
         expected_state: str | None = None,
     ) -> Mapping[str, object]:
+        self._deny_native(subject.item_handle)
         row = self._conn.execute(
             """SELECT id,handle,content_hash,creator_identity FROM tutor_learning_item_versions
                WHERE id=%s FOR UPDATE""",
@@ -715,6 +731,7 @@ class PostgresLearningItemGovernanceRepository:
         return row
 
     def _version_row(self, handle: str, *, for_update: bool) -> Mapping[str, object]:
+        self._deny_native(handle)
         lock = " FOR UPDATE" if for_update else ""
         row = self._conn.execute(
             """SELECT id,handle,content_hash,risk_tier,item_kind,item_key,version

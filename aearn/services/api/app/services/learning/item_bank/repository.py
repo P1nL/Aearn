@@ -202,30 +202,14 @@ class PostgresLearningItemBankRepository:
                 raise LearningItemImportConflict("learning item import creator conflicts with stored content")
             return _import_result(existing, replayed=True)
 
-        blueprint = source.blueprint
-        public = source.public
-        blueprint_id = str(learning_item_uuid("blueprint", f"{blueprint.blueprint_key}@{blueprint.version}"))
-        item_id = str(learning_item_uuid("item", public.item_key))
-        version_id = str(learning_item_uuid("version", f"{public.item_key}@{public.version}"))
-        private_id = str(learning_item_uuid("private", f"{public.item_key}@{public.version}"))
-        self._ensure_blueprint(source, blueprint_id)
-        self._ensure_item(item_id=item_id, item_key=public.item_key, item_kind=public.kind.value)
-        self._ensure_version(
-            source,
-            version_id=version_id,
-            item_id=item_id,
-            blueprint_id=blueprint_id,
-            handle=handle,
-            creator_identity=creator,
-        )
-        self._ensure_public(source, version_id=version_id)
-        self._ensure_private(source, private_id=private_id, version_id=version_id)
+        item_id, version_id = self._ensure_immutable_content(source, creator_identity=creator)
         validation_id = self._ensure_validation(validation, version_id=version_id)
         publication_id = self._ensure_initial_publication(
             version_id=version_id,
             handle=handle,
             content_hash=content_hash,
-            validation=validation,
+            validation_hash=validation.receipt_hash,
+            policy_version=validation.policy_version,
             validation_id=validation_id,
             import_key=key,
             occurred_at=imported_at,
@@ -442,6 +426,11 @@ class PostgresLearningItemBankRepository:
               WHERE version_id=versions.id ORDER BY state_version DESC LIMIT 1
             ) AS publication ON publication.state='published'
             WHERE versions.knowledge_key=%s
+              AND NOT EXISTS (
+                SELECT 1 FROM tutor_learning_item_validation_receipts native_validation
+                WHERE native_validation.version_id=versions.id
+                  AND native_validation.schema_version='candidate_validation_v2'
+              )
               AND (%s::text IS NULL OR versions.purpose=%s)
               AND (%s::text IS NULL OR versions.language_id=%s)
               AND (cardinality(%s::text[]) = 0 OR versions.item_kind=ANY(%s::text[]))
@@ -493,6 +482,31 @@ class PostgresLearningItemBankRepository:
             )
             for row in rows
         )
+
+    def _ensure_immutable_content(
+        self, source: LearningItemSourceV1, *, creator_identity: str,
+    ) -> tuple[str, str]:
+        """Common persistence only; the calling importer owns typed validation.
+
+        Keep the original IDs, hashes, collision checks and insert order for both
+        curated V1 and explicitly admitted native V2 content. This is not an
+        import/publication entrypoint and cannot mint validation authority.
+        """
+        blueprint, public = source.blueprint, source.public
+        blueprint_id = str(learning_item_uuid("blueprint", f"{blueprint.blueprint_key}@{blueprint.version}"))
+        item_id = str(learning_item_uuid("item", public.item_key))
+        version_id = str(learning_item_uuid("version", f"{public.item_key}@{public.version}"))
+        private_id = str(learning_item_uuid("private", f"{public.item_key}@{public.version}"))
+        self._ensure_blueprint(source, blueprint_id)
+        self._ensure_item(item_id=item_id, item_key=public.item_key, item_kind=public.kind.value)
+        self._ensure_version(
+            source, version_id=version_id, item_id=item_id, blueprint_id=blueprint_id,
+            handle=learning_item_handle(public.item_key, public.version, source.content_hash),
+            creator_identity=creator_identity,
+        )
+        self._ensure_public(source, version_id=version_id)
+        self._ensure_private(source, private_id=private_id, version_id=version_id)
+        return item_id, version_id
 
     def _ensure_blueprint(self, source: LearningItemSourceV1, blueprint_id: str) -> None:
         blueprint = source.blueprint
@@ -654,7 +668,8 @@ class PostgresLearningItemBankRepository:
               id,version_id,item_handle,content_hash,schema_version,policy_version,compiler_version,
               receipt_json,receipt_hash,passed
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,true)
-            ON CONFLICT (version_id,policy_version,compiler_version) DO NOTHING
+            ON CONFLICT (version_id,policy_version,compiler_version)
+              WHERE schema_version='learning_item_validation_v1' DO NOTHING
             """,
             (
                 validation_id,
@@ -683,7 +698,8 @@ class PostgresLearningItemBankRepository:
         version_id: str,
         handle: str,
         content_hash: str,
-        validation: LearningItemValidationReceiptV1,
+        validation_hash: str,
+        policy_version: str,
         validation_id: str,
         import_key: str,
         occurred_at: datetime,
@@ -693,13 +709,13 @@ class PostgresLearningItemBankRepository:
             (version_id,),
         ).fetchone()
         if existing is not None:
-            if str(existing["state"]) != "machine_verified" or str(existing["authority_hash"]) != validation.receipt_hash:
+            if str(existing["state"]) != "machine_verified" or str(existing["authority_hash"]) != validation_hash:
                 raise LearningItemImportConflict("learning item initial publication receipt conflicts")
             return str(existing["id"])
         transition_key = stable_key(f"import:{import_key}", label="initial publication transition")
         event_id = str(learning_item_uuid("import", f"publication:{version_id}:1"))
         request_hash = canonical_hash(
-            {"version_id": version_id, "state": "machine_verified", "validation_hash": validation.receipt_hash}
+            {"version_id": version_id, "state": "machine_verified", "validation_hash": validation_hash}
         )
         self._conn.execute(
             """
@@ -716,9 +732,9 @@ class PostgresLearningItemBankRepository:
                 content_hash,
                 transition_key,
                 request_hash,
-                validation.receipt_hash,
+                validation_hash,
                 validation_id,
-                validation.policy_version,
+                policy_version,
                 occurred_at,
             ),
         )

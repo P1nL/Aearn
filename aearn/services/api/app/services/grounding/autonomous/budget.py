@@ -52,6 +52,10 @@ class PostgresBudgetPolicyResolver:
 
     def resolve(self, snapshot: AuthoritySnapshot) -> BudgetPolicy | None:
         require_transaction(self.conn)
+        # 498's reserved namespace is source-access-only, even before bootstrap.
+        # Source dispatch debits live in immutable lineage, NOT fresh money/periods.
+        if snapshot.budget.root_id.startswith("root.course-refresh.20261006."):
+            return None
         row = self.conn.execute(
             "SELECT root_id,delegation_id,delegation_generation,delegation_expires_at,"
             "policy_id,policy_generation,period_key,period_start,period_end,cap_units "

@@ -10,7 +10,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -22,6 +22,10 @@ from .source_assessment import (
     assess_document,
 )
 from .source_policy import SourceAuthorization
+
+if TYPE_CHECKING:
+    from .assessment_receipt_repository import AssessmentReceiptRepository
+    from .public_python_teaching_review import PublicPythonTeachingVerifier
 
 
 class ReviewDenied(ValueError):
@@ -130,27 +134,66 @@ class SourceReviewRepository:
                  verifier: QualityVerifier | None = None,
                  candidate_grants: CandidateGrantResolver | None = None,
                  registered_provider_captures: RegisteredProviderCaptureResolver | None = None,
+                 assessment_receipts: AssessmentReceiptRepository | None = None,
+                 teaching_verifier: PublicPythonTeachingVerifier | None = None,
                  ) -> None:
         self.conn = conn
         self.verifier = verifier
         self.candidate_grants = candidate_grants
         self.registered_provider_captures = registered_provider_captures
+        self.assessment_receipts = assessment_receipts
+        self.teaching_verifier = teaching_verifier
+        if teaching_verifier is not None:
+            from .public_python_teaching_review import PublicPythonTeachingVerifier
+
+            if type(teaching_verifier) is not PublicPythonTeachingVerifier or teaching_verifier.conn is not conn:
+                raise ReviewDenied("TEACHING_PORT_DENIED")
+        if assessment_receipts is not None:
+            from .assessment_receipt_repository import AssessmentReceiptRepository
+
+            if (type(assessment_receipts) is not AssessmentReceiptRepository
+                    or assessment_receipts.conn is not conn
+                    or verifier is not assessment_receipts):
+                raise ReviewDenied("ASSESSMENT_PORT_DENIED")
+
+    def _verifier_for(self, capture: CompleteCapture) -> QualityVerifier:
+        if self.teaching_verifier is not None:
+            from .public_python_teaching_profile import URL
+
+            if capture.final_url == URL:
+                return self.teaching_verifier
+        if self.verifier is None:
+            raise ReviewDenied("VERIFIER_DENIED")
+        return self.verifier
 
     def _verifier_scope(self, capture: CompleteCapture
                         ) -> tuple[tuple[Usage, ...] | None, tuple[str, ...] | None]:
         """Current excerpt reviewer limits, or None/None for legacy full review."""
-        if self.verifier is None:
-            raise ReviewDenied("VERIFIER_DENIED")
+        verifier = self._verifier_for(capture)
         try:
             missing = object()
-            usage_method = getattr(self.verifier, "reviewed_usages", missing)
-            excerpt_method = getattr(self.verifier, "approved_excerpts", missing)
+            usage_method = getattr(verifier, "reviewed_usages", missing)
+            excerpt_method = getattr(verifier, "approved_excerpts", missing)
             if usage_method is missing and excerpt_method is missing:
                 return None, None
             if not callable(usage_method) or not callable(excerpt_method):
                 raise ReviewDenied("VERIFIER_SCOPE_DENIED")
             usages = usage_method(capture)
             excerpts = excerpt_method(capture)
+            if self.teaching_verifier is not None and verifier is self.teaching_verifier:
+                if (usages != ("main_teaching",) or capture.lane != "registered"
+                        or capture.scope.subject_id != "route.python" or capture.scope.facets != ("fundamentals",)
+                        or capture.origin != "tutorial" or type(excerpts) is not tuple or len(excerpts) != 3
+                        or any(type(text) is not str or not text.strip() or text not in capture.body.decode("utf8") for text in excerpts)):
+                    raise ReviewDenied("VERIFIER_SCOPE_DENIED")
+                return ("main_teaching",), excerpts
+            if self.assessment_receipts is not None and verifier is self.assessment_receipts:
+                self.assessment_receipts.require_transaction()
+                if (usages != ("assessment_evidence",) or type(excerpts) is not tuple
+                        or not 2 <= len(excerpts) <= 3 or any(text not in capture.body.decode("utf-8")
+                                                   for text in excerpts)):
+                    raise ReviewDenied("VERIFIER_SCOPE_DENIED")
+                return ("assessment_evidence",), excerpts
             if (type(usages) is not tuple or usages != ("supplementary_explanation",)
                     or capture.scope.subject_id != "route.sql"
                     or capture.scope.facets != ("queries",)
@@ -325,7 +368,16 @@ class SourceReviewRepository:
     def review_and_admit(self, *, capture_id: UUID, lane: Literal["registered", "candidate"],
                          document_handle: str, requested_usages: tuple[Usage, ...],
                          now: datetime) -> UUID:
-        """Never includes assessment_evidence: that requires an exact claim verifier."""
+        """Legacy uses unchanged; assessment requires an already persisted signed proof."""
+        if requested_usages == ("assessment_evidence",) and self.assessment_receipts is not None:
+            self.assessment_receipts.require_transaction()
+            scoped = self.assessment_receipts.resolve_review(
+                self.assessment_receipts._capture_source(capture_id), document_handle,
+            )
+            if (lane != "registered" or scoped is None
+                    or scoped[0].facts.registered_capture_id != capture_id):
+                raise ReviewDenied("ASSESSMENT_PROOF_DENIED")
+            return scoped[0].facts.review_id
         if (self.conn.autocommit or type(capture_id) is not UUID or self.verifier is None
                 or now.tzinfo is None or now.utcoffset() is None or not self._schema_ready()):
             raise ReviewDenied("REVIEW_AUTHORITY_MISSING")
@@ -337,7 +389,7 @@ class SourceReviewRepository:
             raise ReviewDenied("CLOCK_DENIED")
         capture, row = self._capture(capture_id, lane, clock)
         try:
-            finding = self.verifier.verify(capture)
+            finding = self._verifier_for(capture).verify(capture)
             reviewed_usages, _ = self._verifier_scope(capture)
         except Exception as exc:
             raise ReviewDenied("VERIFIER_DENIED") from exc
@@ -402,6 +454,10 @@ class SourceReviewRepository:
     def _resolve_scoped(self, source_handle: str, document_handle: str
                         ) -> tuple[CurrentReview, tuple[str, ...] | None] | None:
         """Current authority and excerpt fence from the same captured bytes."""
+        if self.assessment_receipts is not None:
+            assessment = self.assessment_receipts.resolve_review(source_handle, document_handle)
+            if assessment is not None:
+                return assessment
         try:
             if not self._schema_ready() or self.verifier is None:
                 return None
@@ -425,7 +481,7 @@ class SourceReviewRepository:
             capture, policy = self._capture(
                 row["registered_capture_id"] or row["candidate_capture_id"], lane, now,
             )
-            finding = self.verifier.verify(capture)
+            finding = self._verifier_for(capture).verify(capture)
             reviewed_usages, excerpts = self._verifier_scope(capture)
             if not _qualified(finding, capture.scope):
                 return None
@@ -486,7 +542,10 @@ class SourceReviewRepository:
                 storage_receipt_id=row["storage_receipt_id"],
                 admission_receipt_id=row["receipt_handle"],
                 policy_generation=row["policy_generation"], license_status="granted",
-                retained_until=min(policy["policy_retention"], policy["retention_until"]),
+                retained_until=min(policy["policy_retention"], policy["retention_until"],
+                    self.teaching_verifier.review.payload.expires_at
+                    if self.teaching_verifier is not None and self._verifier_for(capture) is self.teaching_verifier
+                    else policy["retention_until"]),
                 allowed_usages=tuple(row["admission_usages"]),
             )
             return CurrentReview(facts=facts, grant=grant, revoked=False), excerpts

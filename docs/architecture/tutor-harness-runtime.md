@@ -1079,3 +1079,120 @@ D以 `build_internal_material_planning_dispatcher` 在现有TutorInteractiveRunD
 追加语义检查：D材料驱动的修订候选（含同次公开消息/公开解释）经独立模型请求对照完整服务端材料事实复核；明确不一致通过安全诊断进入既有至多两次候选循环，不确定/无效/不可用拒绝。审查是概率性语义检查，不能替代C来源权限或目标/用途等确定性校验。派发与结果审计绑定run/revision、selection/parent/candidate哈希，append还核验已接受provider attempt；已有草案未关联材料反馈时不能旁路追加。另行生成的终结自由文本不在本候选审查范围。
 
 每次真实provider发送前重算完整消息输入预算，包含第二次追加的修复指令；超限终止而不是越界发送。reviewer使用相同配置的服务、实例级单HTTP尝试和有界输出，协议的合法verdict/reason枚举也写入系统消息，不能假定所有JSON模式都会传输schema参数。费用usage已知/未知分别保留，不提供人民币硬封顶。
+
+## 2026-09-30：题库 P0/P1 离线供给基础合同
+
+`learning/item_supply` 增加内部严格的覆盖蓝图、供给需求/结果、条款级proof、exposure与支持矩阵纯函数。矩阵直接复用现行语言能力、公课分组与Item类型枚举；声明的能力与M01/M02/M03首批目标不代表真实runtime/source/库存就绪。
+
+纯供给评估按exact objective/clause/scope/version、item/content、当前声明矩阵hash及policy/runtime/scorer/assistance与当前来源授权事实判断覆盖；默认每条目标保留2练习/2独立考核/1补救的基础冗余，重放或重复题族不虚增独立覆盖。独立组合采用有界确定性匹配，避免贪心碰撞制造不存在的缺口；同handle存在矛盾不可变来源坐标时全部副本失效。候选必须published、适用物化、实际能力/运行条件/授权均有效，private owner与learner匹配，正式考核不使用已暴露题族，也不能把main/supplementary用途升级成assessment。非评分demo不能用scorer字符串伪造assessment，planned/unsupported声明不能被runtime布尔事实提升。前置缺口或部分覆盖不伪装成ready_exact。
+
+所有供给判断及scope/blueprint/demand/proof hash边界均完整重验原始模型；不能先按base注解序列化，丢掉nested子类额外字段后再验证以洗白不可信数据。
+
+这只是可信调用方事实的离线校验层，**不签发来源权限、不解析生产claim回执、不读写数据库、不生成或发布题目、不运行执行器、不接线既有Tutor/Practice/Gate/worker/公开route**。合成正例的ready_exact只证明算法；后续题库持久化、真实审核/沙盘、发布fence、供题和RAG E联合仍需独立交付，正式Attempt/Gate/进度与收尾owner不变。本节不是部署或消费者发布批准。
+
+## 2026-09-30：题库 P2 内部存储与用户清理边界
+
+item_supply新增P2持久化模块，保持P1包入口/coverage等纯函数不自动导入数据库。shared和private物理分离，私有repository只认current user/epoch/active scope；现行用户export/reset/delete与cutover新增清单按原事务接入，不引入第二套用户重置或评分权威。
+
+默认LEARNING_ITEM_GENERATION_ENABLED、LEARNING_ITEM_NETWORK_ENABLED、LEARNING_ITEM_V2_ADMISSION_ENABLED、LEARNING_ITEM_SUPPLY_ENABLED均false。即使显式开启v2开关，本阶段缺trusted source/risk/review/execution adapters仍只能evidence_pending，不能发布。v1审核/试点/人审保持原样。
+
+reset前epoch fencing、job/binding失效及私有拓扑清理保证旧请求不恢复材料；不改shared库存、另一用户或历史正式成绩规则。此处只有一次性PostgreSQL fixture的合成验证，不代表P3 worker、P6真实沙盘/collector、P7发布、P8 Gate或P10/E已就绪。不开启公开consumer，不进行默认库迁移或部署。
+
+## 2026-10-01：题库 P3 作业、预算、恢复与离线参数控制
+
+item_supply作业只由显式owner partition和有界scheduler入口内部认领；额外LEARNING_ITEM_SUPPLY_SCHEDULER_ENABLED默认为false，且必须同时满足SUPPLY/GENERATION开关。未接入生产worker/broker/public route。缺参数/预算/未来P4-P6处理器保持preparing或blocked，不用占位处理器制造completed。
+
+lease generation/CAS与owner/epoch/current scope约束阶段写入，checkpoint仅续缺失阶段；父deadline冻结且heartbeat不能无限延期。失租不能完成业务阶段，只能记录实际匹配的成本事实。等价需求/取消重启/新profile沿用canonical root，累计system/user/provider/window/pool额度不因重建清空。shared consumer取消只处理自己的subscription，不伤其他consumer。
+
+参数按provider/model/role/题型/风险难度/输入桶/runtime版本化，保留initial/current/last_stable/floor/ceiling与可信初始化事实。离线控制器只用synthetic观测验证无样本保持、单维canary、质量覆盖退化回退、冷却冻结等行为；shadow/timeout截断/只成功样本/版本或负载漂移不构成真实校准证明。不得重新默认固定旧2轮90秒30秒。真实provider初值与小流量质量验证仍在后续独立阶段。
+
+可执行合同见.trellis/spec/backend/learning-item-supply-runtime.md。本阶段不改正式Attempt/Gate/评分/进度，不宣称真实供题、沙盘或RAG E完成；测试与尚未执行项见B1b实际验收记录。
+
+## 2026-10-01：题库 P4/P5 内部生成与自主审核
+
+`item_supply.pipeline`将严格公开材料生成、现行纯KC确定性验证、独立盲解及六角色首次盲审接到P2私有候选/版本、460 typed报告和P3当前租约/累计资源账本。调用方先提交prepare预留事务，provider IO只能在IDLE连接执行，再单独提交usage结算与带current source fence的阶段结果。来源权限必须来自同connection现行RAG authority及assessment claim，持久化原request/receipt后在验证和审核提交时重新查当前授权；题库agent不自抓取或自授trust。
+
+生成adapter默认单次HTTP；审核必须使用冻结profile/deadline的BoundedOpenAIReviewClient，每端口单次HTTP，资源按七个实际port bound预留。缺完整usage仍unknown，不把缺货币费用记零。blind solve不能接触答案/hidden/rubric/同行结果；六角色记录真实provider/model/prompt/run，相关模型不伪称独立。硬blocker不能被多数票或minor标签覆盖。
+
+Live producer/reviewer还必须匹配不可变root provider与注册冻结profile；内部`trusted_model_bindings`把profile model-version key映射到实际配置model，不能由公开输入选alias。缺该服务端计划或跨provider/role profile计划不受支持时pending，不自动新建root重置预算。生成结算必须匹配原candidate/scope/source/attempt/provider身份，来源形状假冒或stale source/hash/mode/candidate/version报告均不能提交。KC无execution profile时只绑定实际`static-exact-v1`确定性路径，不虚造OS隔离profile。
+
+内部v2结果即使`eligible_internal`也不是publication；没有真实publisher仍pending。代码/SQL缺可信隔离execution或P6资源适配时blocked，short_text无独立评分也blocked。Synthetic仅专属fixture且不得形成live source-current admission。所有能力开关保持关闭，没有新公开route或worker接线，也未改Attempt/Gate/评分/进度；P6-P10及RAG E另行验收。可执行合同见`.trellis/spec/backend/learning-item-supply-pipeline.md`，实际验证记录位于B1c任务research。
+
+## P6 内部隔离沙盘与终态观察（B1d）
+
+新增sandbox严格Run/TerminalReceipt/Observation及固定十一类场景。观察写入和读取必须resolve+verify受信terminal，完整绑定namespace/tenant/actor/scope/content/profile/origin，重放不增数、改origin拒绝；真实learner缺正式collector/session/actor/terminal权威即拒绝。场景expected标签、opaque actor或模型自报成功不能产生sample/completed事实，模拟不触发正式学习结果。
+
+API只持纯runner/receipt端口，standalone executor桥复用已有固定launch/Docker client，P6自有in-image adapter运行Python或SQLite内存DB，原scorer消费真实输出。候选与宿主不共享网络/挂载/凭据；固定digest、nonroot、readonly、cap drop及有界资源。可信父进程输出隔离与adapter退出码门禁保护terminal真实性；P6固定local日志16k/1file/compress=false不改变全局Docker或旧public profile。正式image-locks仍空，内部候选镜像不能产生公开runtime/health批准。
+
+P6两段式执行复用450累计预算：execution_seconds预留时HTTP请求/token真实为0，470 intent绑定授权零header；prepare先commit，IDLE容器IO，usage另行commit，最后current source/lease fence存460 validation。缺独立equivalent/wrong/boundary或语义probe计划保持blocked；真正machine_verified代码/SQL V2直接进入typed P5路径，无legacy V1 receipt且不得伪造。有限first-batch真实来源/评分/审核证据见B1d research；Python当前独立教材审核仍quarantine，不能将机器通过当准入。完整M01/M02/M03候选资格、正式learner、P7-P10/Practice/Gate/E和公开发布另验收。内部合同见`.trellis/spec/backend/learning-item-supply-sandbox.md`。
+
+内部授权时钟来自PostgreSQL clock_timestamp，等待control/global限额/root/window锁后必须重新取时钟并重验lease及所有预算窗口；等待前的时间或调用方now不能批准过期工作。复制/构造的profile/policy/observation/window在早返回前仍严格重验；混合人口不能掩盖精确匹配canary的确定性失败，commit/begin_canary不能绕过cooldown。
+
+当前安全限制：普通reserve仍拒绝legacy execution-only envelope；仅精确当前470 intent可通过reserve_execution批准私有零request/token header，不造假计数。失租/取消且namespace仍合法时只允许原generation记录原reservation成本；revision失效或reset后不能认证新的真实late-actual callback，拒绝新写但保留已有匿名事实和保守占用。此处不宣称真实provider成本对账已完成。
+
+## 2026-10-02 Python assignment goal 有限内部增量
+
+新 `python-assignment-sum-print-v1` 为独立 D1 目标，受保护父进程在密封容器中核验整个程序 AST；仅固定 numbers 赋值后直接 sum/print，或经 total 中间变量两种结构。子进程只接收代码，不接收私有真值。API 服务依据精确公开指令与冻结 blueprint 编译目标规则，实际 candidate/reference/equivalent/negative/blind/ambiguity 共用同一评分器：正确 stdout 与严格 Boolean goal fact 同时满足才通过，缺失或基础设施故障为 pending。
+
+该 profile 有界12容器/120秒；blind与两次ambiguity在原review预留30执行秒内。481事实须验证同一个实际 Docker bridge issuer 的原密封回执，不能用 injected verify=True 或 bare digest 替代。goal-only reviewer v2.3 输入包含服务派生的有效评分描述并绑定 input_hash/资源计划，不泄漏其它角色投票或盲解答案、不指示批准。真实机器评分通过不取消独立教材审核否决，也不构成 P7/P8/E、正式 image lock 或公开消费者验收。
+
+## 2026-10-06：有限题型证据与展示约束简化
+
+用户批准新版本不再以固定四家族、六pair/十二方向完整答案迁移作为统一前置；每条目标仍保留2练习/2考核/1补救，正式Gate、六角色审核、隔离/隐私与budget/source权限不变。`PackInputsV2` 经原 `build_pack` / `select_pack` 入口选择KC/Python/SQLite三种证据profile：逐题质量事实、实际曝光完整性、两道考核之间及与所选训练/已曝光内容之间的具体关系证据。允许同family练习补救；family名称/随机seed/不同hash不自动证明考核不重复。旧V1算法/合同及历史否决保持，不把新规则追溯套到旧结果。
+
+新 `finite-public-spec-v3` 允许标题、规范任务核心外的引言/收尾变化；既有8000字题面上限、一次完整规范任务块、结构化目标/选项/schema/dataset/其他public字段保持。显式兼容slot allocation使同族训练可从factory实际构建；Python scorer接受范围不扩大。生成request仍绑定规范spec，审核/持久化/当前读取绑定实际生成source/public哈希，不能凭“仍符合模板”接受审核后的改写。V3原生current-query核对493事实中实际已审source；无可信finite spec的private publication仍关闭。
+
+内容关系审核绑定稳定的exact contents与目标上下文，可按角色批量处理多pair；不绑定每次变化的30秒exposure receipt。当前资格计算仍需新的owner/epoch/watermark完整快照并比较实际新曝光，不续签旧报告、不把选项字母或标量输出相同当作语义克隆。
+
+这些V2包对象本身仍是可信调用方事实的纯计算，不是签发/验签authority。后续501原生issuer按真实493/494重建逐题事实与稳定关系批次；502复用原495完整曝光collector并消费同事务501 capability，不接收裸DTO作为许可。公共li题目在496私有学习context中使用显式scopedV2投影，不更改题目visibility或旧V1所有权校验。
+
+关系审核执行期限与新证据期限分离：prepare/run/commit服从原P3 lease/root，首次签发的关系判断最多7天且不超过实际source/retention期限，复用不续期；当前source/runtime/mapping/epoch及30秒完整曝光每次重新检查。503/504按签名owner/epoch选择性处理actual-D私有proof和到现有PUBLIC载体的精确关联，准备只允许原producer持有的draft_ready路径，正式消费仍要求原流程confirmed。普通reset/delete按原权限清理；cutover遇到这些数据仍阻止迁移，不为迁移删除当前资料。
+
+2026-10-06本增量216项离线集成、Ruff及全后端446文件Mypy通过；501–504真实PG同片/全manifest重放及空表reset演练全部回滚，未安装。首个KC V3练习已真实生成/验证，但盲解不通过，未进入六角色审核或发布，不重投旧题。501/503/504独立复核、填充私有链、真实完整题包/交付、Attempt/Gate、P8-P10和E仍待验收。内部规格分别见 `.trellis/spec/backend/learning-item-supply-type-evidence.md` 与 `learning-item-supply-native-evidence.md`。
+
+## 2026-10-07：显式诊断式盲解准入策略
+
+用户在2026-10-06批准：对新`autonomous_evidence_policy_v3`，一次真实完成的盲解答错不再前置否决题目，继续独立六角色审核；只有独立正确性、来源、执行/评分/反例/歧义、风险和全部规定审核充分，才可得到`eligible_internal`，并在`diagnostic_warnings`保留`blind_solution_incorrect`，原blind score仍为false。模型回答不能替代题目质量证据，模型答对也不能覆盖其他硬失败。未完成、超时、解析失败当前明确pending，不制造完成回执或自动重试。
+
+`AutonomousEvidencePolicyV3` / `ReviewBundleV3` / `AdmissionEvaluationV3`集中定义在`diagnostic_policy.py`；原V2默认、schema/hash及严格盲解行为不变。原`GenerationRequestV2`保持字节形状，新增独立`SharedGenerationPolicyBindingV3`在首次author预留前绑定原canonical root/job/request/blueprint/profile/lease generation，不因policy变化清预算或新开root。题面`finite-public-spec-v3`不是新准入授权。
+
+新policy经原generation→shared review→admission→493facts→494publication/current-query→501重建一致校验；警告在事实/evaluation摘要中封住，current-query和501提供只读诊断投影。六角色仍看各自独立输入，不读取solver答案/score或同行结论。旧private481不自动升级；没有新增公开路由、自动发布、Attempt/Gate/mastery权限。旧失败候选不能事后追加新policy，不能将其旧结果改成通过。
+
+本节描述已批准的代码合同；正式安装、真实新V3候选与完整供题包仍需单独验收，历史KC失败保持。可执行规则和正负矩阵见 `.trellis/spec/backend/learning-item-supply-diagnostic-blind.md`。
+
+本增量最终离线验证：main核心组合198通过，独立operator63通过，Ruff及后端Mypy447文件/两个operator类型检查通过。执行脚本支持显式`--admission-policy diagnostic-v3`；旧默认`strict-v2`三种计划JSON/hash不变，新policy必须进入新不可变计划，不可追贴旧campaign。Main四次真实CLI plan均零DB/provider，迁移只做强制回滚，未运行新V3真实候选；旧29个SQL文件和旧KC失败18个文件均保持。完整证据见`.runtime/e-blind-diagnostic-20261006/acceptance.json`。
+
+
+## 2026-10-07后续：真实finite规划与actual-D准备
+
+501–505已在B1d指定隔离库安装；通过原thread/turn服务的prepare/enable启用generation1，不启用生产或公开consumer。新用户自动birth仅是private bookkeeping，原cutover不再把它误算为学习内容，真实inbox/watermark等仍阻断。原规划质量校验新增精确闭合finite课程映射：原语言必须可选，描述及完整语义能力tuple必须与注册表同语言目标完全一致；普通节点仍按原language/runner规则。目标/描述hash不变，描述函数抽到纯registry避免planner引入重型mapping依赖。
+
+原provider/dispatcher/action链已真实生成KC有限草稿；教学消费helper通过原C签名/qualification/current corpus/policy/root授权生成两节点全草案selection，再走原actual-D prepare。来源阶段实际执行并签发新私有scope证明，不复制PUBLIC签名或把教学facet就绪当全部KC评分证据。规划本轮共8HTTP，原D累计69→77，失败和unknown金额保留；没有继续自动扩大该规划窗口。
+
+有数据source落库曾暴露503局部别名冲突，506修复及真实插入在本日较早阶段仅回滚通过，独立复核一度受Codex子代理网关403阻塞。该失败及回滚历史保留，不是Aearn项目预算耗尽的证明；后续恢复状态如下，不再把403当作当前阻塞。
+
+### 同日恢复：KC actual-D私有链已按原owner通过
+
+506独立复核passed，接受SQL SHA256为`5856416e9a2c81ce7b2c0d9c4356260ddace1d59ce7d23f9ebbb728c874642a9`；main正式隔离安装，并复用保留的正确私有signed经原repo.persist提交，current readback通过。随后按原次序完成：draft_ready的真实教学selection/actual-D来源→原assessment producer preparation/private bridge/freeze→原confirm_session/CAS（confirmed v4）→confirmed正式current authority→496 finite mapping正式提交。没有手改session status、把PUBLIC签名重贴为私有来源，或用true callback跳过authority。
+
+原reset/delete在该实际填充链上分别force_rollback验收：proof/review/admission/claim/provenance五类各1条→0，179张PUBLIC/其他用户保护表摘要不变，回滚后292表全恢复。持久化的课程/source/mapping仍保留；回滚验收不等于永久删除，也不证明Attempt/Gate或完整供题包已通过。
+
+证据集中在`.runtime/e-actual-d-native-20261007/`：`506-install-persist-4c62a0c556984e3b9cd86475533496c2/result.json`、`kc-assessment-freeze-c10b3fbdce744c55aab34cb6b5537a48/result.json`、`kc-confirm-5b452a3e34c14b399bf7a33f2ad1ea3c/result.json`/`response.json`、`kc-mapping-fcf13940d4bd4ce98e145e79df14db85/result.json`/`mapping.json`、`kc-populated-lifecycle-6692cbbd7bc140e2a72842d0dd01f112/result.json`。独立结论在原题库任务`research/native-private-independent-check-20261007.md`。
+
+上述来源/确认/映射/生命周期恢复窗口0provider/GET/新oracle/新签名，规划历史累计77不变，金额unknown不当0、旧失败/lease/政策窗口不改。后续候选阶段单独追加如下；仍需KC完整2/2/1、Python/SQLite供给和P8、P9、P10/E联合验收。任务保持in_progress；没有提交、推送、归档、生产部署或公开release。最新入口仍为`.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/fast-continuation-progress-20261007.md`。
+
+### 新diagnostic-v3候选的真实partial结果
+
+新immutable campaign `.runtime/e-native-type-20261006/kc-diagnostic-v3-20261007-actual-d-1`中，`practice-1`已实际author 1HTTP并staged，原validator计算结果`machine_verified`；首次505运行时generic RECORD→generation composite转换报SQLSTATE42846，原`commit_validation`未成功提交。原失败attempt `e417d025a3714b71958849be85c4a339`保留；该停止点尚未进入盲解/六角色/发布。507后原491续跑已完成validation提交，随后盲解传输失败，仍不是ready_exact或完整包通过。
+
+main的零provider、未提交PG诊断记录在`.runtime/e-fast-continuation-20261007/schema507-record-diagnosis-c6da9b73d14f4d8da6885f04459427b0/result.json`：generic record失败，typed `%ROWTYPE`通过。随后checker离线4 tests/Ruff和main审阅接受append-only507，只有3处声明改为`%ROWTYPE`，其余BEGIN之后body逐字不变。SHA256=`5cc76ad7f096eb5944a46d269b478ef3b4ca3f29d78e218feac930bd837e71a8`；真实同片/全manifest截至507重放通过，292表行不变，rehearsal回滚恢复原函数/行后正式隔离安装。证据`.runtime/e-fast-continuation-20261007/schema507-acceptance-6c7a29a58d1a4e658638488514a034b8/result.json`，`ddl_committed=true`、provider=0、新author=0。
+
+原491一次续跑已结束：复用同一题目、0新增author，continued-validation-staged.json确认machine_verified及校验回执已提交。随后盲解请求URLError，review.json为blind_solve_pending且blind/bundle均null；六角色未调用，facts/publication未产生。一次无鉴权、无推理HEAD也出现SSLEOFError，当前阻塞为provider TLS/network，不是已完成答错；不能按V3诊断策略放行。已停止新增付费调用，不重审刷通过、不改UNKNOWN或旧lease。 原author已知input12841/output2137/total14978 tokens；盲解请求尝试1次、六角色0次，服务端usage unknown，费用null。两项均追加原ledger，规划累计77不变。传输诊断`.runtime/e-fast-continuation-20261007/provider-head-diagnostic-20261007.json`。
+
+### 2026-10-08：原生供给续行与历史491兼容读取
+
+网络及三目标current source恢复，既有confirmed496课程映射通过只读核验。501不再误要求原generation request.profile等于合法491新facts profile：改为检查实际validation preparation、不可变491原行及原bind重算；普通同job路径仍精确比较。真实回滚readback区分旧历史DATA通过、同旧题current source拒绝，以及新V3当前消费通过。不得用历史重构修复复活旧source/lease。
+
+新增KC同连接pack装配helper已完成实现与独立窄检查，按实际内容slot计数2/2/1而非强制variant各异；仍由原501/502关系/消费owner及真实Artifact writer分别负责。23项native证据文件测试、4项helper测试及scoped Ruff/Mypy通过，**helper live包/交付尚未执行**。
+
+新的有界diagnostic-v3 campaign完成24个provider请求：1道KC题经原493/494内部发布，2道被重大独立审核否决而quarantine。零provider静态重建18个原role输入hash一致，但hash-only findings不足以定位具体缺陷，不能称为模型误判或重审放行。已停止余下付费生成，保留UNKNOWN及旧结果；P7b完整题包、P8–P10/E仍pending。最新实证与调用登记见`.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/fast-continuation-progress-20261008.md`及`.runtime/e-continue-20261008/acceptance.json`；不代表公开release。

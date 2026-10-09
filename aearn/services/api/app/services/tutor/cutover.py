@@ -20,6 +20,9 @@ from uuid import UUID
 from psycopg import Connection
 
 from app.db.connection import connect
+from app.services.grounding.autonomous.actual_d_lifecycle import actual_d_private_counts
+from app.services.learning.item_supply.storage import purge_private_supply
+from app.services.learning.item_supply.storage_tables import EPOCH_TABLE, PRIVATE_TABLES, SHARED_TABLES
 
 
 CUTOVER_VERSION = "harness_clean_slate_v1"
@@ -132,6 +135,7 @@ CUTOVER_SHARED_TUTOR_TABLES = frozenset(
         "tutor_learning_item_practice_materializations",
         "tutor_learning_item_publication_events",
         "tutor_learning_item_import_receipts",
+        "tutor_learning_item_native_publication_proofs",
         "tutor_thread_turn_cutovers",
         "tutor_thread_turn_cutover_events",
     }
@@ -263,6 +267,18 @@ _TARGET_COUNT_SQL: tuple[tuple[str, str], ...] = (
     ("tutor_review_hint_receipts", "SELECT count(*)::int AS count FROM tutor_review_hint_receipts WHERE user_id = %s"),
     ("tutor_review_finalizations", "SELECT count(*)::int AS count FROM tutor_review_finalizations WHERE user_id = %s"),
 )
+# Owner-classified durable tombstones survive reset but are not target payload.
+# Keep the existing exhaustive two-way Tutor partition; never call them shared.
+CUTOVER_RETAINED_TUTOR_TABLES = frozenset({EPOCH_TABLE})
+CUTOVER_SHARED_TUTOR_TABLES = CUTOVER_SHARED_TUTOR_TABLES | frozenset(SHARED_TABLES)
+# 495 creates the epoch-1 birth on every user INSERT, before any learning.
+# Keep it private/target-classified and reset-deletable, but bootstrap alone is
+# not contamination. Inbox, watermarks and every other private table still count.
+_TARGET_COUNT_SQL = _TARGET_COUNT_SQL + tuple(
+    (table, f"SELECT count(*)::int AS count FROM {table} WHERE user_id = %s"
+     + (" AND false" if table == "tutor_item_supply_native_exposure_births" else ""))
+    for table in PRIVATE_TABLES
+) + ((EPOCH_TABLE, f"SELECT count(*)::int AS count FROM {EPOCH_TABLE} WHERE user_id = %s AND false"),)
 CUTOVER_TARGET_TUTOR_TABLES = frozenset(name for name, _query in _TARGET_COUNT_SQL)
 
 
@@ -568,6 +584,10 @@ class HarnessCutoverService:
             raise CutoverError("USER_NOT_FOUND", "用户不存在。", status_code=404, details={"user_id": user_id})
         fields = {name: row.get(name) is not None for name in _LEGACY_PROFILE_FIELDS}
         target_counts = {name: self._count(query, user_id) for name, query in _TARGET_COUNT_SQL}
+        # Mixed RAG tables are not wholesale Tutor-private/shared partitions.
+        # Owner-bound actual-D rows are target contamination, not legacy data to
+        # erase during cutover; the existing target-state gate must block first.
+        target_counts.update(actual_d_private_counts(self._conn, UUID(user_id)))
         thread_ids = checkpoint_thread_ids if checkpoint_thread_ids is not None else self._legacy_thread_ids(user_id)
         return CutoverInventory(
             legacy_counts=legacy_counts,
@@ -646,6 +666,7 @@ class HarnessCutoverService:
         return CheckpointInventory("scoped", counts, tuple(sorted(by_table)), thread_ids)
 
     def _delete_exact_legacy_scope(self, user_id: str) -> None:
+        purge_private_supply(self._conn, UUID(user_id))
         # Exact ownership only; ordinary reset's JSON/text LIKE behavior is never reused.
         self._conn.execute("DELETE FROM idempotency_records WHERE user_id = %s", (user_id,))
         self._conn.execute(

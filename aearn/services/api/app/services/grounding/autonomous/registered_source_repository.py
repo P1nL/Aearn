@@ -22,6 +22,10 @@ from .registered_source_policy import (
     RegisteredSourceScope,
 )
 from .safe_fetch import FetchResult, SafeFetcher
+from .registered_course_refresh import (
+    ACCESS_ROOT_PREFIX, CourseRefreshDenied, CourseRefreshResult,
+    issue as issue_course_refresh,
+)
 
 _KEY = re.compile(r"[A-Za-z0-9._:-]{8,160}\Z")
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
@@ -109,6 +113,32 @@ class PostgresRegisteredSourceRepository(RegisteredSourceGrantResolver):
         self._dsn = dsn
         self._permit_lock = threading.Lock()
         self._permits: dict[UUID, tuple[RegisteredSourceScope, int]] = {}
+
+    def issue_course_refresh_once(
+        self, *, target_key: str, source_permission_expires_at: datetime,
+        retention_permission_expires_at: datetime, now: datetime,
+        enabled: bool = False,
+    ) -> CourseRefreshResult:
+        """Trusted main-only498 issuer; one short atomic transaction, no IO grant.
+
+        This creates bounded source access, not a generic budget or new period.
+        All lineage identities/counters come from actual DB rows and SQL checks.
+        """
+        if enabled is not True:
+            raise RegisteredSourceDenied("COURSE_REFRESH_DEFAULT_OFF")
+        try:
+            with psycopg.connect(self._dsn, row_factory=dict_row) as conn:
+                conn.execute("SET LOCAL statement_timeout='10s'")
+                conn.execute("SET LOCAL lock_timeout='5s'")
+                _clock(conn, now)
+                return issue_course_refresh(conn, target_key=target_key,
+                    source_permission_expires_at=source_permission_expires_at,
+                    retention_permission_expires_at=retention_permission_expires_at,
+                    enabled=True)
+        except CourseRefreshDenied as exc:
+            raise RegisteredSourceDenied(str(exc)) from exc
+        except psycopg.Error as exc:
+            raise RegisteredSourceDenied("COURSE_REFRESH_ISSUE_DENIED") from exc
 
     def resolve(
         self, scope: RegisteredSourceScope, *, now: datetime
@@ -210,10 +240,22 @@ class PostgresRegisteredSourceRepository(RegisteredSourceGrantResolver):
                         or auth["expires_at"] <= _clock(conn, now)
                     ):
                         raise RegisteredSourceDenied("SUPPLEMENTAL_DENIED")
+                    prior_id = auth["prior_attempt_id"]
+                    if auth.get("course_refresh_authorization_id") is not None:
+                        bound = conn.execute(
+                            "SELECT canonical_original_attempt_id,latest_attempt_id "
+                            "FROM rag_registered_course_refresh_authorizations WHERE id=%s",
+                            (auth["course_refresh_authorization_id"],),
+                        ).fetchone()
+                        if bound is None or bound["latest_attempt_id"] != prior_id:
+                            raise RegisteredSourceDenied("COURSE_REFRESH_DISPATCH_DENIED")
+                        #498 serializes on canonical original, not its terminal
+                        #successor used as the physical350 supplemental predecessor.
+                        prior_id = bound["canonical_original_attempt_id"]
                     prior = conn.execute(
                         "SELECT state,supplemental_authorization_id,canonical_url_sha256 "
                         "FROM rag_registered_fetch_attempts WHERE id=%s FOR UPDATE",
-                        (auth["prior_attempt_id"],),
+                        (prior_id,),
                     ).fetchone()
                     auth = conn.execute(
                         "SELECT * FROM rag_registered_supplemental_authorizations "
@@ -236,6 +278,21 @@ class PostgresRegisteredSourceRepository(RegisteredSourceGrantResolver):
                         or prior["canonical_url_sha256"] != policy["canonical_url_sha256"]
                     ):
                         raise RegisteredSourceDenied("SUPPLEMENTAL_DENIED")
+                if scope.root_id.startswith(ACCESS_ROOT_PREFIX):
+                    refresh = conn.execute(
+                        "SELECT * FROM rag_registered_course_refresh_authorizations "
+                        "WHERE root_id=%s FOR SHARE", (scope.root_id,),
+                    ).fetchone()
+                    if (refresh is None or refresh["dispatch_id"] != scope.dispatch_id
+                            or refresh["supplemental_authorization_id"] != supplemental_authorization_id
+                            or refresh["request_hash"] != request_hash
+                            or refresh["operation_key"] != operation_key):
+                        raise RegisteredSourceDenied("COURSE_REFRESH_DISPATCH_DENIED")
+                    conn.execute(
+                        "SELECT rag_registered_course_refresh_check(r,true) "
+                        "FROM rag_registered_course_refresh_authorizations r WHERE id=%s",
+                        (refresh["id"],),
+                    )
                 row = conn.execute(
                     "INSERT INTO rag_registered_fetch_attempts "
                     "(id,policy_id,generation,canonical_url_sha256,root_id,operation_key,request_hash,"
@@ -422,6 +479,179 @@ class PostgresRegisteredSourceRepository(RegisteredSourceGrantResolver):
             return authorization_id
         except psycopg.Error as exc:
             raise RegisteredSourceDenied("FINAL_FOLLOWUP_DENIED") from exc
+
+    def authorize_settled_second_fresh_once(
+        self,
+        *,
+        allowance_id: UUID,
+        authorization_id: UUID,
+        original_attempt_id: UUID,
+        latest_attempt_id: UUID,
+        latest_capture_id: UUID,
+        latest_capture_sha256: str,
+        scope: RegisteredSourceScope,
+        request_hash: str,
+        expires_at: datetime,
+        approval_ref: str,
+        now: datetime,
+    ) -> UUID:
+        """One gen3 fresh GET authority after the second gen1 capture has expired.
+
+        Both historical policies are gen1; second attempt does not mean gen2.
+
+        Schema 484 checks the complete immutable history at allowance, auth and
+        dispatch insertion. This is not the unknown-chain final-followup issuer.
+        The caller supplies independently registered fresh policy/root identities;
+        this short transaction creates neither a network permit nor a dispatch.
+        """
+        if (
+            any(type(value) is not UUID for value in (
+                allowance_id, authorization_id, original_attempt_id,
+                latest_attempt_id, latest_capture_id,
+            ))
+            or type(scope) is not RegisteredSourceScope
+            or scope.generation != 3
+            or scope.url != "https://docs.python.org/3/builtins/functions.html"
+            or scope.subject_id != "route.python"
+            or scope.subject_version != "1.0"
+            or scope.facets != ("fundamentals",)
+            or len({allowance_id, authorization_id, original_attempt_id,
+                    latest_attempt_id, latest_capture_id, scope.dispatch_id}) != 6
+            or not isinstance(latest_capture_sha256, str)
+            or _HASH.fullmatch(latest_capture_sha256) is None
+            or not isinstance(request_hash, str)
+            or _HASH.fullmatch(request_hash) is None
+            or not isinstance(approval_ref, str)
+            or _APPROVAL.fullmatch(approval_ref) is None
+            or not approval_ref.startswith("standingpolicy.settledsecondfreshness.")
+            or not isinstance(expires_at, datetime)
+            or expires_at.tzinfo is None or expires_at.utcoffset() is None
+            or not isinstance(now, datetime)
+            or now.tzinfo is None or now.utcoffset() is None
+        ):
+            raise RegisteredSourceDenied("SETTLED_SECOND_FRESH_DENIED")
+        try:
+            with psycopg.connect(self._dsn, row_factory=dict_row) as conn:
+                # Same original-row serialization point as all three SQL guards.
+                original = conn.execute(
+                    "SELECT id FROM rag_registered_fetch_attempts WHERE id=%s FOR UPDATE",
+                    (original_attempt_id,),
+                ).fetchone()
+                policy = _current(conn, scope, now, lock=True)
+                db_now = _clock(conn, now)
+                if (original is None or policy is None or expires_at <= db_now
+                        or expires_at > db_now + timedelta(hours=24)):
+                    raise RegisteredSourceDenied("SETTLED_SECOND_FRESH_DENIED")
+                conn.execute(
+                    "INSERT INTO rag_registered_final_followup_allowances "
+                    "(id,original_attempt_id,latest_attempt_id,authorization_id,dispatch_id,"
+                    "policy_id,generation,canonical_url_sha256,root_id,request_hash,expires_at,"
+                    "approval_ref,settled_second_capture_id,settled_second_capture_sha256) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,3,%s,%s,%s,%s,%s,%s,%s)",
+                    (allowance_id, original_attempt_id, latest_attempt_id, authorization_id,
+                     scope.dispatch_id, scope.policy_id, policy["canonical_url_sha256"],
+                     scope.root_id, request_hash, expires_at, approval_ref,
+                     latest_capture_id, latest_capture_sha256),
+                )
+                conn.execute(
+                    "INSERT INTO rag_registered_supplemental_authorizations "
+                    "(id,dispatch_id,policy_id,generation,canonical_url_sha256,root_id,request_hash,"
+                    "prior_attempt_id,expires_at,approval_ref,explicit_followup_id) "
+                    "VALUES (%s,%s,%s,3,%s,%s,%s,%s,%s,%s,%s)",
+                    (authorization_id, scope.dispatch_id, scope.policy_id,
+                     policy["canonical_url_sha256"], scope.root_id, request_hash,
+                     original_attempt_id, expires_at, approval_ref, allowance_id),
+                )
+            return authorization_id
+        except psycopg.Error as exc:
+            raise RegisteredSourceDenied("SETTLED_SECOND_FRESH_DENIED") from exc
+
+    def authorize_settled_source_correction_once(
+        self,
+        *,
+        allowance_id: UUID,
+        authorization_id: UUID,
+        original_attempt_id: UUID,
+        original_capture_id: UUID,
+        original_capture_sha256: str,
+        latest_attempt_id: UUID,
+        latest_authorization_id: UUID,
+        scope: RegisteredSourceScope,
+        request_hash: str,
+        expires_at: datetime,
+        approval_ref: str,
+        now: datetime,
+    ) -> UUID:
+        """One SQL gen3 correction after the ordinary supplemental's PID failure.
+
+        The second actual attempt used a separate generation-one policy. Its
+        source_handle, not the expired original's handle, is the target identity.
+        No diagnostic hash/Boolean is accepted as authority; schema 484 checks
+        the exact persisted original capture and terminal failed authorization.
+        This issuer commits only allowance/auth, never a network permit or GET.
+        """
+        if (
+            any(type(value) is not UUID for value in (
+                allowance_id, authorization_id, original_attempt_id,
+                original_capture_id, latest_attempt_id, latest_authorization_id,
+            ))
+            or type(scope) is not RegisteredSourceScope
+            or scope.generation != 3
+            or scope.url != "https://www.sqlite.org/lang_select.html"
+            or scope.subject_id != "route.sql"
+            or scope.subject_version != "1.0"
+            or scope.facets != ("queries",)
+            or len({allowance_id, authorization_id, original_attempt_id,
+                    original_capture_id, latest_attempt_id, latest_authorization_id,
+                    scope.dispatch_id}) != 7
+            or not isinstance(original_capture_sha256, str)
+            or _HASH.fullmatch(original_capture_sha256) is None
+            or not isinstance(request_hash, str)
+            or _HASH.fullmatch(request_hash) is None
+            or not isinstance(approval_ref, str)
+            or _APPROVAL.fullmatch(approval_ref) is None
+            or not approval_ref.startswith("standingpolicy.settledsourcecorrection.")
+            or not isinstance(expires_at, datetime)
+            or expires_at.tzinfo is None or expires_at.utcoffset() is None
+            or not isinstance(now, datetime)
+            or now.tzinfo is None or now.utcoffset() is None
+        ):
+            raise RegisteredSourceDenied("SETTLED_SOURCE_CORRECTION_DENIED")
+        try:
+            with psycopg.connect(self._dsn, row_factory=dict_row) as conn:
+                original = conn.execute(
+                    "SELECT id FROM rag_registered_fetch_attempts WHERE id=%s FOR UPDATE",
+                    (original_attempt_id,),
+                ).fetchone()
+                policy = _current(conn, scope, now, lock=True)
+                db_now = _clock(conn, now)
+                if (original is None or policy is None or expires_at <= db_now
+                        or expires_at > db_now + timedelta(hours=24)):
+                    raise RegisteredSourceDenied("SETTLED_SOURCE_CORRECTION_DENIED")
+                conn.execute(
+                    "INSERT INTO rag_registered_final_followup_allowances "
+                    "(id,original_attempt_id,latest_attempt_id,authorization_id,dispatch_id,"
+                    "policy_id,generation,canonical_url_sha256,root_id,request_hash,expires_at,"
+                    "approval_ref,settled_source_capture_id,settled_source_capture_sha256,"
+                    "settled_source_failed_authorization_id) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,3,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (allowance_id, original_attempt_id, latest_attempt_id, authorization_id,
+                     scope.dispatch_id, scope.policy_id, policy["canonical_url_sha256"],
+                     scope.root_id, request_hash, expires_at, approval_ref,
+                     original_capture_id, original_capture_sha256, latest_authorization_id),
+                )
+                conn.execute(
+                    "INSERT INTO rag_registered_supplemental_authorizations "
+                    "(id,dispatch_id,policy_id,generation,canonical_url_sha256,root_id,request_hash,"
+                    "prior_attempt_id,expires_at,approval_ref,explicit_followup_id) "
+                    "VALUES (%s,%s,%s,3,%s,%s,%s,%s,%s,%s,%s)",
+                    (authorization_id, scope.dispatch_id, scope.policy_id,
+                     policy["canonical_url_sha256"], scope.root_id, request_hash,
+                     original_attempt_id, expires_at, approval_ref, allowance_id),
+                )
+            return authorization_id
+        except psycopg.Error as exc:
+            raise RegisteredSourceDenied("SETTLED_SOURCE_CORRECTION_DENIED") from exc
 
     def settle_capture(
         self,

@@ -29,6 +29,7 @@ from .source_policy import SourceAuthorization
 from .source_review_repository import ReviewDenied, SourceReviewRepository
 from .candidate_use_grants import PostgresCandidateGrantResolver, require_candidate_history_grant
 from .registered_source_retention import require_indefinite_history_grant
+from .corpus_usage_partition import LEGACY_AUDIT_POLICY, PURPOSE_PARTITION_POLICY, document_usages, purpose_facets
 
 
 class CorpusGovernanceDenied(ValueError):
@@ -142,7 +143,14 @@ class CorpusGovernance:
                 or self.source_reviews.verifier is None):
             raise CorpusGovernanceDenied("AUTHORITY_MISSING")
         current = self.conn.execute("SELECT current_database() AS name").fetchone()
-        if current is None or not current["name"].startswith("aearn_rag260_c_"):
+        assessment = self.source_reviews.assessment_receipts
+        owned_assessment = (assessment is not None and assessment.conn is self.conn
+                            and self.source_reviews.verifier is assessment
+                            and current is not None
+                            and current["name"] == "aearn_b1d_sandbox_20261001")
+        if assessment is not None:
+            assessment.require_transaction()
+        if current is None or not (current["name"].startswith("aearn_rag260_c_") or owned_assessment):
             raise CorpusGovernanceDenied("ISOLATED_DATABASE_REQUIRED")
 
     def _rows(self, corpus_id: UUID, *, lock: bool = True) -> tuple[Any, list[dict[str, Any]]]:
@@ -191,11 +199,15 @@ class CorpusGovernance:
         return version, rows
 
     def _audit(self, corpus_id: UUID, *, purpose: str, full_required: bool = False
-               ) -> tuple[dict[str, str | int | bool], dict[str, str | int | bool], str, str, int, bool]:
+               ) -> tuple[dict[str, str | int | bool], dict[str, str | int | bool], str, str, int | None, bool]:
         version, rows = self._rows(corpus_id)
+        partitioned = version.coverage_policy_version == PURPOSE_PARTITION_POLICY
         subject = get_grounding_subject(version.subject_id)
         assert subject is not None
-        if purpose not in ("main_teaching", "supplementary_explanation"):
+        assessment_enabled = (purpose == "assessment_evidence" and self.source_reviews is not None
+                              and self.source_reviews.assessment_receipts is not None
+                              and self.source_reviews.verifier is self.source_reviews.assessment_receipts)
+        if purpose not in ("main_teaching", "supplementary_explanation") and not assessment_enabled:
             raise CorpusGovernanceDenied("PURPOSE_DENIED")
         all_docs = self.conn.execute(
             "SELECT document_id FROM grounding_corpus_documents WHERE corpus_version_id=%s", (corpus_id,)
@@ -218,8 +230,16 @@ class CorpusGovernance:
         families: dict[str, str] = {}
         doc_rows: dict[str, dict[str, Any]] = {}
         generations: set[int] = set()
-        admission_facts: list[tuple[str, str, str, int]] = []
+        admission_facts: list[tuple[object, ...]] = []
+        per_doc_usages: dict[str, tuple[str, ...]] = {}
+        per_doc_facets: dict[str, set[str]] = {}
+        per_policy: set[tuple[str, int]] = set()
         for row in rows:
+            try:
+                needed_usages = document_usages(row["admitted_usages"], row["review_usages"],
+                                                purpose=purpose, partitioned=partitioned)
+            except ValueError:
+                raise CorpusGovernanceDenied("USAGE_PARTITION_DENIED") from None
             if (row["source_id"] != row["linked_source_id"]
                     or row["linked_hash"] != row["reviewed_hash"]
                     or row["source_id"] != row["source_handle"]
@@ -234,8 +254,6 @@ class CorpusGovernance:
                     or row["review_status"] != "reviewed" or row["quality_code"] != "QUALIFIED"
                     or row["active"] is not True or row["revoked_at"] is not None
                     or row["immutable_history_allowed"] is not True
-                    or purpose not in row["admitted_usages"]
-                    or purpose not in row["review_usages"]
                     or row["admission_generation"] != row["review_generation"]):
                 raise CorpusGovernanceDenied("ADMISSION_STALE")
             # A persisted QUALIFIED string is not an authenticated quality review.
@@ -254,7 +272,7 @@ class CorpusGovernance:
                     or current_review.facts.coordinate.document_hash != row["reviewed_hash"]
                     or current_review.facts.coordinate.scope.subject_id != version.subject_id
                     or current_review.facts.coordinate.scope.subject_version != version.subject_version
-                    or purpose not in current_review.grant.allowed_usages
+                    or not set(needed_usages) <= set(current_review.grant.allowed_usages)
                     or current_review.grant.admission_receipt_id != row["receipt_handle"]
                     or not set(row["scope_facets"]) <= set(current_review.facts.covered_facets)):
                 raise CorpusGovernanceDenied("REVIEW_UNVERIFIED")
@@ -318,7 +336,7 @@ class CorpusGovernance:
                         or current_policy["retention_until"] <= db_now
                         or current_policy["expires_at"] <= db_now
                         or current_policy["immutable_history_allowed"] is not True
-                        or purpose not in current_policy["allowed_usages"]
+                        or not set(needed_usages) <= set(current_policy["allowed_usages"])
                         or not set(row["scope_facets"]) <= set(current_policy["facets"])):
                     raise CorpusGovernanceDenied("SOURCE_STALE")
                 # Registered captures only. A B capture needs a separate current B root
@@ -333,7 +351,7 @@ class CorpusGovernance:
                         or row["captured_body"] is None
                         or hashlib.sha256(bytes(row["captured_body"])).hexdigest() != row["fetched_sha256"]
                         or row["fetched_sha256"] != row["reviewed_hash"]
-                        or purpose not in row["policy_usages"]
+                        or not set(needed_usages) <= set(row["policy_usages"])
                         or not set(row["scope_facets"]) <= set(row["review_facets"])
                         or not set(row["scope_facets"]) <= set(row["policy_facets"])
                         or not set(row["source_facets"]) <= set(row["review_facets"])):
@@ -350,10 +368,15 @@ class CorpusGovernance:
                 raise CorpusGovernanceDenied("LINEAGE_CONFLICT")
             families[family] = row["source_id"]
             generations.add(row["review_generation"])
+            per_policy.add((row["policy_id"], row["review_generation"]))
+            per_doc_usages[row["document_id"]] = needed_usages
+            per_doc_facets[row["document_id"]] = set()
             doc_rows[row["document_id"]] = dict(
                 row, captured_body=body, approved_excerpts=approved_excerpts,
             )
             admission_facts.append((str(row["admission_id"]), str(row["review_id"]), row["reviewed_hash"], row["review_generation"]))
+            if partitioned:
+                admission_facts[-1] += (row["document_id"], row["policy_id"], needed_usages)
         for chunk in chunks:
             doc_row = doc_rows.get(chunk["document_id"])
             if (doc_row is None or chunk["source_id"] != doc_row["source_id"]
@@ -368,6 +391,7 @@ class CorpusGovernance:
                         and chunk["content"] not in doc_row["approved_excerpts"])):
                 raise CorpusGovernanceDenied("CHUNK_INVALID")
             covered.update(chunk["facets_json"])
+            per_doc_facets[chunk["document_id"]].update(chunk["facets_json"])
         index = self.conn.execute(
             """SELECT 1 FROM pg_index WHERE indexrelid=to_regclass('idx_grounding_corpus_chunks_search')
                AND indisvalid AND indisready"""
@@ -381,11 +405,14 @@ class CorpusGovernance:
             raise CorpusGovernanceDenied("FTS_UNAVAILABLE")
         required = set(subject.required_facets)
         missing = required - covered
-        if full_required and missing:
+        partitions = purpose_facets(per_doc_usages, per_doc_facets)
+        if partitioned and not partitions[purpose]:
+            raise CorpusGovernanceDenied("PURPOSE_COVERAGE_GAP")
+        if full_required and (required - set(partitions[purpose]) if partitioned else missing):
             raise CorpusGovernanceDenied("COVERAGE_GAP")
         if not covered or not covered <= set(subject.required_facets + subject.optional_facets):
             raise CorpusGovernanceDenied("COVERAGE_INVALID")
-        if len(generations) != 1:
+        if not partitioned and len(generations) != 1:
             raise CorpusGovernanceDenied("POLICY_CONFLICT")
         partial = bool(missing)
         validation: dict[str, str | int | bool] = {
@@ -396,7 +423,16 @@ class CorpusGovernance:
             "required": len(required), "covered": len(covered & required),
             "gap": len(missing), "partial": partial,
         }
-        return validation, coverage, _digest(admission_facts), _digest(sorted(covered)), next(iter(generations)), partial
+        if partitioned:
+            # No fabricated common generation: independent current policies are
+            # hashed per identity. Summary stays identical for every authorized
+            # purpose, while qualification exposes only its own document subset.
+            validation.pop("policy_generation")
+            validation.update(purpose_partitioned=True, policy_generations_digest=_digest(sorted(per_policy)))
+            coverage["usage_facets_digest"] = _digest(partitions)
+        return (validation, coverage, _digest(admission_facts),
+                _digest(partitions) if partitioned else _digest(sorted(covered)),
+                None if partitioned else next(iter(generations)), partial)
 
     def create_candidate(self, candidate: CorpusCandidate, *, sources: Sequence[CorpusSource],
                          documents: Sequence[CorpusDocument], chunks: Sequence[CorpusChunk],
@@ -463,9 +499,10 @@ class CorpusGovernance:
             self.conn.execute(
                 """INSERT INTO rag_corpus_validation_receipts
                    (corpus_id,validation_event_id,admission_digest,coverage_digest,
-                    review_policy_generation,summary_hash,partial_coverage)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                (corpus_id, event.event_id, admissions, facets, generation, sealed.summary_hash, partial),
+                    review_policy_generation,summary_hash,partial_coverage,audit_policy_version)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (corpus_id, event.event_id, admissions, facets, generation, sealed.summary_hash, partial,
+                 PURPOSE_PARTITION_POLICY if version.coverage_policy_version == PURPOSE_PARTITION_POLICY else LEGACY_AUDIT_POLICY),
             )
             return event
 
@@ -508,6 +545,8 @@ class CorpusGovernance:
                 or version.coverage_summary != coverage or receipt["summary_hash"] != summary_hash
                 or receipt["admission_digest"] != admissions or receipt["coverage_digest"] != facets
                 or receipt["review_policy_generation"] != generation
+                or receipt.get("audit_policy_version", LEGACY_AUDIT_POLICY) != (
+                    PURPOSE_PARTITION_POLICY if version.coverage_policy_version == PURPOSE_PARTITION_POLICY else LEGACY_AUDIT_POLICY)
                 or receipt["partial_coverage"] != partial):
             raise CorpusGovernanceDenied("VALIDATION_STALE")
         return version
@@ -575,6 +614,8 @@ class PostgresQualificationAuthority:
                 per_doc.setdefault(chunk["document_id"], set()).update(chunk["facets_json"])
             documents: list[QualifiedDocument] = []
             for row in rows:
+                if full.purpose not in row["admitted_usages"]:
+                    continue
                 scope = SubjectScope(subject_id=version.subject_id,
                                      subject_version=version.subject_version,
                                      facets=tuple(row["review_facets"]))

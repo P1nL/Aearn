@@ -10,6 +10,7 @@
 # IDE and local tool state.
 .idea/
 .playwright-mcp/
+.playwright-cli/
 .omc/
 .claude/worktrees/
 docs/.obsidian/
@@ -44,6 +45,7 @@ coverage.xml
 
 # Local environment, logs, and process state.
 /.runtime/
+/output/
 .env
 .env.*
 !.env.example
@@ -58,12 +60,26 @@ Desktop.ini
 # Local Trellis active-task artifacts; archived tasks remain versioned.
 .trellis/tasks/[0-9][0-9]-*/
 
+# Exact operator sources required by versioned API tests. Keep other active
+# task artifacts, live evidence, and local execution state unversioned.
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/
+.trellis/tasks/09-22-multi-agent-item-bank-sandbox/*
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/
+.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/*
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/actual-d-finite-draft-live-20261007.py
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/actual-d-native-live-20261007.py
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/actual_d_native_live_support_20261007.py
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/native-schemas-live-20261006.py
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/native-type-live-support-20261006.py
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/native-v3-candidate-chain-20261006.py
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/native_kc_pack_live_20261008.py
+!.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/native_v3_chain_support_20261006.py
+
 # Local documentation workspace state and temporary material.
 docs/current/.obsidian/
 docs/current/.trash/
 docs/current/semi-overt/
 tmp/
 
-# Volatile local Obsidian state for the Trellis task vault.
-.trellis/tasks/.obsidian/workspace*.json
-.trellis/tasks/.obsidian/plugins/*/data.json
+# Local Obsidian settings and installed plugins for the Trellis task vault.
+.trellis/tasks/.obsidian/

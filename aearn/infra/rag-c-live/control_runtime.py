@@ -16,6 +16,7 @@ import psycopg
 from cryptography.hazmat.primitives import serialization
 from app.services.grounding.autonomous.registered_source_bridge_host import (
     SignedDispatchProofVerifier, make_host_callbacks,
+    owned_b1d_scope_allowed, owned_course_scope_allowed, transport_database_allowed,
 )
 from app.services.grounding.autonomous.registered_source_policy import RegisteredSourceScope
 from app.services.grounding.autonomous.registered_source_repository import PostgresRegisteredSourceRepository
@@ -27,6 +28,8 @@ DB = re.compile(r"aearn_rag260_c_[a-zA-Z0-9_]+\Z")
 CONFIG = {"approved", "database_name", "dsn_secret_path", "directory", "arm_path",
           "scope", "b_attestor", "worker_uid", "worker_gid", "trusted_gid",
           "worker_image_sha256", "deployment_id"}
+CONFIG_ASSESSMENT = CONFIG | {"owned_b1d_assessment"}
+CONFIG_COURSE = CONFIG | {"owned_b1d_course_sources"}
 PIN = {"public_key_hex", "public_key_sha256", "deployment_id", "policy_sha256",
        "namespace_inode", "allowed_ips"}
 ARM = {"public_key_sha256", "deployment_id", "scope", "request_hash",
@@ -101,9 +104,14 @@ class ControlRuntime:
     """One in-memory dispatch owner: process restart loses both permits."""
 
     def __init__(self, config: dict[str, Any], dsn: str) -> None:
-        if type(config) is not dict or set(config) != CONFIG or config["approved"] is not True:
+        if (type(config) is not dict or set(config) not in (CONFIG, CONFIG_ASSESSMENT, CONFIG_COURSE)
+                or config["approved"] is not True or type(config.get("owned_b1d_assessment", False)) is not bool
+                or type(config.get("owned_b1d_course_sources", False)) is not bool):
             raise ValueError("CONFIG_DENIED")
-        if (type(config["database_name"]) is not str or DB.fullmatch(config["database_name"]) is None
+        owned_assessment = config.get("owned_b1d_assessment", False)
+        owned_course = config.get("owned_b1d_course_sources", False)
+        if (not transport_database_allowed(config["database_name"], owned_b1d_assessment=owned_assessment,
+                                           owned_b1d_course_sources=owned_course)
                 or psycopg.conninfo.conninfo_to_dict(dsn).get("dbname") != config["database_name"]):
             raise ValueError("DATABASE_DENIED")
         self.directory = _absolute(config["directory"])
@@ -125,8 +133,10 @@ class ControlRuntime:
         if not _digest(config["worker_image_sha256"]):
             raise ValueError("IMAGE_DENIED")
         self.scope = Scope.from_wire(config["scope"])
-        if (self.scope.url != "https://www.sqlite.org/lang_select.html"
-                or self.scope.subject_id != "route.sql" or self.scope.facets != ("queries",)):
+        if ((owned_assessment and not owned_b1d_scope_allowed(self._domain_scope()))
+                or (owned_course and not owned_course_scope_allowed(self._domain_scope()))
+                or (not owned_assessment and not owned_course and (self.scope.url != "https://www.sqlite.org/lang_select.html"
+                    or self.scope.subject_id != "route.sql" or self.scope.facets != ("queries",)))):
             raise ValueError("SCOPE_DENIED")
         self._pin = pin
         self._image = config["worker_image_sha256"]
@@ -141,6 +151,8 @@ class ControlRuntime:
             capture_record_type=CaptureRecord, worker_uid=config["worker_uid"],
             worker_gid=config["worker_gid"], dispatch_owner=self._owner,
             worker_image_sha256=self._image,
+            owned_b1d_assessment=owned_assessment,
+            owned_b1d_course_sources=owned_course,
         )
         self._lock = threading.Lock()
         self._attempted = False
@@ -220,7 +232,9 @@ def build_runtime(config_path: Path, *, approved: bool = False) -> ControlRuntim
         raise BridgeDenied("DEFAULT_OFF")
     try:
         config, _ = _root_json(config_path)
-        if set(config) != CONFIG or config["approved"] is not True:
+        if (set(config) not in (CONFIG, CONFIG_ASSESSMENT, CONFIG_COURSE) or config["approved"] is not True
+                or type(config.get("owned_b1d_assessment", False)) is not bool
+                or type(config.get("owned_b1d_course_sources", False)) is not bool):
             raise ValueError("CONFIG_DENIED")
         secret, _ = _root_file(_absolute(config["dsn_secret_path"]), limit=4096)
         dsn = secret.decode("utf-8").strip()

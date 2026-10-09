@@ -1,0 +1,401 @@
+{
+  "profile_id": "sqlite_filter_track_v2",
+  "oracle": {
+    "kind": "filter_track",
+    "table": "learners",
+    "filter_column": "track",
+    "filter_value": "sql",
+    "order_by": "id",
+    "projection": ["name"]
+  },
+  "anchor_file": "sql-filter-track-v2.yaml",
+  "anchor_sha256": "12abeb3a4f4e9efd7c60d58cb711caa00f395e0089104c0f8ab755162eb6ffd2",
+  "instruction": "查询 `sql` 学习方向的学习者，并按 `id` 排序。",
+  "required_capabilities": [
+    "sql.select.where",
+    "sql.order_by"
+  ],
+  "tables": [
+    {
+      "name": "mentors",
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "INTEGER",
+          "nullable": false,
+          "primary_key": true
+        },
+        {
+          "name": "name",
+          "data_type": "TEXT",
+          "nullable": false,
+          "primary_key": false
+        }
+      ],
+      "foreign_keys": []
+    },
+    {
+      "name": "learners",
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "INTEGER",
+          "nullable": false,
+          "primary_key": true
+        },
+        {
+          "name": "name",
+          "data_type": "TEXT",
+          "nullable": false,
+          "primary_key": false
+        },
+        {
+          "name": "track",
+          "data_type": "TEXT",
+          "nullable": false,
+          "primary_key": false
+        },
+        {
+          "name": "mentor_id",
+          "data_type": "INTEGER",
+          "nullable": true,
+          "primary_key": false
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "mentor_id",
+          "references_table": "mentors",
+          "references_column": "id"
+        }
+      ]
+    }
+  ],
+  "public_dataset": {
+    "tables": [
+      {
+        "table": "mentors",
+        "rows": [
+          [
+            1,
+            "Grace Hopper"
+          ],
+          [
+            2,
+            "Edgar Codd"
+          ]
+        ]
+      },
+      {
+        "table": "learners",
+        "rows": [
+          [
+            1,
+            "Ada",
+            "python",
+            1
+          ],
+          [
+            2,
+            "Grace",
+            "sql",
+            2
+          ],
+          [
+            3,
+            "Linus",
+            "systems",
+            null
+          ]
+        ]
+      }
+    ]
+  },
+  "tests": [
+    {
+      "case_type": "visible",
+      "dataset": {
+        "tables": [
+          {
+            "table": "mentors",
+            "rows": [
+              [
+                1,
+                "Grace Hopper"
+              ],
+              [
+                2,
+                "Edgar Codd"
+              ]
+            ]
+          },
+          {
+            "table": "learners",
+            "rows": [
+              [
+                1,
+                "Ada",
+                "python",
+                1
+              ],
+              [
+                2,
+                "Grace",
+                "sql",
+                2
+              ],
+              [
+                3,
+                "Linus",
+                "systems",
+                null
+              ]
+            ]
+          }
+        ]
+      },
+      "expected_output": {
+        "kind": "table_result_v1",
+        "columns": [
+          "name"
+        ],
+        "rows": [
+          [
+            "Grace"
+          ]
+        ]
+      }
+    },
+    {
+      "case_type": "hidden",
+      "dataset": {
+        "tables": [
+          {
+            "table": "mentors",
+            "rows": [
+              [
+                10,
+                "Katherine Johnson"
+              ]
+            ]
+          },
+          {
+            "table": "learners",
+            "rows": [
+              [
+                10,
+                "Barbara",
+                "sql",
+                10
+              ],
+              [
+                11,
+                "Margaret",
+                "python",
+                10
+              ]
+            ]
+          }
+        ]
+      },
+      "expected_output": {
+        "kind": "table_result_v1",
+        "columns": [
+          "name"
+        ],
+        "rows": [
+          [
+            "Barbara"
+          ]
+        ]
+      }
+    }
+  ],
+  "equivalents": [
+    "SELECT l.name FROM learners AS l WHERE l.track IN ('sql') ORDER BY l.id ASC;",
+    "SELECT name FROM learners WHERE NOT (track <> 'sql') ORDER BY id ASC;",
+    "SELECT name FROM learners WHERE track = 'sql' ORDER BY +id;"
+  ],
+  "wrong": "SELECT name FROM learners WHERE track <> 'sql' ORDER BY id;",
+  "boundary": {
+    "submission": "SELECT learners.name FROM learners WHERE 'sql' = learners.track ORDER BY learners.id;",
+    "dataset": {
+      "tables": [
+        {
+          "table": "mentors",
+          "rows": [
+            [
+              1,
+              "M"
+            ],
+            [
+              2,
+              "N"
+            ]
+          ]
+        },
+        {
+          "table": "learners",
+          "rows": [
+            [
+              9,
+              "Zoe",
+              "sql",
+              null
+            ],
+            [
+              2,
+              "Ada",
+              "sql",
+              1
+            ],
+            [
+              7,
+              "Ada",
+              "sql",
+              null
+            ],
+            [
+              5,
+              "Other",
+              "python",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    "columns": [
+      "name"
+    ],
+    "rows": [
+      [
+        "Ada"
+      ],
+      [
+        "Ada"
+      ],
+      [
+        "Zoe"
+      ]
+    ]
+  },
+  "semantics": [
+    {
+      "name": "null",
+      "correct": "SELECT mentor_id FROM learners WHERE mentor_id IS NULL ORDER BY id;",
+      "wrong": "SELECT mentor_id FROM learners WHERE mentor_id = NULL ORDER BY id;",
+      "columns": [
+        "mentor_id"
+      ],
+      "rows": [
+        [
+          null
+        ],
+        [
+          null
+        ]
+      ]
+    },
+    {
+      "name": "duplicates",
+      "correct": "SELECT name FROM learners WHERE track = 'sql' ORDER BY id;",
+      "wrong": "SELECT DISTINCT name FROM learners WHERE track = 'sql' ORDER BY name;",
+      "columns": [
+        "name"
+      ],
+      "rows": [
+        [
+          "Ada"
+        ],
+        [
+          "Ada"
+        ],
+        [
+          "Zoe"
+        ]
+      ]
+    },
+    {
+      "name": "empty",
+      "correct": "SELECT name FROM learners;",
+      "wrong": "SELECT 'unexpected' AS name;",
+      "columns": [
+        "name"
+      ],
+      "rows": [],
+      "dataset": {
+        "tables": [
+          {
+            "table": "mentors",
+            "rows": []
+          },
+          {
+            "table": "learners",
+            "rows": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "order",
+      "correct": "SELECT name FROM learners WHERE track = 'sql' ORDER BY id DESC;",
+      "wrong": "SELECT name FROM learners WHERE track = 'sql' ORDER BY id ASC;",
+      "columns": [
+        "name"
+      ],
+      "rows": [
+        [
+          "Zoe"
+        ],
+        [
+          "Ada"
+        ],
+        [
+          "Ada"
+        ]
+      ]
+    },
+    {
+      "name": "types",
+      "correct": "SELECT id, name, mentor_id FROM learners WHERE id = 9;",
+      "wrong": "SELECT CAST(id AS TEXT) AS id, name, mentor_id FROM learners WHERE id = 9;",
+      "columns": [
+        "id",
+        "name",
+        "mentor_id"
+      ],
+      "rows": [
+        [
+          9,
+          "Zoe",
+          null
+        ]
+      ]
+    },
+    {
+      "name": "joins",
+      "correct": "SELECT l.id AS id, m.name AS mentor_name FROM learners l LEFT JOIN mentors m ON l.mentor_id = m.id WHERE l.track = 'sql' ORDER BY l.id;",
+      "wrong": "SELECT l.id AS id, m.name AS mentor_name FROM learners l INNER JOIN mentors m ON l.mentor_id = m.id WHERE l.track = 'sql' ORDER BY l.id;",
+      "columns": [
+        "id",
+        "mentor_name"
+      ],
+      "rows": [
+        [
+          2,
+          "M"
+        ],
+        [
+          7,
+          null
+        ],
+        [
+          9,
+          null
+        ]
+      ]
+    }
+  ],
+  "scope": "Curated learners/mentors INTEGER/TEXT/NULL + fixed filter/order task only; no REAL/BOOL, arbitrary schema/query semantics or reference-derived oracle."
+}

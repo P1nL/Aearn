@@ -22,6 +22,8 @@ _C_SHARED = frozenset({
     "rag_registered_source_captures", "rag_source_reviews",
     "rag_source_admissions", "rag_source_claim_receipts",
     "rag_corpus_admission_links", "rag_corpus_validation_receipts",
+    "rag_provider_extraction_attempts", "rag_assessment_source_evidence",
+    "rag_registered_course_refresh_authorizations",
 })
 
 # D adds learner-private selection/binding/semantic-review receipts. They are not C shared
@@ -31,6 +33,9 @@ _D_PRIVATE = frozenset({"rag_material_selections", "rag_plan_material_bindings",
 
 
 def test_c_not_visible_to_old_consumers_or_user_purge() -> None:
+    # Global operator/service evidence, not a learner-owned cutover payload.
+    assert "rag_assessment_source_evidence" in _C_SHARED
+    assert "rag_assessment_source_evidence" not in _PRIVATE | _D_PRIVATE
     assert not _C_SHARED & (cutover.CUTOVER_SHARED_TUTOR_TABLES | cutover.CUTOVER_TARGET_TUTOR_TABLES)
     for module in (hybrid_retrieval, local_user_data_repository, cutover):
         source = inspect.getsource(module)

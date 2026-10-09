@@ -916,3 +916,17 @@ ready、非 blocking、无 action/Attempt，不建立额外评分、进度或 co
 本轮没有新增或变更公开HTTP route、Lesson/Tutor/Artifact请求响应字段、课程可选列表或计划确认行为。内部adapter和status projection只供显式测试/演示调用；默认关闭并且不能因corpus处于active/published就声明public course可用。
 
 fixture-only生态不能作为公开course/plan/Lesson/Tutor/Artifact候选。内部引用形状转换不授予现有Lesson持久化或source-inspector权限，不能绕过真实HTTP provenance与冻结来源校验。真实RAG消费者启用、公开状态字段及管理UI均需后续独立合同；本阶段不预先承诺它们的API。
+
+## 2026-09-30：本地用户导出的题库私有摘要
+
+现有GET /api/users/{user_id}/export增量返回item_supply_private_summaries，属于本地用户数据导出，不新增任意题库查询或生成/发布API。按当前用户逐private表返回records（仅opaque id、scope_id、created_at）、truncated及安全epoch状态；禁止包含材料、答案/hidden tests/rubric、provider payload、内容hash、预算/lease细节或其他用户信息。
+
+现有confirm=true的reset-data/delete及cutover owner在同一事务中先fence供给epoch，再清理该用户私有供给数据；旧epoch请求/worker不能恢复，shared及另一用户不受影响。新增四题库能力开关default-off，无公开供题/Gate新路由，P2存储不能返回真实ready_exact库存。
+
+2026-10-01 P4/P5仅增加内部pipeline与460私有收据表，未新增生成/审核/发布HTTP API。两表沿用上述export摘要和原reset/delete维护能力；不输出原生成request、材料、provider body、答案或审查私有payload。v2内部`eligible_internal`不能映射成公开ready/published响应；开关、公开供给消费者及Gate仍未启用。
+
+P6/B1d仍只有内部独立sandbox ports，未新增HTTP生成/运行/审核/供题接口。470私有intents/runs/observations沿原export安全摘要及reset/delete能力；不输出原候选代码、hidden数据、密封executor payload或参考答案。simulation/deterministic_probe不能映射成real_learner、正式Attempt/Gate、mastery/progress/pilot/published。缺正式collector或独立probe计划分别拒绝/blocked，不让客户端填写观察计数或声明完成。
+
+## 2026-10-01：题库 P3 不新增公开生成／供题 API
+
+P3仅扩展内部作业、累计预算与离线参数控制；现有用户export/reset/delete沿用P2安全摘要和维护事务边界，并覆盖新增私有runtime表。summary不得输出profile快照、reservation/settlement成本事实、lease/checkpoint、provider body、private hash或其他用户信息。未新增真实供题、沙盘、publication或Gate端点，五项题库能力开关均default-off。

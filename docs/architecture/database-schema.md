@@ -738,6 +738,7 @@ Repository 使用调用方事务和内部 savepoint；不提交事务、不执�
 | `rag_candidate_use_grants` | 360 中 B full capture 的独立正式用途及历史保留授权，默认关闭；绑定 capture/hash、当前 B policy/generation/root、scope、许可和用途，允许单调撤权。B 暂存许可不能替代该授权 |
 | `rag_source_reviews` / `rag_source_admissions` | 具体注册 capture 或 B full capture 的 exact 文档/revision/hash、lineage、适读性、质量与用途审核事实；review 与 admission 分离，失败/隔离不得准入。`immutable_history_allowed` 只有在 corpus 快照历史内容保留许可明确时才允许 link |
 | `rag_source_claim_receipts` | 对 exact claim/需求/来源版本的独立来源验证事实；同 lineage 的另一篇不能假装独立。隔离执行路径没有可信 verifier adapter 时 DB 默认拒绝仅凭 handle 的 receipt；应用仍须独立验证语义和当前授权 |
+| `rag_assessment_source_evidence` | 480 中新增的 private shared/operator source 签名证据，没有 learner `user_id`；绑定 capture/document、policy/generation/root、有限 profile、demand/claim/execution handle、独立 service signer、sealed terminal 与有效期。不是用户内容、公开来源列表或用户 export；per-user reset/delete 不删除共享 RAG 来源证据 |
 | `rag_corpus_admission_links` / `rag_corpus_validation_receipts` | C admission 到现有 corpus source/document 的绑定及独立动态验证 receipt；现有 `CorpusRepository` 仍是唯一 candidate/validation event/单 active CAS 写者，旧 `CorpusService` 保持 fixture-only |
 
 可信 control 通过 Unix peer UID/GID、固定镜像与当前 DB 授权验证 worker 报告，并在同一事务结算 attempt/capture；B 签名只证明拨号前的 namespace/出口规则，不独立证明 HTTPS 正文。`registered_source_retention` 在调用方事务内物理置空到期/撤权的 capture 正文；formal corpus 历史文本另须 policy 与 review 双重永久历史授权，不能把当前用途过期等同于历史许可撤销，也不能把读取拒绝冒充备份/WAL 擦除。
@@ -775,3 +776,272 @@ Repository 使用调用方事务和内部 savepoint；不提交事务、不执�
 审查派发前记录 `dispatched`，完成后只允许一次结算为 `settled`；结算后不可变，未结算表示结果/用量未知而非免费。相同attempt重放不能再调用模型；usage结算与后续lease/current authorization是否仍有效分开，审计行不等于发布或append授权。append还需核对当前来源、父稿、候选哈希及匹配的已接受provider attempt。授权用户purge先删除语义审计，再删除其引用的selection；共享C来源不受影响。
 
 本schema说明不是生产部署、真实来源资格或真实模型通过证据；实际隔离验收与非声明见D任务 `research/implementation-verification.md`。费用授权与执行核算另外遵循开发期外部资源政策。
+
+## 2026-09-30：题库 P2 物理隔离持久化骨架（440，内部默认关闭）
+
+新增显式fragment 440_learning_item_supply_sandbox.sql。完整DDL职责为14张shared表、22张private表及独立user epoch；权威清单位于item_supply/storage_tables.py。protected purge permit是内部维护权限，不是用户业务表。此结构只在专属一次性fixture验证，不代表已迁移默认业务库或上线供题。
+
+| 表族 | 持久化责任与边界 |
+| --- | --- |
+| tutor_item_supply_shared_* | 公共matrix/policy/blueprint/slot、非私人job/evidence/proof/admission与预算账本；不存私人owner映射、原材料或内容hash |
+| tutor_item_supply_private_* | 用户scope、材料/候选/版本payload、证据/proof/observation、发布引用/绑定/cache/staging、demand/result/subscription及job/预算；物理分表且复合owner/epoch/scope FK |
+| tutor_item_supply_user_epochs | reset后保留的身份tombstone；不是公共catalog，也不是可重新进入学习的库存；deleting禁用epoch |
+
+private repository绑定真实active track/revision/node并重验P1冻结scope/目标合同。私有handle使用独立opaque lip:v2 identity，hash由存储边界计算，不由调用方任意签发。来源坐标必须全空或全有，但只表示证据引用，不能代替RAG current authorization。不可变版本/事件及严格幂等冲突由DB和repository共同拒绝。
+
+ObservationV2区分simulation/deterministic_probe/real_learner；真实观察须精确匹配session assignment document、Attempt、terminal result、plan revision、owner、track和knowledge node，不是只验证UUID非空；但P2不证明真实采集器、沙盘、scorer或用途许可已经ready。autonomous_evidence_policy_v2与旧v1审核/试点/人审隔离，旧行不回填；P2 admission仅blocked/evidence_pending，不能发布或物化。
+
+现行export/reset/delete/cutover接入新private职责清单。reset先锁定并递增epoch、失效job/binding，再按child-to-root清payload；晚到请求或worker旧epoch不能复活，shared和另一用户保持。purge与既有owner使用同一caller事务，不自行COMMIT，rollback同时恢复epoch和payload。SECURITY DEFINER固定search_path、PUBLIC execute撤销、permit私有保护；普通session GUC不授予删除权。schema/maintenance owner是显式可信边界，生产角色grant仍需独立部署配置。
+
+export只返回逐private表的有界安全摘要及truncated标识，不输出材料、答案/hidden tests/rubric、provider body、私人hash或lease信息。DB reset不撤回用户已导出文件或外部备份，本阶段不承诺备份清理。generation/network/v2 admission/supply四开关均default-off；P3作业运行、P4-P10消费者和RAG E验收仍独立。
+
+P2工程验收包含49个聚焦DB/静态/竞态测试；epoch reset与active revision切换均以真实双连接双顺序验证bind/store/direct SQL，调用方rollback保持原子。该计数是2026-09-30 P2验收快照，不代替后续P3测试或完整API验收。
+
+## 2026-10-01：题库 P3 内部运行时与累计账本（450）
+
+在已验收440骨架之后显式增加450_learning_item_supply_runtime.sql，保存版本化参数profile、shared/private作业controls与checkpoint，以及逐资源预留/结算和system/provider/window/pool/private-user累计约束。身份envelope与append-only证据保持分离；所有新增业务表纳入storage_tables/cutover分类，私有表仍使用owner/epoch/scope复合边界，并由既有维护owner在同一事务内清理。
+
+canonical obligation由服务端持久化blueprint或用户scope/demand重建，profile/client/job键不清预算。预留在统一锁序下检查全部维度；unknown占用保守预留，费用未知保留NULL，known reconciliation/真实超额如实记账且不能自动扩大cap。共享统计不得保存私人材料/用户hash映射；用户export只提供有界安全摘要。
+
+450最终增加18张表（11 shared、7 private），包括tutor_item_supply_runtime_global_usage_facts匿名append-only资源事实；只保留opaque reservation/settlement UUID、sequence、资源种类和known/unknown actual，不存用户、epoch、scope、材料/hash/client key/provider body。private reset删除明细后，已发生实际用量仍计入global cap；latest unknown保持预留与已有known overage中的保守值，不把已知超额降为预留。该表纳入shared全分类且不阻止用户私有清理。
+
+本节是内部代码合同，工程验收以B1b任务research下实际P3记录为准，不是默认业务库迁移或生产角色配置。完整P4-P10/E、真实provider与消费者仍独立。
+
+## 2026-10-01：题库 P4/P5 私有流水线收据
+
+新增显式 fragment `460_learning_item_supply_pipeline.sql`，不改440/450原DDL。`tutor_item_supply_private_generation_artifacts`保存严格生成request、内容source、provider/source receipt及source/content hash；`tutor_item_supply_private_pipeline_receipts`按白名单保存validation、blind_solve、review_bundle、admission_evaluation四类不可变typed报告。候选/版本仍复用P2专表，不能在只允许v1公开/私有内容的staging JSON夹带新元数据。
+
+两表是private，不进入公共catalog；复合owner/epoch/scope/job/version FK、服务及DB current lease fence共同约束写入，`publication_enabled`恒为false。原export仅返回有界opaque摘要；原reset capability先清理新增子表，再清理440/450父表，保留epoch tombstone及匿名usage事实。B1c只bootstrap专属fixture，不代表默认业务库迁移或公开发布。
+
+## P6 独立沙盘与执行-only资源门禁（B1d）
+
+显式fragment `470_learning_item_supply_sandbox_execution.sql`增加private execution_intents、sandbox_runs、sandbox_observations三表。P6写入只允许精确独立`aearn_b1d_sandbox_20261001`及sandbox actor namespace，组合owner/epoch/scope/job/root/generation/profile/source身份与真实terminal JSON；Observation唯一键(source_run,scenario,attempt)，origin不可修改，模型不能输入sample/completed统计。
+
+private reservation请求/token仅通过470改为nonnegative；零header必须有当前exact execution intent，七个非执行维度真0，execution_seconds严格正数。shared与原440/450/460文件未改，普通reserve默认仍拒execution-only；受信reserve_execution继续使用原450累计limit/账本及unknown保守结算。P4 synthetic库allowlist只加这一个精确P6库，不开放业务库或伪造live来源。
+
+三表纳入原opaque export与cutover分类，原维护权限按observations→runs→intents→旧children删除，epoch/匿名usage仍保留，没有新PUBLIC purge授权。所有bootstrap与验收只作用于独立沙盘，不代表业务库迁移。阶段提交和结算分别commit，失败的真实执行/已知费用事实不可删改来使验收变绿。
+
+450升级对仍存在的真实settlement与actual子行做幂等additive匿名事实迁移，不更新/删除旧账本，不把缺失维度或已丢失历史编成零。unknown中间行不能遮蔽上一known消费；降低资源/费用需显式reconciliation。profile/observation JSON键集与当前严格模型同步，数据库同时检查参数范围、timeout层级、floor/ceiling与初始化证据，不接受自算正确hash但内容非法的配置。
+
+## 2026-10-02：独立服务的来源 assessment 签名证据（480）
+
+`480_rag_assessment_execution_authority.sql` 已在现有有序 `SCHEMA_FRAGMENT_NAMES` 中增量登记，新增唯一表 `rag_assessment_source_evidence`，并给 `rag_source_reviews` / `rag_source_claim_receipts` 追加 assessment evidence 关联及精确 receipt/applicability/scope 字段。旧行保持 NULL，不把旧 supplementary、synthetic capture 或 candidate 执行结果回填为来源 assessment 权威。
+
+新表属于 **private shared/operator RAG service evidence**：没有 learner `user_id`，保存由独立服务签名、当前 provenance 及实际 source oracle terminal 绑定的证据；普通证明字段不可变，仅有受控单调撤权。当前 SQL 写入仍限明确的 B1d 隔离库，expiry/revocation、用途、来源 current authority 和 service pin 必须分别核验；建表、FK/hash 或分类清单本身不能证明真实签名/来源/准入已通过。
+
+分类沿用 `tests/grounding/test_rag_c_inventory.py::_C_SHARED` 及其既有 RAG exhaustive inventory，不新增另一份业务表 manifest。该集合与 `CUTOVER_SHARED_TUTOR_TABLES` / `CUTOVER_TARGET_TUTOR_TABLES` 均保持无交集；不能因为它是 shared 就加入 Tutor cutover shared、用户 purge 或全局来源删除列表。用户 export/public API 不输出该表、signed proof、source terminal 详情或 operator 审计；per-user reset/delete 只处理既有用户私有引用，不删除共享 RAG 来源和证据，也不产生公开读取授权。480 的首次 PG bootstrap/replay 与真实 reconciliation 由 main 独占执行，此文是结构/分类合同，不代表 PG 或 actual source/admission 验收结果。
+
+## 2026-10-02：候选 admission 私有完整事实（481）
+
+`481_learning_item_supply_admission_facts.sql` 新增 `tutor_item_supply_private_admission_facts`，由现有有序 manifest 增量执行。它是 user/epoch/scope/job/version/generation-artifact 精确绑定的 **private** 表，`payload_json` 保存 source、候选目标 coverage mapping、task ambiguity 等完整 typed receipt；可能包含 goal/draft opaque references、独立执行事实及内部上下文。`publication_enabled` 恒为 false，候选 mapping 不等于 published inventory，不创建第二个正式成绩或 Gate owner。
+
+新表只在 `storage_tables.py::PRIVATE_TABLES` 登记一次；现有 private export 和 cutover target/count SQL 从该 tuple 自动派生，不复制 SQL、不加入 shared catalog。用户 export 仍是既有 bounded opaque ID/scope/time inventory（可据此计数），不读取 `payload_json`、goal/draft 细节、hidden datasets 或 terminal private stdout，不另加 raw 事实导出。历史 `P6_PRIVATE_TABLES` 仅表示470的三张执行表，后续481 facts仍由完整private集合覆盖。
+
+reset/delete 沿用现有维护 owner 与 reset-permit：481 的复合 generation-artifact FK 使用 `ON DELETE CASCADE`，parent 被授权清理时级联删除其当前用户事实；epoch 与 immutable('private') trigger 仍生效。不添加新的PUBLIC purge权限或单独强制删除入口，不提前删除共享 `rag_assessment_source_evidence`、来源/corpus或其它用户数据，累计资源事实与 epoch tombstone 保留。首次481 PG bootstrap/replay及实际cascade/reconciliation由main独占；静态分类/manifest通过不能代替该真实验收。
+
+## 2026-10-02：Python exact canonical assessment source（482）
+
+`482_rag_python_canonical_assessment_source.sql` 保留480原片段，仅增量更新既有来源证据的profile约束及guard；不新增表，不改变shared/private分类、用户export/reset或PUBLIC权限。`python-sum-print-source-v1`仍绑定原exact URL `https://docs.python.org/3/library/functions.html`；新增`python-sum-print-source-v2`只接受canonical URL `https://docs.python.org/3/builtins/functions.html`上的**全新、当前有效registered capture**，Subject仍为`route.python`、facets仍为`fundamentals`。SQLite v1合同不变。
+
+旧Python URL的301不能作为自动redirect许可、URL别名或旧capture转换；不改签旧proof、不续旧grant/policy/root、不复活failed/expired dispatch。有限sum/print source oracle units、独立service签名及pin、完整provenance、用途/expiry/revocation、owner/隔离库和current authority fences全部保留。482 bootstrap/replay成功只证明结构可重复部署，不代表新URL capture、source proof或assessment admission已产生；这些真实前置仍须独立记录。
+
+## 2026-10-03：已结算来源的有限新捕获授权（484）
+
+`484_rag_c_settled_second_fresh_capture.sql` 复用既有 `rag_registered_final_followup_allowances`、supplemental authorization 与 dispatch；只追加 nullable、不可变且互斥的两种精确 capture/failed-authorization 坐标及 FK，不新建 capture 或预算账本，bootstrap 不发授权。
+
+- Python 分支：精确 canonical Python 官方 assessment 范围，第一次 attempt 为 unknown、第二次为 settled 且来源自然过期；两次历史 policy generation 实际均为1，不能把 attempt 顺序当 policy generation。允许一次独立新 generation=3 root/policy/allowance/auth/dispatch，保留原已消费和过期事实。合法 unused-grant correction 的前置撤销链仍须验证。
+- SQLite 分支：精确 SQLite 官方 assessment 范围，原 settled capture 自然过期，随后 ordinary supplemental 为固定 PID namespace 部署错误的 terminal unknown且无 capture。新 generation=3 仅为一次明确批准的部署纠正；source_handle 继承失败 second policy，原 source 的语义范围不得扩大。零 wire 不能把旧 grant 变回 unused。
+- 两分支均复用 original attempt 行锁及 allowance/auth/dispatch 三处 SQL guard；等待锁后重读数据库时间，核验 exact capture/hash、完整历史、license/usages/Subject/facets、scope 非扩大、新 root/current/expiry 及24小时上限。新 nullable 分支不能被当成旧400/410/420 unknown链继续续抓，旧分支保持原语义。
+- 新字段仍是私有 shared/operator 来源治理证据，不加入 learner export，不形成 public consumer authority；旧 unknown、费用、期限、签名、capture 和 immutable history 不重写。新 GET 后仍须独立 source oracle、签名、用途准入、corpus/current binding，不因发 grant 或建表而宣称 E 通过。
+
+## 2026-10-02：来源 assessment 的冻结需求坐标（483）
+
+`483_rag_assessment_demand_coordinates.sql` 增量把来源签名证据唯一键改为 `(capture_id,demand_hash)`：同捕获、同冻结需求仍不得重复签发；新需求可在原捕获及政策仍有效时独立执行、签发。来源 review 保留无 assessment 关联的 legacy capture partial unique，assessment 路径使用 `(registered_capture_id,assessment_evidence_id)` 唯一关联。document/evidence 的其它唯一约束、原不可变与用途/expiry/revocation guards 保留。没有新表、预算根、公开授权或用户清理权限。
+
+capture-only verifier 在多证据时必须 fail closed；明确 document/claim/evidence 的读取仍精确核验。不得使用任意第一条证据，也不得修改旧 proof/grant 的有效期。真实 bootstrap/replay 与新需求独立源事实证据保存在当前隔离任务，原两份 proof 未被改写；这不等于候选审核或公开供题通过。
+## 2026-10-03：原生公开课程的有限 Python 来源证据（486）
+
+`486_rag_public_python_course_source.sql` 不新增表、预算或发布许可，只在既有
+`rag_assessment_source_evidence` 中增加 `python-state-source-v1` 与
+`python-binding-source-v1` 两个闭集 profile。只接受 Python 官方 reference
+`simple_stmts.html` 的当前真实 capture、`route.python` / `1.0` / `fundamentals`
+以及原生 `course.*` / `target.*` demand；仍须应用层独立 service signature、实际
+sealed execution、逐源码片段审核、C admission/current corpus 和消费 fence。
+这不是把旧私有 DraftScope 改名为公开池，也不授予第三方教程 assessment 权威。
+
+为允许包含后续 profile 行的完整 bootstrap 重放，482 的历史子集 CHECK 采用
+`NOT VALID` 过渡态（新写仍受约束），486 在同一 bootstrap 中恢复并验证完整闭集。
+真实新 profile 行存在时重复完整 bootstrap 已验证，已有证据/预算/当前指针未改写。
+消费 actor 根据 profile 推导，不给旧签名 payload 添加默认字段；数据库 clock 的
+时区表示统一到 UTC，不能据此延长旧签名或来源保留期。SQLite 的新课程闭集尚未接入。
+
+## 2026-10-03：C corpus 按用途分区的联合快照（487）
+
+`487_rag_corpus_usage_partitions.sql` 扩展既有 validation receipt，不另建 corpus
+或发布系统。`dynamic-c-purpose-v2` 在同一快照内保留各文档独立的实际准入用途：
+第三方 `main_teaching` 与官方 `assessment_evidence` 不能互相升级。每次审计仍检查
+全部文档的当前来源、审核、policy/root、字节和精确片段；消费资格仅返回目标用途的
+文档和覆盖范围，缺失用途不变成 ready。
+
+新 receipt 的 `audit_policy_version` 明确区分合同；v2 的
+`review_policy_generation` 为 NULL，因为各 policy generation 由身份绑定的摘要
+逐项记录，而不是伪造一个 corpus-global 代数。旧合同继续非空正整数，旧记录补充的
+默认审计标记是 `dynamic-c-v1`，不改写其用途或来源证明。INSERT guard 绑定已验证
+corpus 的实际 policy/summary；既有 immutable guard 和唯一 active CAS 不变。
+实际包含新 v2 receipt 后完整 bootstrap 两次、当前读取和禁用来源强制回滚已验证。
+第三方片段 attribution 和域分离 service 签名是独立当前证据，不是公开发布许可。
+
+## 2026-10-03：原生 SQLite companion 来源与 shared 生成暂存（488–489）
+
+488 在既有来源证据中增加封闭 SQLite predicate/order profile：primary SELECT
+加两个必需的 expr/corefunc typed companions，分别固定 capture、外部 provenance、
+policy/root、完整断言和期限。新子类型参与签名；旧 prepared 不新增默认字段，不续旧
+签名。486 历史子集 CHECK 采用过渡 NOT VALID，488 最终完整闭集 validated。真实三
+来源 prepare/oracle/sign/persist/corpus/current material 与 companion 禁用回滚已执行。
+
+489 新增 `tutor_item_supply_shared_generation_artifacts` 和
+`tutor_item_supply_shared_pipeline_receipts`：原生 public P3 job/root/lease 下的
+append-only confidential staging。没有 learner owner/private scope/demand locator，
+不进入用户 export/reset；也没有提前写 item bank version、publication 或 ready。
+已注册 manifest/SHARED_TABLES，历史 P3 table family 保持不变。实际 bootstrap 首次
+IF/CASE 语法失败已保留，仅加表达式括号后重跑成功；真实 shared provider/admission/
+publication 仍是独立的后续验收，不能由两个表已创建推定完成。随后真实生成暂存的
+三条原生候选见下一节；这不等于 shared publication 已通过。
+
+## 2026-10-03：原生 shared validation（490）
+
+490 新增 `tutor_item_supply_shared_validation_preparations` 与
+`tutor_item_supply_shared_validation_evidence`，均归 shared confidential staging，
+不纳入用户私有 export/reset。不可变 preparation 固定原生 artifact/item/version、
+实际 public job/root/lease/profile、完整 spec/input 及资源计划；evidence 保留真实
+terminal audit、验证结果和已结算使用，不从 JSON 恢复 runner 权威。既有 P3 table
+family 仍是原来的12表，新表单独追加到 `P7_SHARED_PIPELINE_TABLES`。
+
+执行型候选通过原 P3 累计预算 owner 预留，仅精确 current preparation 能使用零
+HTTP/token 的 execution-only header；实际容器运行前提交预留并结束事务，结算先
+独立提交，最终来源/租约检查后再写 typed validation。静态 KC 无 execution
+reservation、terminal 或虚构使用量。只有真实 `machine_verified` 推进 validating，
+不产生 final admission facts、publication、coverage、ready、Attempt 或 Gate。
+
+主代理已实际生成并暂存 Python state、SQLite predicate、KC 各一条，再分别完成
+9/15/0 个真实 OS terminal 的验证路径，三条 typed validation 均已提交。三个 native
+version ID 仍未插入 `tutor_learning_item_versions`。490首次安装成功；含新行的
+一次完整 bootstrap 已提交且8表内容 hash 保持相等。随后只读 bank 查表名错误
+`42P01` 已保留并纠正，仅补做只读 readback，没有再次运行 bootstrap 或候选测试。
+
+
+## 2026-10-03：原生续行、V2导入与发布（491–494）
+
+491 新增 shared candidate continuation：只采用原已提交 generation 的数据，保留其
+原job/profile/author/source，不把旧runner或验证seal恢复为新授权。新操作使用同canonical
+root下的新有界lease/profile。完成guard仅对真实adoption以其余六个真实stage替代原生成stage；
+private/普通七stage路径不变，不写伪generating checkpoint。
+
+492 为原题库validation新增显式V2 provenance。旧V1通过位及policy/hash唯一性由V1
+partial indexes保留；V2以exact shared validation receipt区分操作（静态KC可相同payload
+但不同current provenance）。恢复导入只可复用原合法machine_verified initial event，不能
+重开quarantine/published。新版本继续使用原li命名空间与原import/event owner。
+
+493 新增shared confidential `tutor_item_supply_shared_admission_facts`。签发必须由同连接、
+同Settings且V2 flag启用的原validation/review owner与原runner/ambiguity实例验证，实际
+stage先提交；保留review aggregate UNKNOWN，不把一题target proof升级为2/2/1或族独立性。
+
+494 新增shared `tutor_learning_item_native_publication_proofs`，在原事件链增加明确native_v2
+policy分支，不伪造V1真人pilot/review。proof、原Practice materialization及published事件在
+同一caller事务原子生成；新增nullable无默认/无回填的materialization.native_publication_txid
+绑定受guard保护的top-level transaction marker。savepoint xmin不能与顶层txid等同；旧V1行
+保持NULL。其他stage committed-before的xmin比较仍不普遍覆盖同父事务savepoint，实际链
+按独立commit运行；不声称已验证该更宽边界。
+
+main已在显式B1d内部库应用491及492–494，492–494保留37表原列内容hash。KC首条实际
+native发布/物化通过，Python首条真实review因material_review_failure隔离且无发布。SQL单独真实
+链随后发布/物化通过，fresh连接核对两条原子发布与Python无发布；完整供题尚未通过。
+全部结果以当前任务runtime证据为准。当前查询另行核对source/claim/corpus、
+最终published事件及code/SQL真实runtime health，不能以历史producer lease/旧facts有效期
+充当当前消费许可。裸旧selector排除native。没有公开release、Gate/Attempt或完整库存ready授权。
+
+## 2026-10-06：原生曝光与预留（495）
+
+495增加六张user-private曝光表：births、inbox、events、watermarks、reservations、deliveries，完整表名以 `NATIVE_EXPOSURE_PRIVATE_PURGE_ORDER` 为准。真实users新增产生epoch1完整起点；既有用户、reset后的epoch或未映射origin不能以空记录宣称未曝光。原artifact、assistance、attempt、hint与Gate binding owner触发器记录不可变inbox，Gate binding本身不是展示事实。
+
+原reset在受维护permit保护的epoch推进后通过 `native_exposure_epoch_purge` 按FK顺序清理六表，不另建purge权限，不生成新epoch完整性。assessment必须先预留两个未曝光族，practice展示须当前watermark、同顶层事务delivery及当前publication/source检查；声明family hash不等于语义独立性。
+
+2026-10-06仅在显式B1d隔离库应用495。真实DDL/幂等、rollback-only新用户birth/watermark及原reset→epoch2通过；275张原public表行数/内容摘要安装前后与回滚后不变。真实native展示、assessment预留及完整供题包尚未因此验收，默认业务库/生产未迁移。证据见题库任务 `research/native-exposure-495-live-20261006.md`。
+
+## 2026-10-06：新课程资料的版本化有效期（497）
+
+### 496 真实D冻结课程映射前置
+
+有序manifest在495后加入496的user-private `tutor_item_supply_finite_course_mappings`，引用真实confirmed session/draft、active revision/node、原D selection/assessment binding以及原P3三个scope/demand。映射receipt不可变；读取重核current claim/source/runtime，不从JSON恢复授权。三个scope共用一个receipt，safe export仅输出id、NULL scope_id与created_at，不导出source/mapping JSON。
+
+496 reset hook仅在原permit/epoch推进后删除自身receipt，与495互不引用且均早于原父表删除。2026-10-06隔离B1d真实DDL/同片重放、空mapping表下495/496原reset共存及实际safe-export查询通过，281张既有表内容摘要不变。当时actual-D finite proof、mapped/resolve和含真实mapping FK的reset仍待验收；2026-10-07的实际有限目标提交与填充生命周期证据见下方506后续记录。PUBLIC proof或旧sum/filter语义不能替代新目标来源。
+
+### 497 新资料有效期
+
+用户要求延长课程资料有效期；本次工程默认选择7天。`course_material_7d_v1` 仅作用新课程proof，实际截止取7天、policy有效期/保留期、capture保留期、budget delegation与period结束的最短值；SQLite另取三个实际capture的最短截止。签发采用新的v2格式和签名域，旧v1字节、24小时合同和旧行保持。
+
+497没有新增表或改写旧proof：先校验最终488 guard精确函数体，才替换其版本门禁及原24小时CHECK为版本化检查；缺488或函数漂移拒绝。它不修改旧policy/root/expiry、一次性dispatch、job lease或90秒运行时健康期限，也不扩大484的独立24小时授权。
+
+主代理已在B1d应用497及同片重放，281张既有public表摘要不变，8条旧assessment proof仍通过版本合同且原行不变。新七天来源授权/fresh capture/新签名proof仍待独立真实验收，不能以迁移通过宣称旧过期材料重新可用。证据：`.runtime/e-resume-20261006/schema-497-23fb62f6a97d/result.json`。
+
+### 498 后续真实新授权与资料刷新（2026-10-06更新）
+
+上段497的迁移快照不包含来源验收；后续498已完成真实新授权/捕获/新proof/current消费，不能继续把它们误读为当前未执行。498增加operator共享 `rag_registered_course_refresh_authorizations` 和supplemental可空显式引用，只允许本轮五个精确来源各一次新dispatch。由真实历史推导7个既有借记（含1个unknown），本轮新增5，上限12；新source-access-only roots不可作为通用搜索/provider预算，未新增预算period/reservation或修改旧cap。
+
+五次真实捕获均settled，四次新受限容器source oracle完成，三个assessment v2证明及一个第三方main_teaching证明的实际截止均为2026-10-13 16:09:16.360356+08:00。Python内部分用途混合C generation7、SQL内部C generation4及当前material核验通过；第三方仅exact fundamentals教学充分，不提升为assessment或全课程充分。旧generation材料拒绝且历史保留。
+
+### 499 actual-D source分支：2026-10-06历史门禁检查点
+
+499新增签名v3 actual-D finite profile，物理profile列沿用语义存储键兼容旧486/488重放，签名payload保留新身份而不是重贴PUBLIC。prepare/persist重建真实draft_ready节点/输入代次，consume验证正常confirmed冻结计划和active user；新oracle run/probe身份阻止旧PUBLIC terminal复用；锁等待后再次核验proof截止。
+
+该历史检查点仅通过有限离线检查与隔离DDL/同片重放，当时用户关联payload的安全export/reset/delete或合法保留政策未闭环。它不是匿名shared审计；当时actual-D v3行数为0，未执行v3签发/落库。新的public v2来源已存在时全schema两次重放通过，不能替代含v3行的生命周期验收。后续KC私有链的实际证据见506恢复记录；E及公开消费者仍未放行。
+
+### 500 显式V3题面展示接缝
+
+`500_learning_item_flexible_public_spec.sql` 不新增表或改写历史行。新内部helper只对request blueprint精确 `finite-public-spec-v3` 和三种既有target放宽title/instruction；其他public JSON字段完全一致，规范任务block及其start/end marker必须各一次。旧版本仍全文一致，缺失/null/错误类型拒绝。它不替代typed任务重建、参考/等价/错误解验证、盲解或六角色审核。
+
+迁移先核对有效489+491 trigger完整prosrc摘要及属性，只替换唯一模板比较子句，保留原lease/root/预算/settlement/source/provider/hash和continuation lookup；未知baseline拒绝。新helper无PUBLIC执行授权，不是第二发布authority。manifest显式注册500，既有489/491字节保持。
+
+2026-10-06 19:20+08主会话在显式B1d隔离库实际应用500、同片重放及完整有序manifest重放；49项SQL helper正负例（含SQL NULL与JSON null区别）通过，283张既有public表行数/内容摘要不变。证据 `.runtime/e-type-evidence-20261006/schema-500-c1b6f22ab01c/result.json`。测试仅用历史public形状构造内存参数，没有生成新候选/来源授权/审核回执，不证明真实供题或E完成。
+
+### 501–504 原生题型证据、曝光及actual-D私有关联（已注册；隔离安装状态见下方记录）
+
+-501新增私有content facts、relation preparations、relation batches、eligibility四表；从原493/494和496重建事实。同一原始批次ID/hash/判断时间在新曝光下保持，不重签。新execution期限和最多7天且受source期限限制的evidence期限分别冻结。
+-502新增私有type exposure snapshots/reservations/deliveries三表；当前快照来自原495 collector，SQL当前校验返回完整JSON而非布尔成功。实际预留/交付要求501 capability、同事务、当前scope/epoch/watermark与截止时刻。
+-503按签名actual-D v3 owner/epoch对混合source evidence增加条件私有列、关联保护和原reset/delete尾部清理；504新增私有provenance表，精确关联已有PUBLIC载体，不将私有admission写进共享corpus。保留PUBLIC来源、其他用户、capture和共享预算历史。
+-原epoch清理顺序为502 `a01_native_type_exposure_epoch_purge` →501 `a02_native_type_evidence_epoch_purge` →496/495；501不对后安装的502表建立前向FK。新七张Tutor私有表纳入原inventory和安全导出；条件私有actual-D表单独按owner统计，cutover只阻止不清理。
+
+2026-10-06 21:21+08在显式B1d隔离库完成501–504、同片重放、完整有序manifest重放及新用户空表reset控制，283张旧表按原列投影的行数/摘要保持。**整个演练强制回滚，501–504未安装**；schema初始化器新增`--rehearse`，即使未来`--execute`也先在DDL事务内完成reset控制再提交，失败不留半验收安装。证据 `.runtime/e-native-type-20261006/schema-501-504-8eacad026a52/result.json`。不把编译、重放和空表reset当成填充私有proof/bridge或真实题包交付验收。
+
+### 505 诊断式盲解准入（显式新policy，已注册）
+
+新增共享不可变表`tutor_item_supply_shared_generation_policy_bindings`，在原author reservation前冻结新policy与candidate/root/job/request/profile/lease绑定。属于shared metadata，不进入用户私有清理/导出，不创建新预算钱包或覆盖义务。旧V2没有binding时仍走原策略；旧候选/已经预留或生成的候选不可追贴V3。
+
+505以完整已知函数体和属性pin加法扩展有效489+491+500、493、494门禁，核对真实绑定、V2/V3 schema、原盲解与evaluation warning一致性；未知baseline拒绝。440–504文件不修改，旧行不升级，原provider/source/lease/budget/hash/发布owner不被warning代替。
+
+主会话2026-10-07 00:19+08完成501–505真实PG回滚编译、同片与完整manifest截至505重放、283旧表原列摘要、空表reset及函数/OID完全恢复；00:24+08用旧失败KC候选测试追贴policy，被SQLSTATE23514拒绝，旧artifact摘要和预算root数量不变，新增binding为0。均为**强制回滚，未安装505，也不是新V3填充阳性**。分别记录于`.runtime/e-native-type-20261006/schema-501-505-6b23fc787ae2/result.json`与`.runtime/e-blind-diagnostic-20261006/historical-policy-denial-42cf0025e122/result.json`。后续若505变化须重验对应SHA；不得把仅编译通过当完整题包可交付。
+
+**2026-10-07后续实际状态：** 独立检查补齐后，主会话在原明确隔离库`aearn_b1d_sandbox_20261001`正式安装501–505，`ddl_committed=true`，283张既有表原列摘要保持不变；证据`.runtime/e-native-type-20261006/schema-501-505-888ddcaaf280/result.json`。这不是生产安装、填充私有生命周期或完整题包通过。随后通过原thread/turn cutover的dry-run→prepare→enable启用该隔离库；5个无lease/未决effect的旧queued夹具由原owner取消并追加审计，草稿/source/candidate摘要保持，未直接修改开关状态。证据`.runtime/e-fast-continuation-20261007/thread-turn-v2-enable.json`。
+
+
+### 506 actual-D私有claim触发器别名修复（独立通过，已正式隔离安装）
+
+2026-10-07真实私有source持久化触发`42702 column reference e.id is ambiguous`：503的`rag_actual_d_private_insert()`同时使用record变量`e`和局部JOIN别名`e`。新增506仅把后者改为`private_evidence`，完整pin已知旧/新函数体及函数属性；不改440–505、不放宽owner/epoch/签名/独立引用检查，不更新历史行。
+
+本日较早阶段，主会话2项纯契约测试和Ruff通过；真实PG编译、同片重放、完整manifest截至506重放、复用保留真实签名的私有proof/review/admission/claim插入均在强制回滚中通过，结束后数据与原函数完全还原。证据`.runtime/e-fast-continuation-20261007/schema506-rollback-3be3384227b04ef38120a1f4d3cc9397/result.json`。当时506独立复核受网关403阻塞、尚未正式安装；该失败/回滚记录保留，不倒写成正式提交。
+
+**2026-10-07恢复后的实际状态：** `native-private-independent-check-20261007.md`已追加506独立passed，接受SQL SHA256=`5856416e9a2c81ce7b2c0d9c4356260ddace1d59ce7d23f9ebbb728c874642a9`。main在`aearn_b1d_sandbox_20261001`正式安装同一506，复用保留的正确私有signed，经原`AssessmentReceiptRepository.persist`正式提交且`current_readback=true`；未新增oracle/签名。证据`.runtime/e-actual-d-native-20261007/506-install-persist-4c62a0c556984e3b9cd86475533496c2/result.json`。403不再是当前阻塞。
+
+随后原producer的私有bridge及assessment freeze提交、原confirm_session/CAS确认（session v4）、confirmed authority与496 finite mapping提交均通过。对应同前缀的`kc-assessment-freeze-c10b3fbdce744c55aab34cb6b5537a48/result.json`、`kc-confirm-5b452a3e34c14b399bf7a33f2ad1ea3c/result.json`及`response.json`、`kc-mapping-fcf13940d4bd4ce98e145e79df14db85/result.json`及`mapping.json`。这些是该KC目标的正式私有持久化事实，不是完整题包或公开发布。
+
+原reset/delete又在真实填充数据上分别执行force_rollback：`rag_assessment_source_evidence`、`rag_source_reviews`、`rag_source_admissions`、`rag_source_claim_receipts`、`rag_actual_d_private_provenance`各1条→0；PUBLIC和其他用户的179张保护表摘要不变，回滚后292表全部恢复。证据`.runtime/e-actual-d-native-20261007/kc-populated-lifecycle-6692cbbd7bc140e2a72842d0dd01f112/result.json`，`committed=false`；没有永久删除原课程/私有链，也不把生命周期回滚测试称为新的数据提交。
+
+上述来源至确认/映射/生命周期恢复窗口新增provider/GET/oracle/签名均0，规划累计77和unknown金额保留；随后新候选的1次author独立记在下方，不覆盖该窗口。P7b完整题包、P8–P10/E仍未完成，生产迁移、公开release与Git收尾未执行。
+
+### 507：505运行时RECORD/composite声明修复（2026-10-07已正式隔离安装）
+
+新immutable campaign `.runtime/e-native-type-20261006/kc-diagnostic-v3-20261007-actual-d-1`的`practice-1`已由原author一次HTTP生成staged，原validator本地结果为`machine_verified`；首次原`commit_validation`触发505运行时SQLSTATE42846：generic RECORD不能转换为`tutor_item_supply_shared_generation_artifacts` composite，当时没有成功提交validation，也未进入盲解/六角色/发布。失败attempt `e417d025a3714b71958849be85c4a339`保留，不能用计算阶段通过替代持久化门禁；507后的续跑另记，不覆盖该历史失败。
+
+main在`.runtime/e-fast-continuation-20261007/schema507-record-diagnosis-c6da9b73d14f4d8da6885f04459427b0/result.json`记录真实隔离PG对照：generic record失败42846，仅generation表`%ROWTYPE`对照通过，全部未提交、0provider。该诊断本身不等于修复安装；后续append-only507已完成checker离线4 tests/Ruff及main审阅：仅3处声明变为`%ROWTYPE`，其余BEGIN之后body逐字不变，未修改旧505/历史事实。
+
+接受507 SHA256=`5cc76ad7f096eb5944a46d269b478ef3b4ca3f29d78e218feac930bd837e71a8`。真实PG同片重放、完整manifest截至507重放、292表行不变及rehearsal回滚恢复原函数/行均通过，随后正式隔离安装`ddl_committed=true`；证据`.runtime/e-fast-continuation-20261007/schema507-acceptance-6c7a29a58d1a4e658638488514a034b8/result.json`。DDL验收provider=0、新author=0。原491一次续跑已结束：复用同一题目、0新增author，continued-validation-staged.json确认machine_verified及校验回执已提交。随后盲解请求URLError，review.json为blind_solve_pending且blind/bundle均null；六角色未调用，facts/publication未产生。一次无鉴权、无推理HEAD也出现SSLEOFError，当前阻塞为provider TLS/network，不是已完成答错；不能按V3诊断策略放行。已停止新增付费调用，不重审刷通过、不改UNKNOWN或旧lease。原author known12841/2137、total14978 tokens和金额null保留，规划累计仍77；盲解请求尝试1次、六角色0次，服务端usage unknown及7请求原review预留保留；传输诊断`.runtime/e-fast-continuation-20261007/provider-head-diagnostic-20261007.json`。

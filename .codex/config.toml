@@ -32,7 +32,7 @@ approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
 model_reasoning_summary = "detailed"
-model_verbosity = "medium"
+model_verbosity = "high"
 [shell_environment_policy]
 inherit = "core"
 

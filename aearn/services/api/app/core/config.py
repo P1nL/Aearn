@@ -339,6 +339,21 @@ class Settings(BaseModel):
             "false",
         )
     )
+    learning_item_generation_enabled: bool = Field(
+        default_factory=lambda: _env_bool("LEARNING_ITEM_GENERATION_ENABLED", "false")
+    )
+    learning_item_network_enabled: bool = Field(
+        default_factory=lambda: _env_bool("LEARNING_ITEM_NETWORK_ENABLED", "false")
+    )
+    learning_item_v2_admission_enabled: bool = Field(
+        default_factory=lambda: _env_bool("LEARNING_ITEM_V2_ADMISSION_ENABLED", "false")
+    )
+    learning_item_supply_enabled: bool = Field(
+        default_factory=lambda: _env_bool("LEARNING_ITEM_SUPPLY_ENABLED", "false")
+    )
+    learning_item_supply_scheduler_enabled: bool = Field(
+        default_factory=lambda: _env_bool("LEARNING_ITEM_SUPPLY_SCHEDULER_ENABLED", "false")
+    )
     tutor_thread_turn_v2_enabled: bool = Field(
         default_factory=lambda: _env_bool("TUTOR_THREAD_TURN_V2_ENABLED", "false")
     )

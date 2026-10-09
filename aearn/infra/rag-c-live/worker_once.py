@@ -43,6 +43,10 @@ FIELDS = frozenset({
     'allowed_ips',
 })
 FIELDS_WITH_DEADLINE = FIELDS | {'deadline_seconds'}
+FIELDS_ASSESSMENT = FIELDS | {'owned_b1d_assessment'}
+FIELDS_ASSESSMENT_DEADLINE = FIELDS_WITH_DEADLINE | {'owned_b1d_assessment'}
+FIELDS_COURSE = FIELDS | {'owned_b1d_course_sources'}
+FIELDS_COURSE_DEADLINE = FIELDS_WITH_DEADLINE | {'owned_b1d_course_sources'}
 DEFAULT_DEADLINE_SECONDS = 10.0
 MAX_DEADLINE_SECONDS = 300.0
 
@@ -135,10 +139,12 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
     try:
         data = json.loads(_root_file(path), object_pairs_hook=_unique)
         if (type(data) is not dict
-                or frozenset(data) not in (FIELDS, FIELDS_WITH_DEADLINE)
+                or frozenset(data) not in (FIELDS, FIELDS_WITH_DEADLINE, FIELDS_ASSESSMENT, FIELDS_ASSESSMENT_DEADLINE,
+                                           FIELDS_COURSE, FIELDS_COURSE_DEADLINE)
                 or data['enabled'] is not True):
             raise WorkerDenied('CONFIG_DENIED')
         _deadline_seconds(data)
+        _owned_assessment(data)
         return data
     except (OSError, UnicodeError, TypeError, ValueError, KeyError) as exc:
         raise WorkerDenied('CONFIG_DENIED') from exc
@@ -293,6 +299,47 @@ def _report(config: dict[str, Any], scope: Any, result: Any,
     }
 
 
+def _owned_assessment(config: dict[str, Any]) -> bool:
+    value = config.get('owned_b1d_assessment', False)
+    course = config.get('owned_b1d_course_sources', False)
+    if type(value) is not bool or type(course) is not bool or value and course:
+        raise WorkerDenied('CONFIG_DENIED')
+    return value
+
+
+def _scope_allowed(config: dict[str, Any], scope: Any) -> bool:
+    _owned_assessment(config)  # Validate both independent opt-ins before scope use.
+    if config.get('owned_b1d_course_sources', False):
+        targets = {
+            ('https://docs.python.org/3/reference/simple_stmts.html', 'docs.python.org', '/3/reference/simple_stmts.html', 'route.python', ('fundamentals',)),
+            ('https://www.sqlite.org/lang_expr.html', 'www.sqlite.org', '/lang_expr.html', 'route.sql', ('queries',)),
+            ('https://www.sqlite.org/lang_corefunc.html', 'www.sqlite.org', '/lang_corefunc.html', 'route.sql', ('queries',)),
+            ('https://en.wikibooks.org/wiki/Python_Programming/Variables_and_Strings', 'en.wikibooks.org', '/wiki/Python_Programming/Variables_and_Strings', 'route.python', ('fundamentals',)),
+            ('https://learnxinyminutes.com/python/', 'learnxinyminutes.com', '/python/', 'route.python', ('fundamentals',)),
+        }
+        return ((scope.url, scope.host, scope.path, scope.subject_id, scope.facets) in targets
+                and 0 < scope.max_bytes <= MAX_BODY_BYTES)
+    if _owned_assessment(config):
+        # Mirror the host's finite target tuples. The actual exact DB is checked
+        # only by the credential-owning control; the worker never gets a DSN.
+        targets = {
+            ('https://docs.python.org/3/library/functions.html', 'docs.python.org', '/3/library/functions.html', 'route.python', ('fundamentals',)),
+            ('https://docs.python.org/3/builtins/functions.html', 'docs.python.org', '/3/builtins/functions.html', 'route.python', ('fundamentals',)),
+            (URL, HOST, '/lang_select.html', 'route.sql', ('queries',)),
+        }
+        return ((scope.url, scope.host, scope.path, scope.subject_id, scope.facets) in targets
+                and 0 < scope.max_bytes <= MAX_BODY_BYTES)
+    return (scope.url == URL and scope.host == HOST and scope.path == '/lang_select.html'
+            and scope.subject_id == 'route.sql' and scope.facets == ('queries',)
+            and scope.max_bytes <= MAX_BODY_BYTES)
+
+
+def _capture_resolver(config: dict[str, Any], resolver_type: Any) -> Any:
+    if _owned_assessment(config) or config.get('owned_b1d_course_sources', False):
+        return resolver_type(operator_allowed_ips=tuple(config['allowed_ips']))
+    return resolver_type()
+
+
 async def run_once(config: dict[str, Any], *,
                    on_stage: Callable[[str], None] | None = None,
                    on_progress: Callable[[str, int, int | None, str], None] | None = None) -> str:
@@ -304,6 +351,7 @@ async def run_once(config: dict[str, Any], *,
     if type(config) is not dict or config.get('enabled') is not True:
         raise WorkerDenied('WORKER_DEFAULT_OFF')
     deadline_seconds = _deadline_seconds(config)
+    _owned_assessment(config)
     stage('identity')
     _identity(config)
     stage('pins')
@@ -313,9 +361,7 @@ async def run_once(config: dict[str, Any], *,
      Result, Fetcher, Client, WireScope) = _ports()
     stage('scope')
     scope = WireScope.from_wire(config['scope'])
-    if (scope.url != URL or scope.host != HOST or scope.path != '/lang_select.html'
-            or scope.subject_id != 'route.sql' or scope.facets != ('queries',)
-            or scope.max_bytes > MAX_BODY_BYTES):
+    if not _scope_allowed(config, scope):
         raise WorkerDenied('SCOPE_DENIED')
     domain_scope = DomainScope(**{**vars(scope), 'dispatch_id': __import__('uuid').UUID(scope.dispatch_id)})
     stage('grant_setup')
@@ -327,7 +373,7 @@ async def run_once(config: dict[str, Any], *,
     )
     grants = _BridgeResolver(client, scope, domain_scope)
     fetcher = Fetcher(
-        resolver=Resolver(), connector=Connector(max_body_bytes=scope.max_bytes,
+        resolver=_capture_resolver(config, Resolver), connector=Connector(max_body_bytes=scope.max_bytes,
                                                  on_progress=on_progress),
         egress=Attestor(socket_path=Path(config['b_socket']), public_key=key,
                         deployment_id=config['b_deployment_id'],

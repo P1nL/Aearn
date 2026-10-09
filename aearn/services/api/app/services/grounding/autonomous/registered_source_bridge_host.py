@@ -84,6 +84,59 @@ _EGRESS_FIELDS = frozenset(
 )
 _CONTENT_TYPES = frozenset(("text/html", "text/plain", "text/markdown"))
 
+OWNED_B1D_DATABASE = "aearn_b1d_sandbox_20261001"
+OWNED_B1D_TARGETS = frozenset({
+    ("https://docs.python.org/3/library/functions.html", "docs.python.org", "/3/library/functions.html", "route.python", ("fundamentals",)),
+    ("https://docs.python.org/3/builtins/functions.html", "docs.python.org", "/3/builtins/functions.html", "route.python", ("fundamentals",)),
+    ("https://www.sqlite.org/lang_select.html", "www.sqlite.org", "/lang_select.html", "route.sql", ("queries",)),
+})
+OWNED_COURSE_TARGETS = frozenset({
+    ("https://docs.python.org/3/reference/simple_stmts.html", "docs.python.org", "/3/reference/simple_stmts.html", "route.python", ("fundamentals",)),
+    ("https://www.sqlite.org/lang_expr.html", "www.sqlite.org", "/lang_expr.html", "route.sql", ("queries",)),
+    ("https://www.sqlite.org/lang_corefunc.html", "www.sqlite.org", "/lang_corefunc.html", "route.sql", ("queries",)),
+    ("https://en.wikibooks.org/wiki/Python_Programming/Variables_and_Strings", "en.wikibooks.org", "/wiki/Python_Programming/Variables_and_Strings", "route.python", ("fundamentals",)),
+    ("https://learnxinyminutes.com/python/", "learnxinyminutes.com", "/python/", "route.python", ("fundamentals",)),
+})
+
+
+def transport_database_allowed(database: object, *, owned_b1d_assessment: bool = False,
+                               owned_b1d_course_sources: bool = False) -> bool:
+    """An explicit owned assessment lane never broadens the legacy C DB fence."""
+    if (type(owned_b1d_assessment) is not bool or type(owned_b1d_course_sources) is not bool
+            or owned_b1d_assessment and owned_b1d_course_sources or type(database) is not str):
+        return False
+    if owned_b1d_assessment or owned_b1d_course_sources:
+        return database == OWNED_B1D_DATABASE
+    return re.fullmatch(r"aearn_rag260_c_[a-zA-Z0-9_]+", database) is not None
+
+
+def owned_b1d_scope_allowed(scope: RegisteredSourceScope) -> bool:
+    return (type(scope) is RegisteredSourceScope
+            and (scope.url, scope.host, scope.path, scope.subject_id, scope.facets) in OWNED_B1D_TARGETS
+            and 0 < scope.max_bytes <= 8 * 1024 * 1024)
+
+
+def owned_course_scope_allowed(scope: RegisteredSourceScope) -> bool:
+    """Finite course capture lane, never an assessment/main-teaching grant."""
+    return (type(scope) is RegisteredSourceScope
+            and (scope.url, scope.host, scope.path, scope.subject_id, scope.facets) in OWNED_COURSE_TARGETS
+            and 0 < scope.max_bytes <= 8 * 1024 * 1024)
+
+
+def owned_course_policy_allowed(policy: dict[str, Any]) -> bool:
+    url = policy.get("canonical_url")
+    if url not in {target[0] for target in OWNED_COURSE_TARGETS}:
+        return False
+    usages = policy.get("allowed_usages")
+    if (type(usages) not in (list, tuple) or not usages or any(type(value) is not str for value in usages)
+            or len(set(usages)) != len(usages)):
+        return False
+    if url == "https://en.wikibooks.org/wiki/Python_Programming/Variables_and_Strings":
+        return policy.get("origin") == "community" and tuple(usages) == ("main_teaching",)
+    if url == "https://learnxinyminutes.com/python/":
+        return policy.get("origin") == "tutorial" and tuple(usages) == ("main_teaching",)
+    return policy.get("origin") == "official" and set(usages) <= {"assessment_evidence", "main_teaching"}
+
 
 def _canonical(value: object) -> bytes:
     return json.dumps(
@@ -278,6 +331,8 @@ def make_host_callbacks(
     worker_gid: int,
     dispatch_owner: PostgresRegisteredSourceRepository,
     worker_image_sha256: str,
+    owned_b1d_assessment: bool = False,
+    owned_b1d_course_sources: bool = False,
 ) -> HostCallbacks:
     """Pass infra server.Decision/CaptureRecord; only an explicit C DB is accepted.
 
@@ -292,8 +347,8 @@ def make_host_callbacks(
     except (TypeError, ValueError, psycopg.Error) as exc:
         raise ValueError("BRIDGE_CONFIG_DENIED") from exc
     if (
-        type(database) is not str
-        or re.fullmatch(r"aearn_rag260_c_[a-zA-Z0-9_]+", database) is None
+        not transport_database_allowed(database, owned_b1d_assessment=owned_b1d_assessment,
+                                       owned_b1d_course_sources=owned_b1d_course_sources)
         or type(verifier) is not SignedDispatchProofVerifier
         or not callable(decision_type)
         or not callable(capture_record_type)
@@ -336,10 +391,23 @@ def make_host_callbacks(
         row = conn.execute("SELECT current_database() AS name").fetchone()
         return row is not None and row["name"] == database
 
+    def assessment_policy_allowed(policy: dict[str, Any] | None) -> bool:
+        if policy is None:
+            return False
+        if owned_b1d_course_sources:
+            return owned_course_policy_allowed(policy)
+        if not owned_b1d_assessment:
+            return True
+        return (policy.get("origin") == "official"
+                and type(policy.get("allowed_usages")) in (list, tuple)
+                and tuple(policy["allowed_usages"]) == ("assessment_evidence",))
+
     def resolver(scope: object, now: datetime) -> object | None:
         checked = _registered_scope(scope)
         if (
             checked is None
+            or (owned_b1d_assessment and not owned_b1d_scope_allowed(checked))
+            or (owned_b1d_course_sources and not owned_course_scope_allowed(checked))
             or not isinstance(now, datetime)
             or now.tzinfo is None
             or now.utcoffset() is None
@@ -356,7 +424,7 @@ def make_host_callbacks(
                 if not db_matches(conn):
                     return None
                 policy = _current(conn, checked, now, lock=True)
-                if policy is None:
+                if policy is None or not assessment_policy_allowed(policy):
                     return None
                 attempt = conn.execute(
                     "SELECT id,state,root_id,request_hash FROM rag_registered_fetch_attempts "
@@ -377,7 +445,7 @@ def make_host_callbacks(
                 ):
                     return None
                 # Recheck expiry/root after waiting on the attempt lock.
-                if _current(conn, checked, now, lock=True) is None:
+                if not assessment_policy_allowed(_current(conn, checked, now, lock=True)):
                     return None
                 return decision_type(
                     checked.max_bytes,
@@ -387,6 +455,11 @@ def make_host_callbacks(
             return None
 
     def proof_verifier(scope: object, proof: object) -> bool:
+        if owned_b1d_assessment or owned_b1d_course_sources:
+            checked = _registered_scope(scope)
+            if (checked is None or owned_b1d_assessment and not owned_b1d_scope_allowed(checked)
+                    or owned_b1d_course_sources and not owned_course_scope_allowed(checked)):
+                return False
         return verifier.verify(scope, proof) is not None
 
     def capture_store(
@@ -403,6 +476,8 @@ def make_host_callbacks(
         checked = _registered_scope(scope)
         if (
             checked is None
+            or (owned_b1d_assessment and not owned_b1d_scope_allowed(checked))
+            or (owned_b1d_course_sources and not owned_course_scope_allowed(checked))
             or type(body) is not bytes
             or not 0 < len(body) <= checked.max_bytes
             or type(content_type) is not str
@@ -427,7 +502,7 @@ def make_host_callbacks(
                 if not db_matches(conn):
                     return None
                 policy = _current(conn, checked, now, lock=True)
-                if policy is None:
+                if policy is None or not assessment_policy_allowed(policy):
                     return None
                 attempt = conn.execute(
                     "SELECT id,state,root_id,request_hash,dispatched_at "
@@ -442,7 +517,7 @@ def make_host_callbacks(
                 ).fetchone()
                 db_now = _clock(conn, now)
                 # Re-read current policy/root against the post-lock DB clock.
-                if _current(conn, checked, now, lock=True) is None:
+                if not assessment_policy_allowed(_current(conn, checked, now, lock=True)):
                     return None
                 if (
                     attempt is None

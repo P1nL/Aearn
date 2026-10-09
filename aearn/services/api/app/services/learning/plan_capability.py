@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import nullcontext
 from collections.abc import Iterable, Mapping
+from typing import Literal
 
 from psycopg import Connection
 from pydantic import ValidationError
@@ -15,6 +17,7 @@ from app.agents.harness.capabilities import (
 from app.agents.harness.contracts import TutorCapabilityStatus, TutorPayloadField, TutorRunSnapshot
 from app.services.grounding.grounding_sources import GroundingSource, sources_for_language
 from app.services.learning.contracts import LearningPlanNode, stable_key
+from app.services.learning.item_supply.finite_course_targets import finite_course_targets, finite_node_description
 from app.services.learning.material_selection import PostgresMaterialPlanningConsumer, material_transaction
 from app.services.grounding.material_binding_repository import MaterialBindingConflict
 from app.services.grounding.current_authorization import EvidenceDenied
@@ -41,6 +44,8 @@ from app.services.runners.language_capabilities import (
     get_language_capability,
 )
 
+
+logger = logging.getLogger(__name__)
 
 PLANNING_CATALOG_DESCRIPTOR_SCHEMA_VERSION = "learning-plan-catalog-descriptor-v1"
 PLANNING_CATALOG_DESCRIPTOR_LIMIT = 8
@@ -548,18 +553,64 @@ def _validate_quality(
     canonical_language_id: str,
 ) -> None:
     if not any(module.is_core for module in artifact.plan.modules) or not any(node.is_core for node in artifact.plan.nodes):
+        _log_quality_rejection(artifact, capabilities, canonical_language_id, branch="core_shape_missing")
         raise _quality_blocked()
     allowed_capabilities = {canonical_language_id}
     for capability in capabilities:
         allowed_capabilities.add(capability.language_id)
         if capability.runner_key != "none":
             allowed_capabilities.add(capability.runner_key)
-    if any(
-        required not in allowed_capabilities
-        for node in artifact.plan.nodes
-        for required in node.required_capabilities
-    ):
-        raise _quality_blocked()
+    for node in artifact.plan.nodes:
+        if all(required in allowed_capabilities for required in node.required_capabilities):
+            continue
+        # Exact closed curriculum semantics may refine an already selectable
+        # language. This grants no runtime/source/item authority or label prefix.
+        if not any(capability.language_id == canonical_language_id and capability.enabled_for_public_selection
+                   for capability in capabilities) or not any(
+            target.language_id == canonical_language_id
+            and node.required_capabilities == target.required_capabilities
+            and node.description == finite_node_description(target.target_id)
+            for target in finite_course_targets()
+        ):
+            _log_quality_rejection(artifact, capabilities, canonical_language_id,
+                                   branch="capability_match_failed", node=node)
+            raise _quality_blocked()
+
+
+def _log_quality_rejection(
+    artifact: LearningPlanDraftArtifact,
+    capabilities: tuple[LanguageCapability, ...],
+    canonical_language_id: str,
+    *,
+    branch: Literal["core_shape_missing", "capability_match_failed"],
+    node: LearningPlanNode | None = None,
+) -> None:
+    """Internal shape/match diagnostics only; never serialize learner inputs."""
+    module_index, node_index = next(
+        ((mi, ni) for mi, module in enumerate(artifact.plan.modules)
+         for ni, item in enumerate(module.nodes) if item is node), (None, None))
+    payload = {
+        "branch": branch,
+        "module_count": len(artifact.plan.modules),
+        "core_module_count": sum(module.is_core for module in artifact.plan.modules),
+        "node_count": len(artifact.plan.nodes),
+        "core_node_count": sum(item.is_core for item in artifact.plan.nodes),
+        "module_index": module_index,
+        "node_index": node_index,
+        "description_length": None if node is None else len(node.description),
+        "capability_count": None if node is None else len(node.required_capabilities),
+        "language_selectable": any(capability.language_id == canonical_language_id
+            and capability.enabled_for_public_selection for capability in capabilities),
+        "registered_targets": [] if node is None else [
+            {"target_id": target.target_id,
+             "language_match": target.language_id == canonical_language_id,
+             "description_exact": node.description == finite_node_description(target.target_id),
+             "capabilities_exact": node.required_capabilities == target.required_capabilities}
+            for target in finite_course_targets()
+        ],
+    }
+    logger.warning("learning_plan_draft_quality_diagnostic %s",
+                   json.dumps(payload, separators=(",", ":"), sort_keys=True))
 
 
 def _invalid(*, stage: str, field: str) -> LearningPlanDraftCapabilityError:

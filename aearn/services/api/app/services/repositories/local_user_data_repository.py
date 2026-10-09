@@ -8,6 +8,11 @@ from uuid import UUID
 
 from psycopg import Connection
 
+from app.services.learning.item_supply.storage import export_private_supply, purge_private_supply
+from app.services.grounding.autonomous.actual_d_lifecycle import (
+    assert_actual_d_purged, export_actual_d_private, finish_actual_d_private_purge,
+)
+
 from app.services.repositories.user_repository import get_user, serialize_user
 from app.services.grounding.autonomous.context_repository import DiscoveryContextRepository
 from app.services.tutor.persistence import PostgresTutorRepository
@@ -144,6 +149,8 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         },
         "summary": summary,
         "rag_discovery_refs": _rag_refs(conn, user),
+        "item_supply_private_summaries": export_private_supply(conn, UUID(user_id)),
+        "actual_d_private_source_summaries": export_actual_d_private(conn, UUID(user_id)),
         "plans": _export_plans(conn, user_id),
         "modules": _export_modules(conn, user_id),
         "knowledge_points": _export_knowledge_points(conn, user_id),
@@ -251,7 +258,7 @@ def delete_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
     _ensure_user(conn, user_id)
     before = get_user_data_summary(conn, user_id)
     _unlink_rag_refs(conn, _ensure_user(conn, user_id))
-    _delete_user_owned_learning_data(conn, user_id)
+    _delete_user_owned_learning_data(conn, user_id, deleting=True)
     conn.execute(
         """
         UPDATE users
@@ -1722,6 +1729,9 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
     conn.execute("DELETE FROM rag_plan_material_bindings WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM rag_material_semantic_reviews WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM rag_material_selections WHERE user_id = %s", (user_id,))
+    # 501/502 -> 496 -> 495 epoch hooks already ran in the original supply purge.
+    # Finish source children only after original D children have been removed.
+    finish_actual_d_private_purge(conn, UUID(user_id))
     # A draft_ready/confirmed session still points at its current draft. The
     # scoped FK uses RESTRICT, so deferring constraints cannot make deleting the
     # draft first safe. Retire only this user's soon-to-be-deleted sessions in
@@ -1855,8 +1865,12 @@ def _delete_model_review_internal_runs(
     )
 
 
-def _delete_user_owned_learning_data(conn: Connection[dict[str, object]], user_id: str) -> None:
+def _delete_user_owned_learning_data(
+    conn: Connection[dict[str, object]], user_id: str, *, deleting: bool = False,
+) -> None:
+    purge_private_supply(conn, UUID(user_id), deleting=deleting)
     _delete_learning_track_data(conn, user_id)
+    assert_actual_d_purged(conn, UUID(user_id))
     conn.execute("DELETE FROM idempotency_records WHERE user_id = %s OR key LIKE %s OR response_json::text LIKE %s", (user_id, f"%{user_id}%", f"%{user_id}%"))
     conn.execute(
         """

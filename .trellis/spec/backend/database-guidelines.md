@@ -33,8 +33,11 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 - Add `set_updated_at()` triggers for mutable business tables.
 - Do not create PostgreSQL enum types for MVP enums. The schema currently specifies `text CHECK (...)` to keep enum changes migration-friendly.
 - Append-only tables such as `attempts` and `review_logs` should be corrected by new records or explicit status fields, not by soft deletion.
+- In PL/pgSQL `IF` boolean expressions, parenthesize scalar `CASE ... END` operands, including dynamically injected fragments: `value IS DISTINCT FROM (CASE WHEN ... THEN ... ELSE ... END)`. Do not confuse these with statement-level `CASE ... END CASE` or ordinary SELECT/assignment CASE. Real isolated PostgreSQL DDL compilation is required for new guards; Python syntax/string-shape tests do not prove SQL parses. Keep failed atomic DDL evidence and rerun only the repaired fragment, not unrelated old matrices.
 - `tutor_provider_attempt_receipts` 是每个实际 provider attempt 的 append-only 事实表；使用 `(run_id,input_revision,decision_iteration,attempt_index)` 幂等 identity、run/user/conversation 复合外键和 UPDATE/DELETE 拒绝触发器。相同 identity 只允许完全相同的安全事实重放。
 - provider `input_tokens` 已包含 `cached_input_tokens`；数据库持久化 `uncached_input_tokens = input_tokens - cached_input_tokens`，并把 provider reported total 与 calculated input-plus-output 分列。usage 缺失必须使用 `NULL` + `usage_available=false`，不得写零值占位。
+- 接收整张表行并传入命名 composite 参数的 PL/pgSQL 局部变量，声明为该表的 `%ROWTYPE`，不要依赖 `record::table_type`。507 的真实有数据路径复现了匿名 `facts record` 的 SQLSTATE `42846`；只改为 `facts public.tutor_item_supply_shared_generation_artifacts%ROWTYPE` 即通过。新 guard 除 DDL 编译外，至少执行一次对应的有数据分支；纯字符串测试不能证明运行时类型转换成立。
+- 已部署 fragment 的窄修复追加新编号，不改历史 SQL；506/507 使用完整旧/新 prosrc hash 和原函数属性校验，只修改确认的 SQL alias 或类型声明。保留原 policy、身份、owner、epoch、lease 和 immutable guard；同片及完整 manifest 重放后验证既有行未变。局部 `record` 变量名不得与同一查询中的表 alias 重名（506 的 `e` 冲突）。
 
 ---
 

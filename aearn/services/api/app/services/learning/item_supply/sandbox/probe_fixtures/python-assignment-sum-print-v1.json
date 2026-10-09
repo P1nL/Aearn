@@ -1,0 +1,17 @@
+{
+  "profile_id": "python_assignment_sum_print_v1",
+  "instruction": "先将列表 `[3, -1, 0, 3]` 赋值给变量 `numbers`，再使用 `sum(numbers)` 求和并用 `print` 仅输出总和。允许直接 `print(sum(numbers))`，或先将和赋值给 `total` 再 `print(total)`；仅限这两种顺序结构，不使用其他语句。",
+  "goal_contract": "python-assignment-sum-print-v1",
+  "expected_stdout": "5",
+  "required_capabilities": ["python.assignment"],
+  "equivalents": ["numbers = [3, -1, 0, 3]\nprint(sum(numbers))", "numbers = [3, -1, 0, 3]\ntotal = sum(numbers)\nprint(total)"],
+  "wrong": "print(5)",
+  "boundary": {"submission": "print(sum([3, -1, 0, 3]))", "stdout": "5", "expected": "reject"},
+  "semantics": [
+    {"name": "goal_dead_branch", "correct": "numbers = [3, -1, 0, 3]\nprint(sum(numbers))", "wrong": "if False:\n    numbers = [3, -1, 0, 3]\nprint(5)", "stdout": "5"},
+    {"name": "goal_comment", "correct": "numbers = [3, -1, 0, 3]\ntotal = sum(numbers)\nprint(total)", "wrong": "# numbers = [3, -1, 0, 3]\nprint(5)", "stdout": "5"},
+    {"name": "goal_literal_boundary", "correct": "numbers = [3, -1, 0, 3]\nprint(sum(numbers))", "wrong": "numbers = [5]\nprint(sum(numbers))", "stdout": "5"},
+    {"name": "goal_missing_sum", "correct": "numbers = [3, -1, 0, 3]\ntotal = sum(numbers)\nprint(total)", "wrong": "numbers = [3, -1, 0, 3]\nprint(5)", "stdout": "5"}
+  ],
+  "scope": "Finite explicit basic/D1 assignment task, two allowed sequential AST forms only. Boundary is an independent same-stdout missing-assignment negative control, not a parameterized candidate test. All scored cases carry the goal contract."
+}

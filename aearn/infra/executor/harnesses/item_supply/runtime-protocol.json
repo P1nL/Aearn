@@ -1,0 +1,26 @@
+{
+  "schema_version": "aearn-runtime-protocol-v1",
+  "scope": "internal-p6-candidate-only",
+  "runtime_ids": [
+    "python-stdout-v1",
+    "sqlite-query-v1"
+  ],
+  "protocol_version": "sandbox-input-v1",
+  "fixed_entrypoint": "/opt/aearn/entrypoint.py",
+  "fixed_adapter": "/opt/aearn/runtime-adapter",
+  "allowed_actions": [
+    "test"
+  ],
+  "output": "item_supply_facts_v1",
+  "network": "none",
+  "package_install": "forbidden",
+  "host_mounts": "forbidden",
+  "parent_protection": {
+    "method": "linux_prctl_dumpable_zero",
+    "parents": [
+      "entrypoint",
+      "runtime_adapter"
+    ],
+    "adapter_exit": "must_be_zero"
+  }
+}

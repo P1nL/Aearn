@@ -23,6 +23,7 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 | [Grounding Material Contracts](./grounding-material-contracts.md) | Package A strict material/source contracts and default-deny authority ports; B is documented separately | Filled |
 | [Grounding Controlled Discovery](./grounding-controlled-discovery.md) | B1 durable search/budget and B2 candidate-specific lease, safe fetch, quarantine, egress and default-off worker contracts | Filled |
 | [Grounding Source Admission](./grounding-source-admission.md) | C default-off registered-source, Unix bridge, review, retention and corpus governance contracts; live acceptance remains separate | Filled |
+| [Course Material Lifetime and Exact Renewal](./grounding-course-material-lifetime.md) | Versioned seven-day proof bounds, exact renewal accounting and actual-D private lifecycle gates | Filled |
 | [Grounding Plan Material Consumption](./grounding-plan-material-consumption.md) | D internal default-off material feedback, successor bindings, same-transaction authorization and private receipt lifecycle | Filled |
 | [Error Handling](./error-handling.md) | Error types and safe failure mapping | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, scenarios, and validation gates | Filled |
@@ -32,6 +33,14 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 | [Teaching Session Authority](./teaching-session-authority.md) | Durable teaching session, checkpoint, stimulus, and action authority | Filled |
 | [Learning Artifact Authority](./learning-artifact-authority.md) | Artifact lifecycle, owner delegation, snapshot v4, SSE, routes, redaction, and governance | Filled |
 | [Learning Item Bank Governance](./learning-item-bank-governance.md) | Git source compilation, deterministic validation, independent review, pilot, risk gates, and publication | Filled |
+| [Learning Item Supply Foundation](./learning-item-supply-foundation.md) | Offline exact coverage/demand/proof/exposure contracts, declaration-only matrix and no consumer wiring | Filled |
+| [Finite Type Evidence and Flexible Specifications](./learning-item-supply-type-evidence.md) | Explicit V2 pack evidence and V3 finite presentation/allocations; legacy preservation and native authority gaps | Filled |
+| [Native Finite Evidence and Exposure](./learning-item-supply-native-evidence.md) | 501/502 concrete issuer and private learner projection, bounded role batches, original exposure/capability/reset integration | Filled |
+| [Learning Item Supply Storage](./learning-item-supply-storage.md) | P2 physical shared/private storage, immutable evidence, scoped epoch purge, v1/v2 separation and default-off flags | Filled |
+| [Learning Item Supply Runtime](./learning-item-supply-runtime.md) | P3 internal leases/checkpoints, canonical cumulative budgets, offline calibration and no public consumer wiring | Filled |
+| [Learning Item Supply Pipeline](./learning-item-supply-pipeline.md) | P4/P5 internal typed generation, source fences, deterministic validation and blind autonomous review; no publication | Filled |
+| [Diagnostic Blind Solve Admission](./learning-item-supply-diagnostic-blind.md) | Explicit V3 completed-blind diagnostics, unchanged hard evidence/six roles and native version boundaries | Filled |
+| [Learning Item Supply Sandbox](./learning-item-supply-sandbox.md) | P6 private terminal provenance and bounded container execution with genuine zero-HTTP resource accounting; no formal learner/public runtime | Filled |
 | [Teaching Artifact Orchestration](./teaching-artifact-orchestration.md) | Candidate authority, atomic teaching commits, depth-one branches, and deterministic continuation scheduling | Filled |
 | [Knowledge Check Artifacts](./knowledge-check-artifacts.md) | Structured scoring, assistance receipts, remediation/transfer selection, and evaluation continuation | Filled |
 | [Model Review Artifacts](./model-review-artifacts.md) | Stable code/diff identity, deterministic findings, immutable receipts, remediation, and evaluation continuation | Filled |

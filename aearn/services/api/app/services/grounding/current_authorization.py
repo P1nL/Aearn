@@ -27,6 +27,7 @@ from app.services.grounding.corpus_repository import _hash
 from app.services.grounding.material_contracts_v2 import (
     EvidenceBindingV2, digest,
 )
+from app.services.grounding.public_course_contracts import PublicCourseEvidenceBindingV1, validate_public_course_request
 
 
 class EvidenceDenied(ValueError):
@@ -153,9 +154,16 @@ class CurrentAuthorization:
             str(current.facts.review_id), current.facts.review_receipt_hash, original_digest,
         )
 
-    def _current(self, binding: EvidenceBindingV2, purpose: Usage, request: AccessRequest,
+    def _current(self, binding: EvidenceBindingV2 | PublicCourseEvidenceBindingV1, purpose: Usage, request: AccessRequest,
                  exact_item_claims: Sequence[VerifiedClaim]) -> AuthorizationReceipt:
-        item = revalidate(binding, EvidenceBindingV2)
+        item: EvidenceBindingV2 | PublicCourseEvidenceBindingV1
+        if type(binding) is PublicCourseEvidenceBindingV1:
+            try:
+                item = validate_public_course_request(binding, request, exact_item_claims)
+            except ValueError as exc:
+                raise EvidenceDenied("PUBLIC_COURSE_BINDING_MISMATCH") from exc
+        else:
+            item = revalidate(binding, EvidenceBindingV2)
         if (item.purpose != purpose or request.action != "consume"
                 or request.purpose != purpose or not item.evidence):
             raise EvidenceDenied("BINDING_MISMATCH")
@@ -204,6 +212,18 @@ class CurrentAuthorization:
             ):
                 raise EvidenceDenied("CLAIM_VERIFICATION_REQUIRED")
             for coord in coords:
+                if purpose == "assessment_evidence":
+                    # Explicit concrete actual-D branch: a translated claim is
+                    # still private and bound to THIS original D task/owner.
+                    from app.services.grounding.autonomous.assessment_receipt_repository import PostgresAssessmentClaimResolver
+
+                    resolver = self.claim_resolver
+                    handle = coord.binding.claim_receipt_id
+                    if type(resolver) is PostgresAssessmentClaimResolver and handle and resolver.repository.is_actual_d_handle(handle):
+                        if not isinstance(item, EvidenceBindingV2) or resolver.conn is not self.conn:
+                            raise EvidenceDenied("BINDING_MISMATCH")
+                        resolver.repository.private_provenance(handle,draft=item.draft,node_id=item.node_id,goal_hash=item.goal_hash,
+                                                              preparation_owner=resolver.preparation_owner)
                 if (coord.binding.purpose != purpose or coord.binding.scope != request.scope
                         or coord.binding.demand_hash != request.demand_hash
                         or coord.corpus_version_id != str(corpus_id)
@@ -322,13 +342,13 @@ class CurrentAuthorization:
             raise EvidenceDenied("AUTHORITY_MISSING")
         return row["now"]
 
-    def check_current_authorization(self, binding: EvidenceBindingV2, purpose: Usage, *,
+    def check_current_authorization(self, binding: EvidenceBindingV2 | PublicCourseEvidenceBindingV1, purpose: Usage, *,
                                     request: AccessRequest,
                                     exact_item_claims: Sequence[VerifiedClaim] = ()) -> AuthorizationReceipt:
         self.require_transaction()
         return self._current(binding, purpose, request, exact_item_claims)
 
-    def assert_publication_fence(self, binding: EvidenceBindingV2, *,
+    def assert_publication_fence(self, binding: EvidenceBindingV2 | PublicCourseEvidenceBindingV1, *,
                                  exact_item_claims: Sequence[VerifiedClaim],
                                  expected_generation: int,
                                  request: AccessRequest) -> AuthorizationReceipt:

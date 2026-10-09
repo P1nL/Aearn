@@ -1,0 +1,45 @@
+{
+  "profile_id": "python_stdout_list_total_v1",
+  "instruction": "计算列表 `[3, -1, 0, 3]` 中所有整数的和，仅输出总和。",
+  "expected_stdout": "5",
+  "required_capabilities": [
+    "python.assignment"
+  ],
+  "equivalents": [
+    "print(sum([3, -1, 0, 3]))",
+    "total = 0\nfor value in [3, -1, 0, 3]:\n    total += value\nprint(total)",
+    "print(3 + (-1) + 0 + 3)"
+  ],
+  "wrong": "print(sum(set([3, -1, 0, 3])))",
+  "boundary": {
+    "submission": "print(sum([-2, 0]))",
+    "stdout": "-2"
+  },
+  "semantics": [
+    {
+      "name": "stdout_zero",
+      "correct": "print(sum([]))",
+      "wrong": "print(1)",
+      "stdout": "0"
+    },
+    {
+      "name": "stdout_unicode",
+      "correct": "print('学习')",
+      "wrong": "print('学')",
+      "stdout": "学习"
+    },
+    {
+      "name": "stdout_newlines",
+      "correct": "print('5\\n')",
+      "wrong": "print('5 ')",
+      "stdout": "5"
+    },
+    {
+      "name": "stdout_empty",
+      "correct": "pass",
+      "wrong": "print('x')",
+      "stdout": ""
+    }
+  ],
+  "scope": "Fixed literal list; stdout only, no stdin, input_json, return values or assertion code. Boundary probes prove runtime/scorer behavior, not parameterized candidate behavior."
+}
