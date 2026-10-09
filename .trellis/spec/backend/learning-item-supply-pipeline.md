@@ -247,3 +247,40 @@ Focused private review-observability tests cover real bounded-client response/er
 
 ### 7. Wrong vs correct
 Wrong: `str(exc)` or Pydantic raw errors are useful diagnostics, so save them with the provider body and retry until approved. Correct: classify by trusted types/closed enums, suppress raw cause propagation after copying safe metadata, retain only private normalized observations, and leave the original failed candidate/history/UNKNOWN untouched. A future new immutable bounded candidate can supply fresh diagnostic evidence; the missing old metadata cannot be reconstructed as fact.
+
+## 2026-10-09 production peer output and single-slot probes
+
+### 1. Scope / trigger
+A fresh high curriculum response actually exhausted its 2048 output budget on reasoning with zero visible output. The user explicitly selected the **formal application production output limit**, not the proposed ad-hoc8192 calibration. This config repair does not retrospectively prove other old pending causes or modify old candidates/plans, admission gates, UNKNOWN or money authorization.
+
+### 2. Signatures
+- `production_peer_output_cap() -> int` reuses `app.core.config.DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS` (currently61440). Runtime `require_production_peer_output(settings, cap)` requires configured Flash Responses and exact `settings.tutor_max_output_tokens` equality before new execution; default/legacy2048 remains compatible.
+- `build_plan(target, seed=0, *, admission_policy="strict-v2", review_protocol="legacy-v2", peer_review_max_output_tokens=2048, probe_slot=None)` preserves historical default JSON/hash exactly. Production cap is an explicit **new** evidenced plan option, not a replacement of old files.
+- `validate_plan(plan, *, slot_name=None)` reconstructs the complete trusted plan; `validate_campaign_state(path, plan, *, slot_name=None)` also checks stored plan/cases/accounting before IO. Imported execute and direct prepare obey the same guards.
+- CLI: `--peer-review-max-output-tokens 61440 --probe-only --slot practice-2` with `--plan` is inert. Main-only `--execute` additionally requires NEW immutable campaign, current inputs and funded original limits.
+
+### 3. Contracts
+- `peer_review_output_budget` freezes schema `native_v3_peer_output_budget_v1`, limit_source, peer_max_output_tokens, blind_max_output_tokens and relation_max_output_tokens. Only six peers use the formal61440; author8192, blind2048, relation2048, high/attempt1/100s remain their distinct existing stage contracts. Do not substitute the TutorDecision16384 cap or physical model context capacity.
+- Probe `execution_scope` schema `native_v3_single_slot_probe_v1` fixes one slot and false pack/anchor eligibility. Plan physically contains one allocated row/case, max8 calls, zero reserved relation calls, relation_anchor_purpose=null. Its publication status is `published_internal_single_slot_probe_not_ready_pack`; no relation anchor checkpoint. The existing pack helper rejects that status/eligibility; no full pack or consumer authority is issued.
+- Default full five-slot plans retain44 calls and4 distinct relation calls. New resource arithmetic is author output + blind output +6 peer outputs, plus separate relation output only in full campaigns. A61440 probe therefore preallocates378880 output tokens, not eight times the peer cap and not the smaller legacy22528.
+- Probes reuse original active canonical roots/global limits/windows; they do not initialize or replace a missing period/window. Normal owners must separately provide any later legitimate period after old ones expire. Active cap/usage/history/UNKNOWN remains immutable; no overlapping-limit workaround, invented occupied-slot files or implicit coverage reuse.
+
+### 4. Validation / error matrix
+| Condition | Outcome |
+| --- | --- |
+| Cap not legacy2048/formal61440, partial/extra marker, production cap with legacy protocol | Reject before external/DB/preparation IO |
+| Runtime provider/model/output setting disagrees with frozen production marker | PRODUCTION_PEER_OUTPUT_SETTING_MISMATCH / PROVIDER_MISMATCH; no funded dispatch |
+| Mutated limits/allocations/scope/selected slot or extra frozen case | Canonical plan/state rejection before execution |
+| Old campaign relabeled as probe or given a larger cap | Immutable plan/case/accounting conflict, no old re-review |
+| Active original output remaining below378880 | EXISTING_GLOBAL_REMAINING_CAP_INSUFFICIENT_NO_RESET; no author dispatch/new window |
+| Missing/partial original global or root window | Probe pending, no initialization/replacement |
+| Probe internally publishes one item | Item-only status/false anchor; not2/2/1 pack, no relation reserve or Gate |
+
+### 5. Good / base / bad cases
+Good: a new explicit61440/high single-slot plan with matching runtime config and sufficient original resource reservations. Base: legacy/default2048 full plan/cases hash match the accepted e6d6192 snapshots. Bad: 8192 passed off as production, current output resource remaining mistaken for CNY balance, or old limits raised to force a probe.
+
+### 6. Tests required
+`test_native_review_budget_probe.py` and existing native plan/operator regressions verify exact per-port caps and totals, physical scope cardinality, inactive/underfunded noIO guards, frozen old-plan denial and configuration mismatches. Compare24 accepted pre-change plan snapshots and81 protected artifacts; current real expense event is append-only and separate from code edits. Actual whole-role production review requires new main-owned funded receipts; a passing fake suite or blocked PG preflight does not establish model quality/publication/E.
+
+### 7. Wrong vs correct
+Wrong: raise an active120832 output resource cap to cover a new61440-per-role plan or silently reduce the peers to fit. Correct: freeze the user's formal61440 choice, preallocate the complete378880 probe output bound against all original limits, and return pending before author IO when underfunded. Existing metadata/partial checkpoints and original source/owner/lease/replay fences remain unchanged.

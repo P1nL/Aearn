@@ -277,28 +277,37 @@ def test_stable_profile_key_versions_increment_without_root_variants(operator):
 
 
 @pytest.mark.parametrize("failure", ["none", "requests", "global_time", "root_time"])
-def test_existing_canonical_root_windows_reused_with_unknown_usage_never_replaced(operator, monkeypatch, tmp_path, failure):
+@pytest.mark.parametrize("probe", [False, True])
+def test_existing_canonical_root_windows_reused_with_unknown_usage_never_replaced(operator, monkeypatch, tmp_path, failure, probe):
     import app.services.learning.item_supply.budget as budget_module
     import app.services.learning.item_supply.repository as runtime_module
     import app.services.learning.item_supply.storage as storage_module
     from tests.learning.test_item_supply_finite_candidate_factory import materials_for
 
-    plan = operator.build_plan("python-kc-binding-v1")
+    original_plan = operator.build_plan("python-kc-binding-v1")
+    plan = operator.build_plan("python-kc-binding-v1", probe_slot="practice-2" if probe else None)
     materials = materials_for(plan["target"])
     specs = [operator.factory_spec(row, plan, materials, f"pure.root.reuse.{i}", None) for i, row in enumerate(plan["slots"])]
     now = datetime.now(timezone.utc)
     roots = {purpose: uuid4() for purpose in plan["root_caps"]}
     windows = {root: dict(id=uuid4(), root_id=root, pool_key="base", provider_key="deepseek",
-        window_start=now - timedelta(minutes=5), window_end=now + timedelta(minutes=30 if failure == "root_time" else 180),
+        window_start=now - timedelta(minutes=5), window_end=now + timedelta(seconds=30 if failure == "root_time" and probe else
+            1800 if failure == "root_time" else 10800),
         request_cap=1 if failure == "requests" else caps["requests"] + 7, token_cap=caps["tokens"] + 2,
-        resource_cap=max(1, caps["resources"])) for purpose, caps in plan["root_caps"].items() for root in [roots[purpose]]}
+        resource_cap=max(1, caps["resources"])) for purpose, caps in original_plan["root_caps"].items()
+        if purpose in roots for root in [roots[purpose]]}
     rows = [dict(id=uuid4(), dimension_kind=dim, dimension_key=key, resource_kind=kind,
-        window_start=now - timedelta(minutes=5), window_end=now + timedelta(minutes=30 if failure == "global_time" else 180), cap_amount=max(1, cap) + 10)
+        window_start=now - timedelta(minutes=5), window_end=now + timedelta(seconds=30 if failure == "global_time" and probe else
+            1800 if failure == "global_time" else 10800), cap_amount=max(1, cap) + 10)
         for dim, key in (("system", "item-supply"), ("window", "item-supply"), ("pool", "base"), ("provider", "deepseek"))
-        for kind, cap in plan["global_caps"].items()]
+        for kind, cap in original_plan["global_caps"].items()]
     class RootConnection(BudgetPreflightConnection):
         def execute(self, sql, params=()):
             assert not sql.startswith(("INSERT", "UPDATE", "DELETE"))
+            if "shared_budget_roots" in sql:
+                matching = next(spec for spec in specs if operator.canonical_obligation(spec).canonical_key == params[0])
+                root = roots[matching.coverage_blueprint.scope.purpose.value]
+                return FakeRows([dict(id=root, blueprint_id=root)])
             if "shared_budget_windows WHERE root_id" in sql:
                 self.statements.append(sql)
                 return FakeRows([windows[params[0]]])
@@ -347,7 +356,10 @@ def test_existing_canonical_root_windows_reused_with_unknown_usage_never_replace
         receipt = operator.prepare_campaign(conn, **kwargs)
         assert receipt["new_global_limit_ids"] == [] and receipt["new_root_window_ids"] == []
         assert {r["root_id"] for r in receipt["roots"].values()} == {str(r) for r in roots.values()}
-        assert len(ensured) == 2  # four primary slots did NOT create four roots.
+        assert len(ensured) == (1 if probe else 2)  # no other-purpose root for a probe.
+        assert receipt["initial_remaining_plan"]["requests"] == (8 if probe else 44)
+        if probe:
+            assert receipt["roots"]["knowledge_check"]["caps"]["requests"] == original_plan["root_caps"]["knowledge_check"]["requests"] + 7
         assert operator.prepare_campaign(conn, **kwargs) == receipt
         assert receipt["all_prior_usage_unknown_retained"]
 
@@ -466,7 +478,8 @@ def test_plan_covers_actual_generation_and_runner_resource_interfaces(operator, 
 
 
 @pytest.mark.parametrize("admission_policy", ["strict-v2", "diagnostic-v3"])
-def test_operator_wiring_uses_actual_return_types_and_signatures_without_live_io(operator, monkeypatch, tmp_path, admission_policy):
+@pytest.mark.parametrize("probe", [False, True])
+def test_operator_wiring_uses_actual_return_types_and_signatures_without_live_io(operator, monkeypatch, tmp_path, admission_policy, probe):
     """Signature/transaction unit seam only: mocked owners are NOT live authority."""
     from contextlib import contextmanager
     from unittest.mock import create_autospec
@@ -484,7 +497,12 @@ def test_operator_wiring_uses_actual_return_types_and_signatures_without_live_io
     from tests.learning import test_item_supply_shared_admission_facts as fixture
     from tests.learning.test_item_supply_flexible_native_consumers import native_query_fixture
 
-    plan = operator.build_plan("python-kc-binding-v1", admission_policy=admission_policy)
+    from app.core.config import Settings
+    from native_v3_chain_support_20261006 import production_peer_output_cap
+    plan = operator.build_plan("python-kc-binding-v1", admission_policy=admission_policy,
+        review_protocol="evidenced-v1" if probe else "legacy-v2",
+        peer_review_max_output_tokens=production_peer_output_cap() if probe else 2048,
+        probe_slot="practice-2" if probe else None)
     selected = operator.selected_admission_policy(plan)
     captured = {}
     original_protocol = fixture._static_protocol
@@ -545,7 +563,12 @@ def test_operator_wiring_uses_actual_return_types_and_signatures_without_live_io
     monkeypatch.setattr(operator, "fresh_profile", lambda *a, **kw: SimpleNamespace(profile_key=key, model_dump=lambda **kw: {}))
     monkeypatch.setattr(operator, "factory_spec", lambda *a, **kw: spec)
     monkeypatch.setattr(operator, "prepare_campaign", lambda *a, **kw: {"roots": {"knowledge_check": {"root_id": str(facts.root_id)}}})
-    monkeypatch.setattr(operator, "review_ports", lambda *a, **kw: (SimpleNamespace(provider_identity=SimpleNamespace(model="offline")), ()))
+    solver, reviewers = SimpleNamespace(provider_identity=SimpleNamespace(model="offline")), ()
+    def frozen_ports(*args, **kwargs):
+        assert kwargs["peer_review_max_output_tokens"] == (61440 if probe else 2048)
+        assert kwargs["review_protocol"] == ("evidenced-v1" if probe else "legacy-v2")
+        return solver, reviewers
+    monkeypatch.setattr(operator, "review_ports", frozen_ports)
     gp.prepare_generation.side_effect = observed("prepare_generation", callback=lambda **kw:
         PreparedSharedGeneration(kw["lease"], kw["request"], uuid4(), (), 1, ("deepseek", "offline"),
             kw["evidence_policy"].policy_hash))
@@ -576,10 +599,17 @@ def test_operator_wiring_uses_actual_return_types_and_signatures_without_live_io
         str(proof.bank_validation_id), str(uuid4()), str(uuid4()), "machine_verified", 1, False)
     importer.import_candidate.side_effect = observed("import_candidate", imported)
     publisher.publish_internal.side_effect = observed("publish_internal", proof)
-    result = operator.execute_slot(conn, settings=None, authority=authority, materials=rp0.request.materials,
+    settings = Settings(_env_file=None, llm_type="deepseek", deepseek_api_key="offline-only",
+        deepseek_base_url="https://invalid.example", deepseek_model="deepseek-flash") if probe else None
+    slot = "practice-2" if probe else "assessment-2"
+    result = operator.execute_slot(conn, settings=settings, authority=authority, materials=rp0.request.materials,
         provider=SimpleNamespace(provider_key="deepseek", configured_model="offline"), plan=plan,
-        path=tmp_path, slot_name="assessment-2", locks=None)
-    assert result.lease == lease and result.result["status"] == "published_internal_not_ready_pack"
+        path=tmp_path, slot_name=slot, locks=None)
+    assert result.lease == lease and result.result["status"] == (
+        "published_internal_single_slot_probe_not_ready_pack" if probe else "published_internal_not_ready_pack")
+    assert rp.prepare_review.call_args.kwargs["solver"] is solver
+    assert rp.prepare_review.call_args.kwargs["reviewers"] is reviewers
+    assert rp.run_review.call_args.args[0] is rp0
     passed_policy = gp.prepare_generation.call_args.kwargs["evidence_policy"]
     assert type(passed_policy) is type(selected) and passed_policy == selected
     assert rr0.blind.score.passed is (admission_policy == "strict-v2")
@@ -599,9 +629,16 @@ def test_operator_wiring_uses_actual_return_types_and_signatures_without_live_io
         names = [name for name, _ in events]
         assert names.index("prepare_" + stage) < names.index("run_" + stage) < names.index("settle_" + stage) < names.index("commit_" + stage)
         assert dict(events)["settle_" + stage] != dict(events)["commit_" + stage]
-    anchor = operator.read(tmp_path / "slots/assessment-2/relation-anchor-lease-data.json")
-    assert anchor["relation_anchor_eligible"] and anchor["relation_calls_reserved"] == 4
-    assert anchor["lease_data"] == lease.model_dump(mode="json") and anchor["original_expiry_unchanged"]
+    anchor_path = tmp_path / "slots" / slot / "relation-anchor-lease-data.json"
+    if probe:
+        assert not anchor_path.exists()
+        assert result.result["relation_anchor_eligible"] is False and result.result["pack_ready"] is False
+        assert result.result["reserved_relation_calls"] == 0
+        assert list(operator.read(tmp_path / "campaign-candidates.json")["cases"]) == [slot]
+    else:
+        anchor = operator.read(anchor_path)
+        assert anchor["relation_anchor_eligible"] and anchor["relation_calls_reserved"] == 4
+        assert anchor["lease_data"] == lease.model_dump(mode="json") and anchor["original_expiry_unchanged"]
 
 
 @pytest.mark.parametrize("target,golden", [

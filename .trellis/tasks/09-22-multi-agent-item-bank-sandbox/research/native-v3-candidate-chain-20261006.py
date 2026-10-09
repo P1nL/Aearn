@@ -21,6 +21,7 @@ from native_v3_chain_support_20261006 import (
     AUTHOR_INPUT, AUTHOR_OUTPUT, REVIEW_INPUT, REVIEW_OUTPUT,
     ADMISSION_POLICIES, REVIEW_PROTOCOLS, SLOTS, TARGETS, OperatorPending, build_plan, campaign_cases, campaign_path, digest, read,
     remaining_time_plan, required_remaining, resume_decision, save, save_exact, selected_admission_policy, selected_review_protocol, time_bounds,
+    production_peer_output_cap, selected_peer_output_cap, selected_probe_slot, validate_campaign_state,
 )
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -198,11 +199,18 @@ def _json_rows(rows: Any) -> Any:
 
 def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list[Any], provider: Any, review_pending: set[str] | None = None) -> dict[str, Any]:
     """Reuse ALL active limits; never append overlapping periods to evade a cap."""
-    selected_admission_policy(plan)
-    selected_review_protocol(plan)
-    campaign_plan = path / "campaign-plan.json"
-    if campaign_plan.exists() and read(campaign_plan) != plan:
-        raise OperatorPending("IMMUTABLE_CAMPAIGN_POLICY_PLAN_CONFLICT")
+    validate_campaign_state(path, plan)
+    probe = selected_probe_slot(plan)
+    if selected_peer_output_cap(plan) != REVIEW_OUTPUT and (
+            provider.provider_key != "deepseek" or provider.configured_model != "deepseek-flash"):
+        raise OperatorPending("PRODUCTION_PEER_OUTPUT_PROVIDER_MISMATCH")
+    if probe is not None or "peer_review_output_budget" in plan:
+        if len(specs) != len(plan["slots"]) or any(
+                spec.target_id != plan["target"] or spec.seed != row["seed"]
+                or spec.allocation.model_dump(mode="json") != row["allocation"]
+                or spec.coverage_blueprint.scope.purpose.value != row["allocation"]["purpose"]
+                for spec, row in zip(specs, plan["slots"], strict=True)):
+            raise OperatorPending("PLAN_SPEC_SCOPE_MISMATCH")
     from app.services.learning.item_supply.budget import ItemSupplyBudgetRepository
     from app.services.learning.item_supply.repository import ItemSupplyRuntimeRepository
     from app.services.learning.item_supply.storage import PostgresSharedSupplyStorage
@@ -210,7 +218,7 @@ def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list
 
     receipt_path = path / "resource-window.json"
     expected = read(receipt_path) if receipt_path.exists() else None
-    occupied = {s for s in SLOTS if (path / "slots" / s / "author-invoked.json").exists()}
+    occupied = {s["slot"] for s in plan["slots"] if (path / "slots" / s["slot"] / "author-invoked.json").exists()}
     needs, root_needs = required_remaining(plan, occupied, review_pending=review_pending)
     wall_need, root_wall_need = remaining_time_plan(plan, occupied, review_pending=review_pending)
     budget = ItemSupplyBudgetRepository(conn)
@@ -233,6 +241,8 @@ def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list
                     (dim, key, kind) for dim, key in dimensions for kind in plan["global_caps"]}:
                 raise OperatorPending("EXISTING_PARTIAL_GLOBAL_CONFIGURATION_NO_REPLACEMENT")
         else:
+            if probe is not None:
+                raise OperatorPending("PROBE_ORIGINAL_GLOBAL_LIMITS_REQUIRED_NO_NEW_WINDOW")
             end = now + timedelta(seconds=plan["period_seconds"])
             for dim, key in dimensions:
                 for kind, cap in plan["global_caps"].items():
@@ -261,13 +271,22 @@ def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list
                 if canonical_obligation(spec).canonical_key != roots[purpose]["canonical_key"]:
                     raise OperatorPending("SAME_PURPOSE_MUST_SHARE_CANONICAL_ROOT")
                 continue
-            blueprint = storage.register_blueprint(spec.coverage_blueprint)
             obligation = canonical_obligation(spec)
+            if probe is not None:
+                original_root = conn.execute("SELECT id,blueprint_id FROM tutor_item_supply_shared_budget_roots "
+                    "WHERE canonical_key=%s FOR SHARE", (obligation.canonical_key,)).fetchone()
+                if original_root is None:
+                    raise OperatorPending("PROBE_ORIGINAL_CANONICAL_ROOT_REQUIRED")
+            blueprint = storage.register_blueprint(spec.coverage_blueprint)
             root = runtime.ensure_shared_root(blueprint_id=blueprint, obligation=obligation,
                 pool="base", provider_key=provider.provider_key)
+            if probe is not None and (root != original_root["id"] or blueprint != original_root["blueprint_id"]):
+                raise OperatorPending("PROBE_ORIGINAL_CANONICAL_ROOT_CHANGED")
             windows = conn.execute("SELECT * FROM tutor_item_supply_shared_budget_windows WHERE root_id=%s "
                 "AND window_start<=%s AND window_end>%s ORDER BY id FOR UPDATE", (root, now, now)).fetchall()
             if not windows and expected is None:
+                if probe is not None:
+                    raise OperatorPending("PROBE_ORIGINAL_ROOT_WINDOW_REQUIRED_NO_NEW_WINDOW")
                 caps = plan["root_caps"][purpose]
                 window = conn.execute("INSERT INTO tutor_item_supply_shared_budget_windows "
                     "(root_id,pool_key,provider_key,window_start,window_end,request_cap,token_cap,resource_cap) "
@@ -287,6 +306,9 @@ def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list
             required = root_needs[purpose]
             if used["requests"] + required["requests"] > window["request_cap"] or (
                     used["input_tokens"] + used["output_tokens"] + required["tokens"] > window["token_cap"]):
+                raise OperatorPending("EXISTING_ROOT_REMAINING_CAP_INSUFFICIENT_NO_RESET")
+            if probe is not None and required["resources"] and (
+                    used["execution_seconds"] + required["resources"] > window["resource_cap"]):
                 raise OperatorPending("EXISTING_ROOT_REMAINING_CAP_INSUFFICIENT_NO_RESET")
             roots[purpose] = dict(root_id=str(root), canonical_key=obligation.canonical_key,
                 blueprint_id=str(blueprint), window_id=str(window["id"]), window_start=window["window_start"].isoformat(),
@@ -313,18 +335,30 @@ def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list
     return receipt
 
 
-def review_ports(settings: Any, lease: Any, *, review_protocol: str = "legacy-v2") -> tuple[Any, tuple[Any, ...]]:
+def require_production_peer_output(settings: Any, cap: int) -> None:
+    if cap != REVIEW_OUTPUT and (
+            not settings.uses_deepseek_v4_flash_responses or settings.tutor_max_output_tokens != cap):
+        raise OperatorPending("PRODUCTION_PEER_OUTPUT_SETTING_MISMATCH")
+
+
+def review_ports(settings: Any, lease: Any, *, review_protocol: str = "legacy-v2",
+                 peer_review_max_output_tokens: int = REVIEW_OUTPUT) -> tuple[Any, tuple[Any, ...]]:
     from app.services.learning.item_bank.review_contracts import REQUIRED_REVIEW_ROLES
     from app.services.learning.item_supply.review_contracts_v2 import ProviderIdentityV2
     from app.services.learning.item_supply.review_provider import BoundedOpenAIReviewClient, JsonBlindSolverV2, JsonReviewerV2
 
+    if (type(peer_review_max_output_tokens) is not int or (peer_review_max_output_tokens != REVIEW_OUTPUT and
+            (peer_review_max_output_tokens != production_peer_output_cap() or review_protocol != "evidenced-v1"))):
+        raise OperatorPending("PLAN_PEER_OUTPUT_BUDGET_INVALID")
+    require_production_peer_output(settings, peer_review_max_output_tokens)
     ports = []
     for role in ("blind_solver", *[r.value for r in REQUIRED_REVIEW_ROLES]):
         client = BoundedOpenAIReviewClient(settings, profile=lease.profile)
         identity = ProviderIdentityV2(identity=f"{client.configured_provider}.native.v3.{role}",
             provider=client.configured_provider, model=client.model)
         options = dict(identity=identity, profile_hash=lease.profile.profile_hash,
-            timeout_seconds=100, max_output_tokens=REVIEW_OUTPUT, max_input_bytes=REVIEW_INPUT)
+            timeout_seconds=100, max_output_tokens=REVIEW_OUTPUT if role == "blind_solver" else peer_review_max_output_tokens,
+            max_input_bytes=REVIEW_INPUT)
         ports.append(JsonBlindSolverV2(client, **options) if role == "blind_solver" else
             JsonReviewerV2(client, role=next(r for r in REQUIRED_REVIEW_ROLES if r.value == role),
                 review_protocol=review_protocol, **options))
@@ -401,11 +435,12 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
     from app.services.learning.item_bank.native_publication_contracts import NativeInternalRuntimeBindingV1
 
     # Reject mixed policy plans before this imported seam touches the DB too.
+    validate_campaign_state(path, plan, slot_name=slot_name)
     evidence_policy = selected_admission_policy(plan)
     review_protocol = selected_review_protocol(plan)
-    campaign_plan = path / "campaign-plan.json"
-    if campaign_plan.exists() and read(campaign_plan) != plan:
-        raise OperatorPending("IMMUTABLE_CAMPAIGN_POLICY_PLAN_CONFLICT")
+    peer_cap = selected_peer_output_cap(plan)
+    probe = selected_probe_slot(plan)
+    require_production_peer_output(settings, peer_cap)
     # The importing-main seam must be just as isolated as the CLI, before writes.
     require_idle(conn)
     with conn.transaction():
@@ -555,7 +590,8 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
     with conn.transaction():
         lease = vp.runtime.refresh_lease(validation_prepared.lease, now=dbnow(conn))
         profile_key = vp.artifacts.context(lease, now=dbnow(conn))["key"]
-    solver, reviewers = review_ports(settings, lease, review_protocol=review_protocol)
+    solver, reviewers = review_ports(settings, lease, review_protocol=review_protocol,
+        peer_review_max_output_tokens=peer_cap)
     rp = SharedReviewPipeline(conn, settings, enabled=True, continuation_owner=continuation,
         trusted_model_bindings={(profile_key.provider, profile_key.model_version): solver.provider_identity.model})
     with conn.transaction():
@@ -638,13 +674,14 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
     # resolve this original lease DATA while its original DB authority is current.
     with conn.transaction():
         current_lease = rp.runtime.refresh_lease(lease, now=dbnow(conn))
-    save(folder / "relation-anchor-lease-data.json", dict(lease_data=current_lease.model_dump(mode="json"),
-        root_id=str(facts.root_id), artifact_id=str(artifact_id), facts_receipt_id=str(facts.receipt_id),
-        version_id=str(proof.version_id),
-        relation_calls_reserved=4 if scope.purpose.value == plan["relation_anchor_purpose"] else 0,
-        relation_anchor_eligible=scope.purpose.value == plan["relation_anchor_purpose"],
-        relation_reservation_issued=False,  # Count above is budget headroom, not A's permit.
-        lease_is_data_not_capability=True, original_expiry_unchanged=True))
+    if probe is None:
+        save(folder / "relation-anchor-lease-data.json", dict(lease_data=current_lease.model_dump(mode="json"),
+            root_id=str(facts.root_id), artifact_id=str(artifact_id), facts_receipt_id=str(facts.receipt_id),
+            version_id=str(proof.version_id),
+            relation_calls_reserved=4 if scope.purpose.value == plan["relation_anchor_purpose"] else 0,
+            relation_anchor_eligible=scope.purpose.value == plan["relation_anchor_purpose"],
+            relation_reservation_issued=False,  # Count above is budget headroom, not A's permit.
+            lease_is_data_not_capability=True, original_expiry_unchanged=True))
     result = dict(status="published_internal_not_ready_pack", target=plan["target"], slot=slot_name,
         candidate_id=intent["candidate_id"], handle=proof.item_handle, version_id=str(proof.version_id),
         publication_event_id=str(proof.publication_event_id), materialization_id=str(proof.materialization_id),
@@ -653,6 +690,10 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
         relation_anchor_eligible=scope.purpose.value == plan["relation_anchor_purpose"],
         max_HTTP_attempts_this_invocation=7 if existed else 8, monetary_cost=None,
         course_inventory_ready=False, public_release=False, formal_Practice_or_Gate_verified=False, E_complete=False)
+    if probe is not None:
+        result.update(status="published_internal_single_slot_probe_not_ready_pack",
+            execution_scope=plan["execution_scope"], pack_ready=False, relation_anchor_eligible=False,
+            reserved_relation_calls=0)
     if "admission_policy" in plan:
         result.update(admission_policy=plan["admission_policy"], diagnostic_warnings=list(diagnostic_warnings(facts.evaluation)))
     save(folder / "result.json", result)
@@ -661,6 +702,7 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_offline_imports()
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--plan", action="store_true", help="offline/inert (also the default)")
@@ -672,10 +714,17 @@ def main(argv: list[str] | None = None) -> int:
         help="strict-v2 is the unchanged default; diagnostic-v3 requires a new immutable campaign plan")
     parser.add_argument("--review-protocol", choices=REVIEW_PROTOCOLS, default="evidenced-v1",
         help="NEW campaigns default to evidenced-v1 with enabled/high thinking; explicit legacy-v2 is historical compatibility, never an old-plan upgrade")
+    parser.add_argument("--peer-review-max-output-tokens", type=int, choices=(REVIEW_OUTPUT, production_peer_output_cap()), default=REVIEW_OUTPUT,
+        help="NEW evidenced-v1 campaigns only: six peers; blind and relation remain 2048")
+    parser.add_argument("--probe-only", action="store_true",
+        help="freeze exactly --slot with eight calls and no relation/pack/anchor capability; existing budgets only")
     parser.add_argument("--campaign-output", help="exact shared campaign directory under .runtime/e-native-type-20261006")
     args = parser.parse_args(argv)
-    configure_offline_imports()
-    plan = build_plan(args.target, args.seed, admission_policy=args.admission_policy, review_protocol=args.review_protocol)
+    if args.probe_only and args.slot is None:
+        parser.error("--probe-only requires --slot")
+    plan = build_plan(args.target, args.seed, admission_policy=args.admission_policy, review_protocol=args.review_protocol,
+        peer_review_max_output_tokens=args.peer_review_max_output_tokens,
+        probe_slot=args.slot if args.probe_only else None)
     if not args.execute:
         print(json.dumps(dict(status="not_executed_offline_plan", database_io=False, provider_calls=0,
             selected_slot=args.slot, campaign_output=args.campaign_output, plan=plan), ensure_ascii=False, indent=2))
@@ -683,6 +732,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.slot is None or args.campaign_output is None:
         parser.error("--execute requires --slot and --campaign-output; reuse the SAME path for all five slots")
     path = campaign_path(args.campaign_output, RUNTIME)
+    validate_campaign_state(path, plan, slot_name=args.slot)
     path.mkdir(parents=True, exist_ok=True)
     lock = path / "operator-active.lock"
     # File presence is a safety fence, not a lease. A crashed run requires main's

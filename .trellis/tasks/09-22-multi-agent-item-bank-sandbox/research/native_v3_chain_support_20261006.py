@@ -54,22 +54,16 @@ def save_exact(path: Path, value: Any) -> None:
 
 
 def campaign_cases(path: Path, plan: dict[str, Any]) -> dict[str, Any]:
-    """Freeze all five identities before the first paid call, not just selected slot."""
+    """Freeze exactly the immutable scope before the first paid call."""
+    validate_plan(plan)
+    slots = tuple(row["slot"] for row in plan["slots"])
     checkpoint = path / "campaign-candidates.json"
     if checkpoint.exists():
         cases = read(checkpoint)
-        if cases["plan_hash"] != digest(plan) or set(cases["cases"]) != set(SLOTS):
-            raise OperatorPending("IMMUTABLE_CAMPAIGN_CASES_CONFLICT")
-        identities = [str(UUID(row["candidate_id"])) for row in cases["cases"].values()]
-        if len(set(identities)) != 5:
-            raise OperatorPending("DISTINCT_CAMPAIGN_CANDIDATES_REQUIRED")
-        for slot, row in cases["cases"].items():
-            expected = f"native.v3.{plan['target']}.{slot}.{UUID(row['candidate_id']).hex}"
-            if row["item_key"] != expected:
-                raise OperatorPending("IMMUTABLE_CAMPAIGN_ITEM_KEY_CONFLICT")
+        validate_cases(cases, plan)
         return cases
     cases = {}
-    for slot in SLOTS:
+    for slot in slots:
         identity = uuid4()
         cases[slot] = dict(candidate_id=str(identity), item_key=f"native.v3.{plan['target']}.{slot}.{identity.hex}")
     value = dict(plan_hash=digest(plan), cases=cases)
@@ -124,8 +118,111 @@ def selected_review_protocol(plan: dict[str, Any]) -> Any:
     return EVIDENCED_REVIEW_PROTOCOL
 
 
+def production_peer_output_cap() -> int:
+    """Reuse the verified production Flash request limit, not Decision/model max."""
+    from app.core.config import DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
+    return DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
+
+
+def peer_output_marker() -> dict[str, Any]:
+    return dict(schema_version="native_v3_peer_output_budget_v1",
+        limit_source="production_deepseek_flash_tutor_output_v1", peer_max_output_tokens=production_peer_output_cap(),
+        blind_max_output_tokens=REVIEW_OUTPUT, relation_max_output_tokens=REVIEW_OUTPUT)
+
+
+def selected_peer_output_cap(plan: dict[str, Any]) -> int:
+    """A closed server option, never an arbitrary caller-supplied token limit."""
+    if "peer_review_output_budget" not in plan:
+        return REVIEW_OUTPUT
+    marker = plan["peer_review_output_budget"]
+    if (type(marker) is not dict or marker != peer_output_marker()
+            or selected_review_protocol(plan) != "evidenced-v1"):
+        raise OperatorPending("PLAN_PEER_OUTPUT_BUDGET_INVALID")
+    return production_peer_output_cap()
+
+
+def probe_marker(slot: str) -> dict[str, Any]:
+    return dict(schema_version="native_v3_single_slot_probe_v1", mode="single-slot-probe",
+        slot=slot, pack_ready=False, relation_anchor_eligible=False)
+
+
+def selected_probe_slot(plan: dict[str, Any]) -> str | None:
+    if "execution_scope" not in plan:
+        return None
+    marker = plan["execution_scope"]
+    if (type(marker) is not dict or type(marker.get("slot")) is not str
+            or marker["slot"] not in SLOTS or marker != probe_marker(marker["slot"])):
+        raise OperatorPending("PLAN_PROBE_SCOPE_INVALID")
+    return marker["slot"]
+
+
+def validate_plan(plan: dict[str, Any], *, slot_name: str | None = None) -> None:
+    """Reconstruct the complete trusted plan before reservation or external IO.
+
+    Digest comparison also rejects extras, bool/int substitutions, mixed caps
+    and edited allocations. Historical marker-absent plans stay exact.
+    """
+    if type(plan) is not dict:
+        raise OperatorPending("PLAN_FROZEN_CONTENT_INVALID")
+    selected_admission_policy(plan)
+    protocol = selected_review_protocol(plan)
+    peer_cap = selected_peer_output_cap(plan)
+    probe = selected_probe_slot(plan)
+    try:
+        row = plan["slots"][0]
+        seed = row["seed"] - SLOTS.index(probe) if probe is not None else row["seed"]
+        expected = build_plan(plan["target"], seed,
+            admission_policy="diagnostic-v3" if "admission_policy" in plan else "strict-v2",
+            review_protocol=protocol, peer_review_max_output_tokens=peer_cap, probe_slot=probe)
+        exact = digest(plan) == digest(expected)
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise OperatorPending("PLAN_FROZEN_CONTENT_INVALID") from None
+    if not exact:
+        raise OperatorPending("PLAN_FROZEN_CONTENT_INVALID")
+    if slot_name is not None and slot_name not in {s["slot"] for s in expected["slots"]}:
+        raise OperatorPending("PLAN_SELECTED_SLOT_OUTSIDE_SCOPE")
+
+
+def validate_cases(cases: dict[str, Any], plan: dict[str, Any]) -> None:
+    slots = {row["slot"] for row in plan["slots"]}
+    if cases["plan_hash"] != digest(plan) or set(cases["cases"]) != slots:
+        raise OperatorPending("IMMUTABLE_CAMPAIGN_CASES_CONFLICT")
+    identities = [str(UUID(row["candidate_id"])) for row in cases["cases"].values()]
+    if len(set(identities)) != len(slots):
+        raise OperatorPending("DISTINCT_CAMPAIGN_CANDIDATES_REQUIRED")
+    for slot, row in cases["cases"].items():
+        expected = f"native.v3.{plan['target']}.{slot}.{UUID(row['candidate_id']).hex}"
+        if row["item_key"] != expected:
+            raise OperatorPending("IMMUTABLE_CAMPAIGN_ITEM_KEY_CONFLICT")
+
+
+def validate_campaign_state(path: Path, plan: dict[str, Any], *, slot_name: str | None = None) -> None:
+    """Read-only freeze check shared by CLI and both imported execution seams."""
+    validate_plan(plan, slot_name=slot_name)
+    campaign_plan = path / "campaign-plan.json"
+    if campaign_plan.exists() and read(campaign_plan) != plan:
+        raise OperatorPending("IMMUTABLE_CAMPAIGN_POLICY_PLAN_CONFLICT")
+    cases = path / "campaign-candidates.json"
+    if cases.exists():
+        validate_cases(read(cases), plan)
+    window = path / "resource-window.json"
+    if window.exists() and read(window)["plan_hash"] != digest(plan):
+        raise OperatorPending("IMMUTABLE_CAMPAIGN_ACCOUNTING_PLAN_CONFLICT")
+    slots = {row["slot"] for row in plan["slots"]}
+    if selected_probe_slot(plan) is not None and (path / "slots").exists():
+        if any(child.name not in slots for child in (path / "slots").iterdir()):
+            raise OperatorPending("PROBE_EXISTING_SLOT_OUTSIDE_SCOPE")
+    for slot in slots:
+        intent = path / "slots" / slot / "candidate-intent.json"
+        if intent.exists():
+            frozen = read(intent)
+            if frozen["plan_hash"] != digest(plan) or frozen["slot"] != slot:
+                raise OperatorPending("IMMUTABLE_CANDIDATE_INTENT_CONFLICT")
+
+
 def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2",
-               review_protocol: str = "legacy-v2") -> dict[str, Any]:
+               review_protocol: str = "legacy-v2", peer_review_max_output_tokens: int = REVIEW_OUTPUT,
+               probe_slot: str | None = None) -> dict[str, Any]:
     """Resolve registered families, not labels invented by an operator/model."""
     from app.services.learning.item_supply.finite_candidate_factory import build_finite_slot_allocation
     from app.services.learning.item_supply.finite_task_families import families_for_course
@@ -134,6 +231,11 @@ def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2
         raise OperatorPending("PLAN_ADMISSION_POLICY_INVALID")
     if type(review_protocol) is not str or review_protocol not in REVIEW_PROTOCOLS:
         raise OperatorPending("PLAN_REVIEW_PROTOCOL_INVALID")
+    if (type(peer_review_max_output_tokens) is not int or (peer_review_max_output_tokens != REVIEW_OUTPUT and
+            (peer_review_max_output_tokens != production_peer_output_cap() or review_protocol != "evidenced-v1"))):
+        raise OperatorPending("PLAN_PEER_OUTPUT_BUDGET_INVALID")
+    if probe_slot is not None and (type(probe_slot) is not str or probe_slot not in SLOTS):
+        raise OperatorPending("PLAN_PROBE_SCOPE_INVALID")
     if target not in TARGETS or type(seed) is not int or not 0 <= seed <= 251:
         raise OperatorPending("PLAN_TARGET_OR_SEED_INVALID")
     kinds = {
@@ -153,7 +255,7 @@ def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2
         rows.append({"slot": slot, "seed": seed + index, "allocation": allocation.model_dump(mode="json"),
             "allocation_hash": allocation.definition_hash, "max_HTTP_attempts": ITEM_CALLS})
     input_item = AUTHOR_INPUT + 7 * REVIEW_INPUT
-    output_item = AUTHOR_OUTPUT + 7 * REVIEW_OUTPUT
+    output_item = AUTHOR_OUTPUT + REVIEW_OUTPUT + 6 * peer_review_max_output_tokens
     caps = dict(requests=44, input_tokens=5 * input_item + RELATION_CALLS * REVIEW_INPUT,
         output_tokens=5 * output_item + RELATION_CALLS * REVIEW_OUTPUT, execution_seconds=4500,
         fetches=0, candidates=5, revision_rounds=0, investigation_rounds=0)
@@ -186,22 +288,44 @@ def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2
     if review_protocol == "evidenced-v1":
         from app.services.learning.item_supply.review_protocol import evidenced_protocol_marker
         plan["review_protocol"] = evidenced_protocol_marker()
+    if peer_review_max_output_tokens != REVIEW_OUTPUT:
+        plan["peer_review_output_budget"] = peer_output_marker()
+    if probe_slot is not None:
+        row = next(row for row in rows if row["slot"] == probe_slot)
+        purpose = row["allocation"]["purpose"]
+        resources = 900 if target != TARGETS[0] else 0
+        plan.update(execution_scope=probe_marker(probe_slot), slots=[row],
+            global_caps=dict(caps, requests=ITEM_CALLS, input_tokens=input_item,
+                output_tokens=output_item, execution_seconds=resources, candidates=1),
+            root_caps={purpose: dict(requests=ITEM_CALLS, tokens=input_item + output_item, resources=resources)},
+            recommended_execution_order=[probe_slot], relation_anchor_purpose=None,
+            pack_ready=False, relation_anchor_eligible=False,
+            max_author_calls=1, max_blind_and_item_role_calls=7, reserved_relation_calls=0,
+            max_HTTP_attempts=ITEM_CALLS, operator_HTTP_attempts=ITEM_CALLS,
+            minimum_campaign_seconds=ITEM_CALLS * PROVIDER_TIMEOUT_SECONDS + resources + CONTROL_MARGIN_SECONDS,
+            minimum_anchor_seconds=0)
     return plan
 
 
 def required_remaining(plan: dict[str, Any], occupied: set[str], *, review_pending: set[str] | None = None) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
-    """Never release the four calls reserved for the separate relation owner."""
+    """Preserve relation headroom for full campaigns; probes never acquire it."""
+    validate_plan(plan)
+    slots = {row["slot"] for row in plan["slots"]}
+    if not occupied <= slots or not (review_pending or set()) <= slots:
+        raise OperatorPending("PLAN_SELECTED_SLOT_OUTSIDE_SCOPE")
     input_item = AUTHOR_INPUT + 7 * REVIEW_INPUT
-    output_item = AUTHOR_OUTPUT + 7 * REVIEW_OUTPUT
+    output_review = REVIEW_OUTPUT + 6 * selected_peer_output_cap(plan)
+    output_item = AUTHOR_OUTPUT + output_review
+    relation_calls = plan["reserved_relation_calls"]
     remaining = [s for s in plan["slots"] if s["slot"] not in occupied]
     totals = dict(plan["global_caps"])
-    totals.update(requests=8 * len(remaining) + 4,
-        input_tokens=len(remaining) * input_item + 4 * REVIEW_INPUT,
-        output_tokens=len(remaining) * output_item + 4 * REVIEW_OUTPUT,
+    totals.update(requests=8 * len(remaining) + relation_calls,
+        input_tokens=len(remaining) * input_item + relation_calls * REVIEW_INPUT,
+        output_tokens=len(remaining) * output_item + relation_calls * REVIEW_OUTPUT,
         candidates=len(remaining), execution_seconds=900 * len(remaining) if plan["global_caps"]["execution_seconds"] else 0)
     roots = {purpose: dict(requests=0, tokens=0, resources=0) for purpose in plan["root_caps"]}
     primary = plan["slots"][0]["allocation"]["purpose"]
-    roots[primary].update(requests=4, tokens=4 * (REVIEW_INPUT + REVIEW_OUTPUT))
+    roots[primary].update(requests=relation_calls, tokens=relation_calls * (REVIEW_INPUT + REVIEW_OUTPUT))
     for slot in remaining:
         amounts = roots[slot["allocation"]["purpose"]]
         amounts["requests"] += 8
@@ -214,11 +338,11 @@ def required_remaining(plan: dict[str, Any], occupied: set[str], *, review_pendi
             raise OperatorPending("CONTINUATION_MUST_HAVE_ORIGINAL_AUTHOR")
         totals["requests"] += 7
         totals["input_tokens"] += 7 * REVIEW_INPUT
-        totals["output_tokens"] += 7 * REVIEW_OUTPUT
+        totals["output_tokens"] += output_review
         totals["execution_seconds"] += 900 if plan["global_caps"]["execution_seconds"] else 0
         amounts = roots[slot["allocation"]["purpose"]]
         amounts["requests"] += 7
-        amounts["tokens"] += 7 * (REVIEW_INPUT + REVIEW_OUTPUT)
+        amounts["tokens"] += 7 * REVIEW_INPUT + output_review
         amounts["resources"] += 900 if plan["global_caps"]["execution_seconds"] else 0
     return totals, roots
 
