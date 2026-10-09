@@ -140,7 +140,8 @@ def pure_review():
     binding = CandidateBindingV2(candidate_key="fixture.candidate", version_key="fixture.version",
         source_hash=source.source_hash, content_hash=source.content_hash,
         policy_hash=AutonomousEvidencePolicyV2().policy_hash,
-        profile_hash=generation.lease.profile.profile_hash, runtime_key="python-v1",
+        profile_hash=generation.lease.profile.profile_hash,
+        runtime_key=source.blueprint.runtime_profile_id or "static-exact-v1",
         risk_tier=source.blueprint.publication_policy.risk_tier)
     return PreparedReview(generation.lease, generation.scope_id, uuid4(), source,
                           validate_candidate(source), binding, "synthetic.item_author",

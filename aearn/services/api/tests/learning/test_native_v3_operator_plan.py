@@ -542,7 +542,7 @@ def test_operator_wiring_uses_actual_return_types_and_signatures_without_live_io
     monkeypatch.setattr(operator, "fresh_profile", lambda *a, **kw: SimpleNamespace(profile_key=key, model_dump=lambda **kw: {}))
     monkeypatch.setattr(operator, "factory_spec", lambda *a, **kw: spec)
     monkeypatch.setattr(operator, "prepare_campaign", lambda *a, **kw: {"roots": {"knowledge_check": {"root_id": str(facts.root_id)}}})
-    monkeypatch.setattr(operator, "review_ports", lambda *a: (SimpleNamespace(provider_identity=SimpleNamespace(model="offline")), ()))
+    monkeypatch.setattr(operator, "review_ports", lambda *a, **kw: (SimpleNamespace(provider_identity=SimpleNamespace(model="offline")), ()))
     gp.prepare_generation.side_effect = observed("prepare_generation", callback=lambda **kw:
         PreparedSharedGeneration(kw["lease"], kw["request"], uuid4(), (), 1, ("deepseek", "offline"),
             kw["evidence_policy"].policy_hash))

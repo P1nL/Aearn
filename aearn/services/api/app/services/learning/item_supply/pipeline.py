@@ -39,14 +39,16 @@ from app.services.learning.item_supply.validation_adapter import (
 )
 from app.services.learning.item_supply.admission import evaluate_admission_v2
 from app.services.learning.item_supply.review_contracts_v2 import (
-    AdmissionEvaluationV2, AdmissionEvidenceV2, CandidateBindingV2, ReviewBundleV2,
+    AdmissionEvaluationV2, AdmissionEvidenceV2, CandidateBindingV2, ReviewBundleV2, ReviewReport,
     check_subject, checked_validation_receipt, receipt_digest,
 )
 from app.services.learning.item_supply.review_provider import (
-    BlindAnswerScorerPortV2, BlindSolverPortV2, JsonBlindSolverV2, JsonReviewerV2, ReviewerPortV2,
+    AutonomousReviewError, BlindAnswerScorerPortV2, BlindSolverPortV2, JsonBlindSolverV2, JsonReviewerV2, ReviewerPortV2,
     blind_solve_candidate, review_candidate, review_resource_plan,
 )
 from app.services.learning.item_supply.storage_contracts import AutonomousEvidencePolicyV2
+from app.services.learning.item_supply.review_protocol import configured_review_protocol, report_protocol
+from app.services.learning.item_supply.review_rubrics import LEGACY_REVIEW_PROTOCOL, ReviewProtocol
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ class PreparedReview:
     attempt_bounds: tuple[int, ...]
     provider_bindings: tuple[tuple[str, str], ...] = ()
     provider_resource_plan: ResourceAmounts | None = None
+    review_protocol: ReviewProtocol = LEGACY_REVIEW_PROTOCOL
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,8 @@ class ItemSupplyPipeline:
         self.runtime = ItemSupplyRuntimeRepository(conn)
         self.budget = ItemSupplyBudgetRepository(conn)
         self.artifacts = PipelineArtifactRepository(conn)
+        self._review_started: set[UUID] = set()
+        self.partial_review_reports: dict[UUID, tuple[ReviewReport, ...]] = {}
 
     def sandbox_execution(self) -> "SandboxExecutionPipeline":
         """Explicit private P6 path; the original static validator stays unchanged."""
@@ -358,6 +363,7 @@ class ItemSupplyPipeline:
             return None
         resources = checked_model(resources, ResourceAmounts)
         attempt_bounds = self._review_attempt_bounds(solver, reviewers)
+        protocol = configured_review_protocol(reviewers)
         provider_bindings: tuple[tuple[str, str], ...] = ()
         if mode == "live":
             if (not isinstance(solver, JsonBlindSolverV2)
@@ -413,11 +419,11 @@ class ItemSupplyPipeline:
             if resources.input_tokens < provider_plan.input_tokens or resources.output_tokens < provider_plan.output_tokens:
                 raise PipelineRepositoryError("REVIEW_RESOURCE_PLAN_INCOMPLETE")
         reservation = self.budget.reserve(lease=lease, reservation_key=f"review.{artifact_id.hex}", amounts=resources, now=now)
-        if not reservation.allowed or reservation.reservation_id is None:
+        if not reservation.allowed or reservation.reservation_id is None or reservation.reason == "REPLAY":
             return None
         return PreparedReview(lease, scope_id, artifact_id, source, validation, binding,
             f"{generation.provider.provider}.item_author", reservation.reservation_id, mode, attempt_bounds, provider_bindings,
-            provider_plan)
+            provider_plan, protocol)
 
     @staticmethod
     def _review_attempt_bounds(solver: BlindSolverPortV2,
@@ -433,6 +439,10 @@ class ItemSupplyPipeline:
             raise PipelineRepositoryError("PROVIDER_IO_REQUIRES_IDLE_TRANSACTION")
         if self._review_attempt_bounds(solver, reviewers) != prepared.attempt_bounds:
             raise PipelineRepositoryError("REVIEW_ATTEMPT_BOUND_CHANGED")
+        if configured_review_protocol(reviewers) != prepared.review_protocol:
+            raise PipelineRepositoryError("REVIEW_PROTOCOL_CHANGED")
+        if prepared.reservation_id in self._review_started:
+            raise PipelineRepositoryError("REVIEW_ALREADY_DISPATCHED")
         if prepared.mode == "live":
             ports: tuple[BlindSolverPortV2 | ReviewerPortV2, ...] = (solver, *reviewers)
             if (not prepared.provider_bindings
@@ -448,11 +458,16 @@ class ItemSupplyPipeline:
             self.runtime.refresh_lease(prepared.lease, now=datetime.now(UTC))
         validation = checked_validation_receipt(prepared.validation)
         check_subject(prepared.source, prepared.binding, validation)
+        self._review_started.add(prepared.reservation_id)
         blind = blind_solve_candidate(prepared.source, binding=prepared.binding,
             author_identity=prepared.author_identity, solver=solver, scorer=scorer)
-        bundle = review_candidate(prepared.source, binding=prepared.binding,
-            validation_receipt=validation, author_identity=prepared.author_identity,
-            blind_solve_receipt=blind, reviewers=reviewers)
+        try:
+            bundle = review_candidate(prepared.source, binding=prepared.binding,
+                validation_receipt=validation, author_identity=prepared.author_identity,
+                blind_solve_receipt=blind, reviewers=reviewers)
+        except AutonomousReviewError as exc:
+            self.partial_review_reports[prepared.reservation_id] = exc.partial_reports
+            raise
         return CompletedReview(bundle)
 
     def settle_review(self, prepared: PreparedReview, completed: CompletedReview | None) -> None:
@@ -474,6 +489,8 @@ class ItemSupplyPipeline:
             artifact_id=prepared.artifact_id, now=now, mode=prepared.mode)
         self._fence_source(artifact, prepared.mode, source_authority)
         bundle = checked_model(completed.bundle, ReviewBundleV2)
+        if any(report_protocol(report) != prepared.review_protocol for report in bundle.reports):
+            raise PipelineRepositoryError("REVIEW_PROTOCOL_CHANGED")
         if prepared.mode == "live":
             runs = (bundle.blind_solve.run, *(report.run for report in bundle.reports))
             if (not prepared.provider_bindings

@@ -191,12 +191,20 @@ class OpenAICompatibleClient:
         output_schema: Mapping[str, object] | None = None,
         schema_name: str | None = None,
         thinking_mode: Literal["enabled", "disabled"] | None = None,
+        reasoning_effort: Literal["low", "high", "max"] | None = None,
         capture_provider_body: bool = False,
         visible_output_observer: LLMVisibleOutputObserver | None = None,
     ) -> LLMJsonResponse:
         """Return one strict JSON object through the exact selected provider protocol."""
 
         protocol = select_llm_protocol(self._settings)
+        # DeepSeek's explicit effort applies only to enabled thinking. Preserve
+        # all historical/default requests when no effort is supplied.
+        if reasoning_effort is not None:
+            if (type(reasoning_effort) is not str or reasoning_effort not in {"low", "high", "max"}
+                    or thinking_mode != "enabled" or self._settings.llm_provider_type != "deepseek"
+                    or self.model not in {DEEPSEEK_V4_FLASH_MODEL, "deepseek-v4-pro"}):
+                raise ValueError("explicit DeepSeek reasoning_effort requires enabled thinking")
         max_tokens = _bounded_max_output_tokens(
             settings=self._settings,
             requested=max_tokens,
@@ -215,6 +223,7 @@ class OpenAICompatibleClient:
                     timeout_seconds=timeout_seconds,
                     diagnostic_capture=diagnostic_capture,
                     thinking_mode=thinking_mode,
+                    reasoning_effort=reasoning_effort,
                 )
 
             url = (
@@ -236,6 +245,7 @@ class OpenAICompatibleClient:
                 ),
                 diagnostic_capture=diagnostic_capture,
                 thinking_mode=thinking_mode,
+                reasoning_effort=reasoning_effort,
                 visible_output_observer=visible_output_observer,
             )
         except (LLMCallError, LLMInvalidResponseError) as exc:
@@ -371,6 +381,7 @@ class OpenAICompatibleClient:
         use_json_schema: bool,
         diagnostic_capture: ProviderBodyCapture | None,
         thinking_mode: Literal["enabled", "disabled"] | None,
+        reasoning_effort: Literal["low", "high", "max"] | None,
         visible_output_observer: LLMVisibleOutputObserver | None,
     ) -> LLMJsonResponse:
         instructions, input_text = _messages_to_responses_input(messages)
@@ -391,7 +402,7 @@ class OpenAICompatibleClient:
         if instructions is not None:
             payload["instructions"] = instructions
         if thinking_mode is not None and self._settings.llm_provider_type == "deepseek":
-            payload["reasoning"] = {"effort": "none" if thinking_mode == "disabled" else "high"}
+            payload["reasoning"] = {"effort": "none" if thinking_mode == "disabled" else (reasoning_effort or "high")}
         if temperature is not None:
             payload["temperature"] = temperature
         if max_tokens is not None:
@@ -497,6 +508,7 @@ class OpenAICompatibleClient:
         timeout_seconds: float | None,
         diagnostic_capture: ProviderBodyCapture | None,
         thinking_mode: Literal["enabled", "disabled"] | None,
+        reasoning_effort: Literal["low", "high", "max"] | None,
     ) -> LLMJsonResponse:
         payload: dict[str, object] = {
             "model": self.model,
@@ -507,6 +519,8 @@ class OpenAICompatibleClient:
             payload["temperature"] = temperature
         if thinking_mode is not None:
             payload["thinking"] = {"type": thinking_mode}
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         _enforce_request_input_limit(settings=self._settings, payload=payload)
@@ -542,6 +556,21 @@ class OpenAICompatibleClient:
             )
         usage = _extract_llm_usage(provider_response, protocol=LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS)
         model = _response_model(provider_response) or self.model
+        # Even syntactically valid JSON is not a completed answer if the provider
+        # exhausted its shared thinking/final-output budget or filtered it.
+        choices = provider_response.get("choices")
+        first = choices[0] if isinstance(choices, list) and choices else None
+        finish = first.get("finish_reason") if isinstance(first, Mapping) else None
+        if isinstance(finish, str) and finish in {"length", "content_filter"}:
+            diagnostics = LLMResponseDiagnostics(
+                response_status="incomplete",
+                incomplete_reason="max_output_tokens" if finish == "length" else "content_filter",
+                requested_max_output_tokens=max_tokens,
+                requested_reasoning_effort=reasoning_effort,
+            )
+            raise LLMInvalidResponseError("DeepSeek response is incomplete",
+                kind=LLMInvalidResponseKind.RESPONSE_INCOMPLETE, usage=usage, model=model,
+                response_diagnostics=diagnostics)
         try:
             content = _extract_message_content(provider_response)
             parsed_content = _parse_json_object(content)

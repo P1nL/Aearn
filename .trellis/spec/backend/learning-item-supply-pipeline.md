@@ -164,3 +164,45 @@ V2 worker one case passed,7pre-change V1 specs retained exact bytes/hash, scoped
 
 ### 7. Wrong vs correct
 Wrong: count four task labels or planned counterexamples as 2/2/1. Correct: preserve unresolved pair directions, establish lawful finite witnesses and exact course-clause mappings with actual review, then compute full supply. User-requested stopping is not P7/P10/E acceptance.
+
+## 2026-10-09 explicit review thinking transport
+
+Fresh evidenced-role review calls may explicitly select DeepSeek `thinking_mode="enabled"` and `reasoning_effort="high"`. `OpenAICompatibleClient.complete_json` has an additive optional effort argument; omission preserves historical/default requests. Only the documented exact `deepseek-flash`/`deepseek-v4-pro` models accept the new explicit argument. Unsupported provider/model, unsupported effort, or disabled/unspecified thinking plus an explicit effort rejects before IO.
+
+Responses carries `reasoning.effort`; Chat carries `thinking.type` plus `reasoning_effort`. Keep the caller's frozen token/output bounds, one-attempt review client, and independent settlement/UNKNOWN rules. Do not raise old root/profile caps or switch providers to support thinking. Disable provider-body capture and expose no reasoning text; the review consumes final structured output only. Chat `finish_reason=length|content_filter` is incomplete even if its visible content happens to parse as JSON; retain safe usage and stay pending. Existing Responses terminal validation still applies.
+
+The dated 2026-10-02 non-thinking generation/review statement is historical and remains true for legacy calls; this addition does not change generation, Tutor or old completed receipts. Official parameter verification: active task research/deepseek-review-thinking-official-20261009.md. Real reviewer-quality measurement is separate from fake-transport serialization checks.
+
+## 2026-10-09 evidenced six-role review protocol
+
+### 1. Scope / trigger
+Fresh native six-role review uses `evidenced-v1`. This is a private code/protocol repair, not source authorization, publication, learner scoring or reviewer-accuracy acceptance. Old DTO/history and outer V2/V3 admission policies remain exact.
+
+### 2. Signatures
+- `make_review_request(source, *, binding, validation_receipt, role, protocol="legacy-v2") -> ReviewRequest` and `verify_review_report(report, request) -> ReviewReport` are the central dispatch/verification boundary in `review_protocol.py`.
+- Native operator fresh CLI defaults to `--review-protocol evidenced-v1`; `--plan` remains zero-IO. Explicit `--review-protocol legacy-v2` retains compatibility. `--execute` is main-only and requires a new immutable campaign and actual current owner/source/budget prerequisites.
+- `OpenAICompatibleClient.complete_json(..., thinking_mode="enabled", reasoning_effort="high")` maps Flash Responses to `reasoning.effort` and V4-Pro Chat to `thinking.type` plus `reasoning_effort`. Unsupported explicit provider/model/effort rejects before HTTP.
+
+### 3. Contracts
+- `EvidencedReviewInputV1` wraps the exact typed subject plus private evidence index. `EvidencedReviewFindingV1` requires problem, expected behavior, exact pointer/value_hash references and an applicable counterexample. `EvidencedReviewOutputV1`/`EvidencedReviewReportV1` retain the actual new schema/output_hash; never compress to a legacy vote and counterfeit a provider hash.
+- The exact `evidenced_protocol_marker()` freezes protocol/prompt/input/output/report versions, enabled/high thinking and null temperature. Marker-absent stored plans and old port/build_plan defaults remain legacy, not silently upgraded.
+- Outer ReviewBundleV2/V3 policies/hash semantics and old JSON stay unchanged. Prepare/run/commit must use the same protocol; admission/history use the report-aware verifier. Same-model correlation and high-risk independent second bundle remain mandatory.
+- Six domain rubrics share hard codes and finite boundaries. Specialization must not suppress a genuine cross-role hard defect. Hard codes require major/critical blocking findings; info/minor are advice, and minor_issue cannot be material. approved means no material findings; changes_required means major without critical; rejected requires critical.
+- Field references authenticate actual relevant input fields/binding, not semantic truth. Keep problem/expected/counterexample private and hidden from repr/public DTOs; no chain of thought, peer votes, blind answers or provider-body capture.
+- Frozen output/input/token/request bounds and UNKNOWN remain unchanged. Late-role errors retain private completed reports without a successful bundle; native `partial-review-reports.json` is an exclusive no-admission checkpoint before settlement. Non-native private state is exception/instance retention, not a DB journal or replay capability.
+
+### 4. Validation / error matrix
+- Unknown/mixed protocol, marker tampering or stored-plan mismatch: reject before reservation/DB/provider access, including imported execution/direct preparation.
+- Empty/contradictory denial, wrong severity/hard-code pairing, unrelated or hash-tampered refs: no valid vote/success bundle; pending, never automatic approval.
+- Reservation `REPLAY`: no new prepared review/dispatch permission; no re-review or budget reset.
+- Thinking output truncated/filtered, including valid-looking Chat JSON with length/content_filter: incomplete/pending, preserve safe usage and UNKNOWN.
+- Major material defect with valid field evidence: original hard veto still applies; six votes cannot override deterministic/source/risk/coverage/runtime failure.
+
+### 5. Good / base / bad cases
+Good: new frozen evidenced campaign, concrete relevant private evidence, actual high wire fields and original owners. Base: explicit legacy/marker-absent history retains original bytes and interpretation. Bad: upgrade an old campaign, ban cross-role safety findings, treat equal numeric answer components as two complete correct answers, or count matching pointers as proof a model claim is true.
+
+### 6. Tests required
+Focused `test_item_supply_evidenced_review.py`, `test_native_evidenced_review_plan.py`, legacy/autonomous/private/shared regressions and `test_llm_responses_diagnostics.py` cover exact hashes, failed-role retention, finite descriptors, scale consistency, same-model risk, pre-reservation/replay fences and Chat/Responses high. Use explicit zero-IO tests first; PG tests require a named disposable fixture database and rollback, not default business DSN. Labeled doubles are not a real precision/recall benchmark. Actual high-thinking calibration and populated publication/readback require separate receipts.
+
+### 7. Wrong vs correct
+Wrong: all six model calls returned JSON, therefore the pack/review quality/publication passed. Correct: verify actual field-bound reports and unchanged budget/source/owner gates, retain pending/denial as facts, then independently validate native persistence and real supply. Do not replay old quarantine until green or declare P7b/E complete from protocol tests.

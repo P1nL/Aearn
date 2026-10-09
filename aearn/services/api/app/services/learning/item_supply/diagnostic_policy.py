@@ -15,7 +15,7 @@ from app.services.learning.item_bank.contracts import canonical_hash
 from app.services.learning.item_bank.review_contracts import REQUIRED_REVIEW_ROLES
 from app.services.learning.item_supply.contracts import Digest, Identifier
 from app.services.learning.item_supply.review_contracts_v2 import (
-    AdmissionEvaluationV2, BlindSolveReceiptV2, CandidateBindingV2, ReviewBundleV2, ReviewReportV2,
+    AdmissionEvaluationV2, BlindSolveReceiptV2, CandidateBindingV2, ReviewBundleV2, ReviewReport,
 )
 from app.services.learning.item_supply.storage_contracts import (
     AutonomousEvidencePolicyV2, StorageContract, checked_model,
@@ -56,10 +56,12 @@ class ReviewBundleV3(StorageContract):
     binding: CandidateBindingV2
     author_identity: Identifier
     blind_solve: BlindSolveReceiptV2
-    reports: tuple[ReviewReportV2, ...] = Field(min_length=6, max_length=6)
+    reports: tuple[ReviewReport, ...] = Field(min_length=6, max_length=6)
 
     @model_validator(mode="after")
     def identities_and_binding(self) -> ReviewBundleV3:
+        if len({type(r) for r in self.reports}) != 1:
+            raise ValueError("mixed review protocols")
         if self.binding.policy_hash != AutonomousEvidencePolicyV3().policy_hash:
             raise ValueError("v3 policy binding mismatch")
         if tuple(r.role for r in self.reports) != REQUIRED_REVIEW_ROLES:

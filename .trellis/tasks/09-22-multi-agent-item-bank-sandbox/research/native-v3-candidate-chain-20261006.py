@@ -19,8 +19,8 @@ from uuid import UUID, uuid4
 
 from native_v3_chain_support_20261006 import (
     AUTHOR_INPUT, AUTHOR_OUTPUT, REVIEW_INPUT, REVIEW_OUTPUT,
-    ADMISSION_POLICIES, SLOTS, TARGETS, OperatorPending, build_plan, campaign_cases, campaign_path, digest, read,
-    remaining_time_plan, required_remaining, resume_decision, save, save_exact, selected_admission_policy, time_bounds,
+    ADMISSION_POLICIES, REVIEW_PROTOCOLS, SLOTS, TARGETS, OperatorPending, build_plan, campaign_cases, campaign_path, digest, read,
+    remaining_time_plan, required_remaining, resume_decision, save, save_exact, selected_admission_policy, selected_review_protocol, time_bounds,
 )
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -180,6 +180,11 @@ def _json_rows(rows: Any) -> Any:
 
 def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list[Any], provider: Any, review_pending: set[str] | None = None) -> dict[str, Any]:
     """Reuse ALL active limits; never append overlapping periods to evade a cap."""
+    selected_admission_policy(plan)
+    selected_review_protocol(plan)
+    campaign_plan = path / "campaign-plan.json"
+    if campaign_plan.exists() and read(campaign_plan) != plan:
+        raise OperatorPending("IMMUTABLE_CAMPAIGN_POLICY_PLAN_CONFLICT")
     from app.services.learning.item_supply.budget import ItemSupplyBudgetRepository
     from app.services.learning.item_supply.repository import ItemSupplyRuntimeRepository
     from app.services.learning.item_supply.storage import PostgresSharedSupplyStorage
@@ -290,7 +295,7 @@ def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list
     return receipt
 
 
-def review_ports(settings: Any, lease: Any) -> tuple[Any, tuple[Any, ...]]:
+def review_ports(settings: Any, lease: Any, *, review_protocol: str = "legacy-v2") -> tuple[Any, tuple[Any, ...]]:
     from app.services.learning.item_bank.review_contracts import REQUIRED_REVIEW_ROLES
     from app.services.learning.item_supply.review_contracts_v2 import ProviderIdentityV2
     from app.services.learning.item_supply.review_provider import BoundedOpenAIReviewClient, JsonBlindSolverV2, JsonReviewerV2
@@ -303,7 +308,8 @@ def review_ports(settings: Any, lease: Any) -> tuple[Any, tuple[Any, ...]]:
         options = dict(identity=identity, profile_hash=lease.profile.profile_hash,
             timeout_seconds=100, max_output_tokens=REVIEW_OUTPUT, max_input_bytes=REVIEW_INPUT)
         ports.append(JsonBlindSolverV2(client, **options) if role == "blind_solver" else
-            JsonReviewerV2(client, role=next(r for r in REQUIRED_REVIEW_ROLES if r.value == role), **options))
+            JsonReviewerV2(client, role=next(r for r in REQUIRED_REVIEW_ROLES if r.value == role),
+                review_protocol=review_protocol, **options))
     return ports[0], tuple(ports[1:])
 
 
@@ -378,6 +384,7 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
 
     # Reject mixed policy plans before this imported seam touches the DB too.
     evidence_policy = selected_admission_policy(plan)
+    review_protocol = selected_review_protocol(plan)
     campaign_plan = path / "campaign-plan.json"
     if campaign_plan.exists() and read(campaign_plan) != plan:
         raise OperatorPending("IMMUTABLE_CAMPAIGN_POLICY_PLAN_CONFLICT")
@@ -530,7 +537,7 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
     with conn.transaction():
         lease = vp.runtime.refresh_lease(validation_prepared.lease, now=dbnow(conn))
         profile_key = vp.artifacts.context(lease, now=dbnow(conn))["key"]
-    solver, reviewers = review_ports(settings, lease)
+    solver, reviewers = review_ports(settings, lease, review_protocol=review_protocol)
     rp = SharedReviewPipeline(conn, settings, enabled=True, continuation_owner=continuation,
         trusted_model_bindings={(profile_key.provider, profile_key.model_version): solver.provider_identity.model})
     with conn.transaction():
@@ -549,13 +556,22 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
     event(folder, "review_dispatch_intent", reservation_id=str(review_prepared.reservation_id), max_HTTP_attempts=7)
     require_idle(conn)
     review_result = rp.run_review(review_prepared)
+    if review_result.partial_reports:
+        # Private checkpoint precedes settlement: later accounting errors cannot
+        # erase already completed roles, and never create successful bundle data.
+        save(folder / "partial-review-reports.json", dict(visibility="private_only", admission_eligible=False,
+            reservation_id=str(review_prepared.reservation_id), safe_reason=review_result.safe_reason,
+            reports=[report.model_dump(mode="json") for report in review_result.partial_reports]))
     with conn.transaction():
         rp.settle_review(review_prepared, review_result)
-    save(folder / "review.json", dict(safe_reason=review_result.safe_reason,
+    review_payload = dict(safe_reason=review_result.safe_reason,
         blind=None if review_result.blind is None else review_result.blind.model_dump(mode="json"),
         bundle=None if review_result.bundle is None else review_result.bundle.model_dump(mode="json"),
         ambiguity=None if review_result.ambiguity is None else review_result.ambiguity.model_dump(mode="json"),
-        usage_state="unknown", monetary_cost=None))
+        usage_state="unknown", monetary_cost=None)
+    if review_result.partial_reports:
+        review_payload["partial_reports"] = [report.model_dump(mode="json") for report in review_result.partial_reports]
+    save(folder / "review.json", review_payload)
     event(folder, "review_settled", safe_reason=review_result.safe_reason, usage_state="unknown")
     with conn.transaction():
         reviewed = rp.commit_review(review_prepared, review_result)
@@ -632,10 +648,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--admission-policy", choices=ADMISSION_POLICIES, default="strict-v2",
         help="strict-v2 is the unchanged default; diagnostic-v3 requires a new immutable campaign plan")
+    parser.add_argument("--review-protocol", choices=REVIEW_PROTOCOLS, default="evidenced-v1",
+        help="NEW campaigns default to evidenced-v1 with enabled/high thinking; explicit legacy-v2 is historical compatibility, never an old-plan upgrade")
     parser.add_argument("--campaign-output", help="exact shared campaign directory under .runtime/e-native-type-20261006")
     args = parser.parse_args(argv)
     configure_offline_imports()
-    plan = build_plan(args.target, args.seed, admission_policy=args.admission_policy)
+    plan = build_plan(args.target, args.seed, admission_policy=args.admission_policy, review_protocol=args.review_protocol)
     if not args.execute:
         print(json.dumps(dict(status="not_executed_offline_plan", database_io=False, provider_calls=0,
             selected_slot=args.slot, campaign_output=args.campaign_output, plan=plan), ensure_ascii=False, indent=2))

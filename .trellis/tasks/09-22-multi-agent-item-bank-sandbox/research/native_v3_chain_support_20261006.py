@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 TARGETS = ("python-kc-binding-v1", "python-state-update-v1", "sqlite-predicate-order-v1")
 ADMISSION_POLICIES = ("strict-v2", "diagnostic-v3")
+REVIEW_PROTOCOLS = ("legacy-v2", "evidenced-v1")
 SLOTS = ("practice-1", "practice-2", "assessment-1", "assessment-2", "guided-remediation")
 AUTHOR_INPUT = 131_072
 AUTHOR_OUTPUT = 8192
@@ -112,13 +113,27 @@ def selected_admission_policy(plan: dict[str, Any]) -> Any:
     return policy
 
 
-def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2") -> dict[str, Any]:
+def selected_review_protocol(plan: dict[str, Any]) -> Any:
+    from app.services.learning.item_supply.review_protocol import evidenced_protocol_marker
+    from app.services.learning.item_supply.review_rubrics import EVIDENCED_REVIEW_PROTOCOL, LEGACY_REVIEW_PROTOCOL
+
+    if "review_protocol" not in plan:
+        return LEGACY_REVIEW_PROTOCOL
+    if type(plan["review_protocol"]) is not dict or plan["review_protocol"] != evidenced_protocol_marker():
+        raise OperatorPending("PLAN_REVIEW_PROTOCOL_INVALID")
+    return EVIDENCED_REVIEW_PROTOCOL
+
+
+def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2",
+               review_protocol: str = "legacy-v2") -> dict[str, Any]:
     """Resolve registered families, not labels invented by an operator/model."""
     from app.services.learning.item_supply.finite_candidate_factory import build_finite_slot_allocation
     from app.services.learning.item_supply.finite_task_families import families_for_course
 
     if type(admission_policy) is not str or admission_policy not in ADMISSION_POLICIES:
         raise OperatorPending("PLAN_ADMISSION_POLICY_INVALID")
+    if type(review_protocol) is not str or review_protocol not in REVIEW_PROTOCOLS:
+        raise OperatorPending("PLAN_REVIEW_PROTOCOL_INVALID")
     if target not in TARGETS or type(seed) is not int or not 0 <= seed <= 251:
         raise OperatorPending("PLAN_TARGET_OR_SEED_INVALID")
     kinds = {
@@ -168,6 +183,9 @@ def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2
         policy = AutonomousEvidencePolicyV3()
         plan["admission_policy"] = dict(mode=admission_policy, policy_version=policy.policy_version,
             policy_hash=policy.policy_hash)
+    if review_protocol == "evidenced-v1":
+        from app.services.learning.item_supply.review_protocol import evidenced_protocol_marker
+        plan["review_protocol"] = evidenced_protocol_marker()
     return plan
 
 

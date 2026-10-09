@@ -9,12 +9,13 @@ from app.services.learning.item_bank.contracts import (
 )
 from app.services.learning.item_supply.review_contracts_v2 import (
     AdmissionEvaluationV2, AdmissionEvidenceV2, CandidateBindingV2,
-    ReviewBundleV2, ReviewInputV2, ValidationReceiptV2, check_subject, checked_validation_receipt,
+    ReviewBundleV2, ValidationReceiptV2, check_subject, checked_validation_receipt,
     execution_receipt_digest, receipt_digest, validation_passed,
 )
 from app.services.learning.item_supply.review_provider import (
-    BLIND_PROMPT_VERSION, blind_input, review_prompt_version,
+    BLIND_PROMPT_VERSION, blind_input,
 )
+from app.services.learning.item_supply.review_protocol import make_review_request, report_protocol, verify_review_report
 from app.services.learning.item_supply.risk_registry import RiskAdapterRegistry, required_critical_risks
 from app.services.learning.item_supply.storage_contracts import AutonomousEvidencePolicyV2, checked_model
 from app.services.learning.item_supply.diagnostic_policy import (
@@ -41,15 +42,9 @@ def _check_bundle(
             or bundle.blind_solve.run.prompt_version != BLIND_PROMPT_VERSION):
         raise ValueError("stale blind input")
     for report in bundle.reports:
-        expected = ReviewInputV2(binding=binding, role=report.role,
-                                 source=source, validation_receipt=receipt)
-        if (report.run.input_hash != expected.input_hash
-                or report.run.prompt_version != review_prompt_version(expected)
-                or report.run.output_hash != canonical_hash({
-                    "verdict": report.verdict.value,
-                    "findings": [finding.model_dump(mode="json") for finding in report.findings],
-                })):
-            raise ValueError("stale review input or output")
+        expected = make_review_request(source, binding=binding, role=report.role,
+                                       validation_receipt=receipt, protocol=report_protocol(report))
+        verify_review_report(report, expected)
 
 
 def _independent(first: ReviewBundle, second: ReviewBundle) -> bool:

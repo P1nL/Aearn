@@ -42,6 +42,9 @@ from app.services.learning.item_supply.review_contracts_v2 import (
     BlindSolveReceiptV2,
     BlindSolveResultV2,
     CandidateBindingV2,
+    EvidencedReviewInputV1,
+    EvidencedReviewOutputV1,
+    EvidencedReviewReportV1,
     ProviderIdentityV2,
     ProviderRunV2,
     ReviewBundleV2,
@@ -52,6 +55,7 @@ from app.services.learning.item_supply.review_contracts_v2 import (
     ReviewFindingV2,
     ReviewInputV2,
     ReviewReportV2,
+    ReviewReport,
     ValidationReceiptV2,
     check_subject,
     checked_validation_receipt,
@@ -59,10 +63,17 @@ from app.services.learning.item_supply.review_contracts_v2 import (
 )
 from app.services.learning.item_supply.storage_contracts import StorageContract, checked_model
 from app.services.llm.llm_client import JsonTransport, LLMJsonResponse, OpenAICompatibleClient
+from app.services.learning.item_supply.review_protocol import (
+    PYTHON_GOAL_REVIEW_PROMPT_VERSION as PYTHON_GOAL_REVIEW_PROMPT_VERSION,
+    REVIEW_PROMPT_VERSION as REVIEW_PROMPT_VERSION, ReviewRequest,
+    checked_review_request, configured_review_protocol, make_review_request, review_prompt_version,
+    verify_review_report,
+)
+from app.services.learning.item_supply.review_rubrics import (
+    EVIDENCED_REVIEW_PROTOCOL, LEGACY_REVIEW_PROTOCOL, ReviewProtocol, evidenced_review_instruction,
+)
 
 BLIND_PROMPT_VERSION = "item-supply-blind-solve-v2.2"
-REVIEW_PROMPT_VERSION = "item-supply-peer-review-v2.2"
-PYTHON_GOAL_REVIEW_PROMPT_VERSION = "item-supply-peer-review-python-goal-v2.3"
 
 _BLIND_INSTRUCTION = (
     "Solve the public problem independently. Return only JSON {answer: string}. "
@@ -109,6 +120,10 @@ class _BlindCommon(TypedDict):
 
 class AutonomousReviewError(ValueError):
     """Safe fixed-code failure. Never includes provider content or diagnostics."""
+
+    def __init__(self, code: str, *, partial_reports: tuple[ReviewReport, ...] = ()) -> None:
+        super().__init__(code)
+        self.partial_reports = partial_reports
 
 
 class JsonReviewClient(Protocol):
@@ -183,10 +198,13 @@ class BoundedOpenAIReviewClient:
             self._settings.model_copy(update={"llm_timeout_seconds": timeout_seconds}),
             transport=self._transport, max_http_attempts=1,
         )
+        evidenced = schema_name in {"item_supply_evidenced_review_output_v1", "item_supply_review_diagnostic_output_v1"}
         return client.complete_json(
             messages, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
             output_schema=output_schema, schema_name=schema_name,
-            thinking_mode="disabled",
+            thinking_mode="enabled" if evidenced else "disabled",
+            reasoning_effort="high" if evidenced else None,
+            temperature=None if evidenced else 0.2,
             capture_provider_body=False,
         )
 
@@ -215,7 +233,7 @@ class ReviewerPortV2(Protocol):
     @property
     def request_attempt_bound(self) -> int: ...
 
-    def review(self, request: ReviewInputV2) -> ReviewReportV2: ...
+    def review(self, request: ReviewRequest) -> ReviewReport: ...
 
 
 class _BlindAnswer(StorageContract):
@@ -271,13 +289,13 @@ class _JsonProviderAdapter:
     def frozen_profile(self) -> FrozenProfileSnapshot | None:
         return self._client.frozen_profile if isinstance(self._client, BoundedOpenAIReviewClient) else None
 
-    def _input_envelope(self, request: BlindSolveInputV2 | ReviewInputV2 | ReviewDiagnosticInputV1, *,
-                        instruction: str, output_type: type[_BlindAnswer] | type[_ReviewVote] | type[ReviewDiagnosticOutputV1],
+    def _input_envelope(self, request: BlindSolveInputV2 | ReviewRequest | ReviewDiagnosticInputV1, *,
+                        instruction: str, output_type: type[_BlindAnswer] | type[_ReviewVote] | type[ReviewDiagnosticOutputV1] | type[EvidencedReviewOutputV1],
                         ) -> tuple[tuple[dict[str, str], dict[str, str]], dict[str, object], str, int]:
         if request.binding.profile_hash != self._profile_hash:
             raise AutonomousReviewError("frozen_profile_mismatch")
         schema = output_type.model_json_schema()
-        if type(request) is ReviewDiagnosticInputV1:
+        if isinstance(request, (ReviewDiagnosticInputV1, EvidencedReviewInputV1)):
             payload = request.input_payload
         elif type(request) is ReviewInputV2:
             payload = request.input_payload
@@ -296,6 +314,8 @@ class _JsonProviderAdapter:
         schema_name = "item_supply_blind_answer_v2" if output_type is _BlindAnswer else "item_supply_review_vote_v2"
         if output_type is ReviewDiagnosticOutputV1:
             schema_name = "item_supply_review_diagnostic_output_v1"
+        elif output_type is EvidencedReviewOutputV1:
+            schema_name = "item_supply_evidenced_review_output_v1"
         # Include both schema paths plus conservative fixed protocol metadata.
         input_bytes = len(canonical_json({"messages": messages, "output_schema": schema,
                                          "schema_name": schema_name}).encode("utf-8")) + 1024
@@ -303,15 +323,15 @@ class _JsonProviderAdapter:
             raise AutonomousReviewError("review_input_limit")
         return messages, schema, schema_name, input_bytes
 
-    def input_resource_plan(self, request: BlindSolveInputV2 | ReviewInputV2) -> ResourceAmounts:
+    def input_resource_plan(self, request: BlindSolveInputV2 | ReviewRequest) -> ResourceAmounts:
         """Conservative UTF-8-byte token ceiling, not measured provider usage."""
-        output_type: type[_BlindAnswer] | type[_ReviewVote]
+        output_type: type[_BlindAnswer] | type[_ReviewVote] | type[EvidencedReviewOutputV1]
         if isinstance(self, JsonBlindSolverV2) and type(request) is BlindSolveInputV2:
             request = checked_model(request, BlindSolveInputV2)
             instruction, output_type = _BLIND_INSTRUCTION, _BlindAnswer
-        elif isinstance(self, JsonReviewerV2) and type(request) is ReviewInputV2 and request.role is self.role:
-            request = checked_model(request, ReviewInputV2)
-            instruction, output_type = _review_instruction(self.role), _ReviewVote
+        elif isinstance(self, JsonReviewerV2) and isinstance(request, (ReviewInputV2, EvidencedReviewInputV1)) and request.role is self.role:
+            request = checked_review_request(request)
+            instruction, output_type = self._review_contract(request)
         else:
             raise AutonomousReviewError("review_input_contract_mismatch")
         _, _, _, input_bytes = self._input_envelope(request, instruction=instruction, output_type=output_type)
@@ -319,9 +339,9 @@ class _JsonProviderAdapter:
                                output_tokens=self._max_output_tokens)
 
     def _complete(
-        self, request: BlindSolveInputV2 | ReviewInputV2 | ReviewDiagnosticInputV1, *, prompt_version: str,
-        output_type: type[_BlindAnswer] | type[_ReviewVote] | type[ReviewDiagnosticOutputV1], instruction: str,
-    ) -> tuple[_BlindAnswer | _ReviewVote | ReviewDiagnosticOutputV1, ProviderRunV2]:
+        self, request: BlindSolveInputV2 | ReviewRequest | ReviewDiagnosticInputV1, *, prompt_version: str,
+        output_type: type[_BlindAnswer] | type[_ReviewVote] | type[ReviewDiagnosticOutputV1] | type[EvidencedReviewOutputV1], instruction: str,
+    ) -> tuple[_BlindAnswer | _ReviewVote | ReviewDiagnosticOutputV1 | EvidencedReviewOutputV1, ProviderRunV2]:
         if request.binding.profile_hash != self._profile_hash:
             raise AutonomousReviewError("frozen_profile_mismatch")
         try:
@@ -345,7 +365,8 @@ class _JsonProviderAdapter:
             payload = output_type.model_validate_json(encoded, strict=True)
             run = ProviderRunV2(
                 provider_identity=self._identity, run_id=uuid4(), prompt_version=prompt_version,
-                input_hash=request.input_hash, output_hash=canonical_hash(payload.model_dump(mode="json")),
+                input_hash=request.input_hash, output_hash=canonical_hash(
+                    response.content if output_type is EvidencedReviewOutputV1 else payload.model_dump(mode="json")),
                 profile_hash=self._profile_hash, timeout_seconds=timeout,
                 max_output_tokens=self._max_output_tokens,
                 input_tokens=response.usage.input_tokens if response.usage is not None else None,
@@ -374,10 +395,14 @@ class JsonBlindSolverV2(_JsonProviderAdapter):
 class JsonReviewerV2(_JsonProviderAdapter):
     def __init__(self, client: JsonReviewClient, *, role: LearningItemReviewRole,
                  identity: ProviderIdentityV2, profile_hash: str, timeout_seconds: float,
-                 max_output_tokens: int, max_input_bytes: int = 262_144) -> None:
+                 max_output_tokens: int, max_input_bytes: int = 262_144,
+                 review_protocol: ReviewProtocol = LEGACY_REVIEW_PROTOCOL) -> None:
         if type(role) is not LearningItemReviewRole:
             raise AutonomousReviewError("invalid_review_role")
         self._role = role
+        if review_protocol not in {LEGACY_REVIEW_PROTOCOL, EVIDENCED_REVIEW_PROTOCOL}:
+            raise AutonomousReviewError("invalid_review_protocol")
+        self._review_protocol = review_protocol
         super().__init__(client, identity=identity, profile_hash=profile_hash,
                          timeout_seconds=timeout_seconds, max_output_tokens=max_output_tokens,
                          max_input_bytes=max_input_bytes)
@@ -385,6 +410,17 @@ class JsonReviewerV2(_JsonProviderAdapter):
     @property
     def role(self) -> LearningItemReviewRole:
         return self._role
+
+    @property
+    def review_protocol(self) -> ReviewProtocol:
+        return self._review_protocol
+
+    def _review_contract(self, request: ReviewRequest) -> tuple[str, type[_ReviewVote] | type[EvidencedReviewOutputV1]]:
+        if self.review_protocol == EVIDENCED_REVIEW_PROTOCOL and type(request) is EvidencedReviewInputV1:
+            return evidenced_review_instruction(self.role), EvidencedReviewOutputV1
+        if self.review_protocol == LEGACY_REVIEW_PROTOCOL and type(request) is ReviewInputV2:
+            return _review_instruction(self.role), _ReviewVote
+        raise AutonomousReviewError("review_protocol_mismatch")
 
     def diagnostic_resource_plan(self, request: ReviewDiagnosticInputV1) -> ResourceAmounts:
         """Separate one-call reservation; never consumes the seven-vote plan silently."""
@@ -415,22 +451,24 @@ class JsonReviewerV2(_JsonProviderAdapter):
         except Exception:
             raise AutonomousReviewError("review_diagnostic_failed") from None
 
-    def review(self, request: ReviewInputV2) -> ReviewReportV2:
-        request = checked_model(request, ReviewInputV2)
+    def review(self, request: ReviewRequest) -> ReviewReport:
+        request = checked_review_request(request)
         if request.role is not self._role:
             raise AutonomousReviewError("review_role_mismatch")
-        payload, run = self._complete(
-            request, prompt_version=review_prompt_version(request), output_type=_ReviewVote,
-            instruction=_review_instruction(self._role),
-        )
+        instruction, output_type = self._review_contract(request)
+        payload, run = self._complete(request, prompt_version=review_prompt_version(request),
+                                      output_type=output_type, instruction=instruction)
+        if isinstance(payload, EvidencedReviewOutputV1) and isinstance(request, EvidencedReviewInputV1):
+            try:
+                report = EvidencedReviewReportV1(binding=request.binding, role=self.role, run=run,
+                                                verdict=payload.verdict, findings=payload.findings)
+                return verify_review_report(report, request)
+            except Exception:
+                raise AutonomousReviewError("evidenced_review_failed") from None
         if not isinstance(payload, _ReviewVote):
             raise AutonomousReviewError("invalid_review_output")
         return ReviewReportV2(binding=request.binding, role=self._role, run=run,
                               verdict=payload.verdict, findings=payload.findings)
-
-
-def review_prompt_version(request: ReviewInputV2) -> str:
-    return PYTHON_GOAL_REVIEW_PROMPT_VERSION if request.scoring_descriptor is not None else REVIEW_PROMPT_VERSION
 
 
 def review_resource_plan(
@@ -448,12 +486,13 @@ def review_resource_plan(
         raise AutonomousReviewError("bounded_review_client_required")
     if len(reviewers) != 6 or {reviewer.role for reviewer in reviewers} != set(REQUIRED_REVIEW_ROLES):
         raise AutonomousReviewError("six_review_roles_required")
+    protocol = configured_review_protocol(reviewers)
     plans = [solver.input_resource_plan(blind_input(source, binding))]
     for reviewer in reviewers:
         if not isinstance(reviewer, JsonReviewerV2):
             raise AutonomousReviewError("bounded_review_client_required")
-        plans.append(reviewer.input_resource_plan(ReviewInputV2(
-            binding=binding, role=reviewer.role, source=source, validation_receipt=validation_receipt,
+        plans.append(reviewer.input_resource_plan(make_review_request(
+            source, binding=binding, role=reviewer.role, validation_receipt=validation_receipt, protocol=protocol,
         )))
     return ResourceAmounts(requests=sum(plan.requests for plan in plans),
         input_tokens=sum(plan.input_tokens for plan in plans), output_tokens=sum(plan.output_tokens for plan in plans))
@@ -547,16 +586,16 @@ def _review_candidate(
     names = (blind.run.provider_identity.identity,) + tuple(i.identity for i in identities)
     if author in names or len(set(names)) != len(names):
         raise AutonomousReviewError("author_solver_reviewer_identity_conflict")
-    reports: list[ReviewReportV2] = []
+    protocol = configured_review_protocol(ordered)
+    reports: list[ReviewReport] = []
     try:
         for reviewer, identity in zip(ordered, identities, strict=True):
             # Rebuild an isolated snapshot for each role. No peer/solver output
             # can enter this typed input even after earlier calls finish.
-            request = checked_model(ReviewInputV2(
-                binding=binding, role=reviewer.role, source=source, validation_receipt=validation_receipt,
-            ), ReviewInputV2)
+            request = make_review_request(source, binding=binding, role=reviewer.role,
+                validation_receipt=validation_receipt, protocol=protocol)
             expected_input_hash = request.input_hash
-            report = checked_model(reviewer.review(request), ReviewReportV2)
+            report = verify_review_report(reviewer.review(request), request)
             if (report.binding != binding or report.role is not reviewer.role
                     or report.run.provider_identity != identity or report.run.input_hash != expected_input_hash
                     or report.run.prompt_version != review_prompt_version(request)):
@@ -568,7 +607,7 @@ def _review_candidate(
             author_identity=author, blind_solve=blind, reports=tuple(reports),
         ))
     except Exception:
-        raise AutonomousReviewError("review_bundle_failed") from None
+        raise AutonomousReviewError("review_bundle_failed", partial_reports=tuple(reports)) from None
 
 
 def review_candidate(

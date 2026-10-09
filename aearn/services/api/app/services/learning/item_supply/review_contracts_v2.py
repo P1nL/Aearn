@@ -368,6 +368,141 @@ class ReviewDiagnosticReceiptV1(StorageContract):
         return canonical_hash(checked_model(self, ReviewDiagnosticReceiptV1).model_dump(mode="json"))
 
 
+class EvidencedReviewInputV1(StorageContract):
+    """Fresh opt-in vote input; old ReviewInputV2 bytes remain untouched."""
+
+    schema_version: Literal["item_supply_evidenced_review_input_v1"] = "item_supply_evidenced_review_input_v1"
+    review_input: ReviewInputV2 = Field(repr=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def original_input(cls, data: object) -> object:
+        if isinstance(data, Mapping) and isinstance(data.get("review_input"), BaseModel):
+            checked_model(data["review_input"], ReviewInputV2)
+        return data
+
+    @property
+    def binding(self) -> CandidateBindingV2:
+        return self.review_input.binding
+
+    @property
+    def role(self) -> LearningItemReviewRole:
+        return self.review_input.role
+
+    @property
+    def evidence_index(self) -> tuple[ReviewDiagnosticReferenceV1, ...]:
+        return ReviewDiagnosticInputV1(review_input=self.review_input).evidence_index
+
+    @property
+    def input_payload(self) -> dict[str, object]:
+        request = checked_model(self, EvidencedReviewInputV1)
+        return {"schema_version": request.schema_version,
+                "review_input": request.review_input.input_payload,
+                "evidence_index": [ref.model_dump(mode="json") for ref in request.evidence_index]}
+
+    @property
+    def input_hash(self) -> str:
+        return canonical_hash(self.input_payload)
+
+
+class EvidencedReviewFindingV1(ReviewDiagnosticFindingV1):
+    counterexample: str | None = Field(min_length=1, max_length=1200, pattern=r"\S", repr=False)
+
+    @model_validator(mode="after")
+    def fixed_scale(self) -> EvidencedReviewFindingV1:
+        from app.services.learning.item_supply.review_rubrics import COUNTEREXAMPLE_CODES, HARD_CODES
+
+        material = self.severity in {LearningItemReviewSeverity.MAJOR, LearningItemReviewSeverity.CRITICAL}
+        if (self.severity is LearningItemReviewSeverity.NONE or self.blocking != material
+                or (self.safe_code in HARD_CODES and not material)
+                or (self.safe_code == "minor_issue" and material)):
+            raise ValueError("contradictory evidenced severity")
+        if self.problem.strip().casefold() == self.expected_behavior.strip().casefold():
+            raise ValueError("unexplained evidenced finding")
+        if self.safe_code in COUNTEREXAMPLE_CODES and (
+            self.counterexample is None or self.counterexample.strip().casefold() == self.safe_code
+        ):
+            raise ValueError("concrete counterexample required")
+        return self
+
+
+class EvidencedReviewOutputV1(StorageContract):
+    schema_version: Literal["item_supply_evidenced_review_output_v1"]
+    verdict: LearningItemReviewVerdict
+    findings: tuple[EvidencedReviewFindingV1, ...] = Field(max_length=12, repr=False)
+
+    @model_validator(mode="after")
+    def supported_verdict(self) -> EvidencedReviewOutputV1:
+        expected = LearningItemReviewVerdict.APPROVED
+        if any(f.blocking for f in self.findings):
+            expected = LearningItemReviewVerdict.CHANGES_REQUIRED
+        if any(f.severity is LearningItemReviewSeverity.CRITICAL for f in self.findings):
+            expected = LearningItemReviewVerdict.REJECTED
+        if self.verdict is not expected:
+            raise ValueError("unsupported or contradictory evidenced verdict")
+        return self
+
+
+class EvidencedReviewReportV1(StorageContract):
+    schema_version: Literal["item_supply_evidenced_review_report_v1"] = "item_supply_evidenced_review_report_v1"
+    state: Literal["completed"] = "completed"
+    mode: Literal["peer_blind"] = "peer_blind"
+    binding: CandidateBindingV2
+    role: LearningItemReviewRole
+    run: ProviderRunV2
+    verdict: LearningItemReviewVerdict
+    findings: tuple[EvidencedReviewFindingV1, ...] = Field(max_length=12, repr=False)
+
+    @property
+    def output(self) -> EvidencedReviewOutputV1:
+        return EvidencedReviewOutputV1(schema_version="item_supply_evidenced_review_output_v1", verdict=self.verdict, findings=self.findings)
+
+    @model_validator(mode="after")
+    def authentic_output(self) -> EvidencedReviewReportV1:
+        from app.services.learning.item_supply.review_rubrics import EVIDENCED_REVIEW_PROMPT_VERSION, ROLE_CODES
+
+        if (self.run.prompt_version != EVIDENCED_REVIEW_PROMPT_VERSION
+                or self.run.profile_hash != self.binding.profile_hash
+                or self.run.output_hash != canonical_hash(self.output.model_dump(mode="json"))
+                or any(f.safe_code not in ROLE_CODES[self.role] for f in self.findings)):
+            raise ValueError("unbound evidenced review output")
+        return self
+
+    def verify_input(self, request: EvidencedReviewInputV1) -> None:
+        from app.services.learning.item_supply.review_rubrics import relevant_reference_groups
+
+        report = checked_model(self, EvidencedReviewReportV1)
+        request = checked_model(request, EvidencedReviewInputV1)
+        if (report.binding != request.binding or report.role is not request.role
+                or report.run.input_hash != request.input_hash):
+            raise ValueError("stale evidenced review input")
+        index = {ref.pointer: ref.value_hash for ref in request.evidence_index}
+        for finding in report.findings:
+            pointers = tuple(ref.pointer for ref in finding.references)
+            groups = relevant_reference_groups(finding.safe_code)
+            allowed = tuple(prefix for group in groups for prefix in group)
+            if (finding.evidence_hash != request.binding.content_hash or len(set(pointers)) != len(pointers)
+                    or any(index.get(ref.pointer) != ref.value_hash for ref in finding.references)
+                    or any(not any(p.startswith(prefix) for prefix in allowed)
+                           or p.rsplit("/", 1)[-1].endswith("_hash")
+                           or p.rsplit("/", 1)[-1] in {"schema_version", "type", "item_key", "version"}
+                           for p in pointers)
+                    or any(not any(p.startswith(prefix) for p in pointers for prefix in group)
+                           for group in groups)):
+                raise ValueError("unrelated or tampered evidenced references")
+
+    @property
+    def material_failure(self) -> bool:
+        return self.verdict is not LearningItemReviewVerdict.APPROVED or any(f.blocking for f in self.findings)
+
+    @property
+    def report_hash(self) -> str:
+        return canonical_hash(checked_model(self, EvidencedReviewReportV1).model_dump(mode="json"))
+
+
+ReviewReport = Annotated[ReviewReportV2 | EvidencedReviewReportV1, Field(discriminator="schema_version")]
+
+
 class ReviewBundleV2(StorageContract):
     schema_version: Literal["item_supply_review_bundle_v2"] = "item_supply_review_bundle_v2"
     policy_version: Literal["autonomous_evidence_policy_v2"] = "autonomous_evidence_policy_v2"
@@ -379,10 +514,12 @@ class ReviewBundleV2(StorageContract):
     binding: CandidateBindingV2
     author_identity: Identifier
     blind_solve: BlindSolveReceiptV2
-    reports: tuple[ReviewReportV2, ...] = Field(min_length=6, max_length=6)
+    reports: tuple[ReviewReport, ...] = Field(min_length=6, max_length=6)
 
     @model_validator(mode="after")
     def identities_and_binding(self) -> ReviewBundleV2:
+        if len({type(r) for r in self.reports}) != 1:
+            raise ValueError("mixed review protocols")
         if tuple(r.role for r in self.reports) != REQUIRED_REVIEW_ROLES:
             raise ValueError("v2 bundle requires all six canonical roles")
         runs = (self.blind_solve.run,) + tuple(r.run for r in self.reports)

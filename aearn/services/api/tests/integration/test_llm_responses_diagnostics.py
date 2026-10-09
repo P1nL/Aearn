@@ -254,3 +254,67 @@ def test_legacy_injected_envelope_without_status_remains_compatible() -> None:
     result = client.complete_json([{ "role": "user", "content": "JSON"}])
     assert result.content == {"ok": True}
     assert result.response_diagnostics.response_status == "unknown"
+
+@pytest.mark.parametrize("model", ["deepseek-flash", "deepseek-v4-pro"])
+@pytest.mark.parametrize("effort", ["low", "high", "max"])
+def test_explicit_deepseek_thinking_effort_uses_exact_protocol_wire(monkeypatch, model, effort):
+    requests = _wire(monkeypatch)
+    result = OpenAICompatibleClient(_settings(model=model), max_http_attempts=1).complete_json(
+        [{"role": "user", "content": "Return JSON."}], thinking_mode="enabled",
+        reasoning_effort=effort, max_tokens=512, temperature=None, capture_provider_body=False,
+    )
+    assert result.content == {"ok": True} and len(requests) == 1
+    payload = requests[0]
+    assert "temperature" not in payload
+    if model == "deepseek-flash":
+        assert payload["reasoning"] == {"effort": effort}
+        assert "thinking" not in payload and "reasoning_effort" not in payload
+        assert payload["max_output_tokens"] == 512
+    else:
+        assert payload["thinking"] == {"type": "enabled"}
+        assert payload["reasoning_effort"] == effort and "reasoning" not in payload
+        assert payload["max_tokens"] == 512
+
+
+@pytest.mark.parametrize("mode,effort", [(None, "high"), ("disabled", "high"), ("enabled", "ultra")])
+def test_explicit_effort_invalid_or_conflicting_request_never_dispatches(monkeypatch, mode, effort):
+    requests = _wire(monkeypatch)
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        OpenAICompatibleClient(_settings()).complete_json(
+            [{"role": "user", "content": "JSON"}], thinking_mode=mode, reasoning_effort=effort,
+        )
+    assert requests == []
+
+
+@pytest.mark.parametrize("provider,model", [("openai", "fake-model"), ("deepseek", "deepseek-chat")])
+def test_explicit_deepseek_effort_does_not_guess_unsupported_model_protocol(monkeypatch, provider, model):
+    requests = _wire(monkeypatch)
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        OpenAICompatibleClient(_settings(provider, model)).complete_json(
+            [{"role": "user", "content": "JSON"}], thinking_mode="enabled", reasoning_effort="high",
+        )
+    assert requests == []
+
+
+@pytest.mark.parametrize("finish", ["length", "content_filter"])
+def test_thinking_chat_truncation_is_pending_even_when_visible_content_is_valid_json(finish):
+    requests = []
+
+    def transport(url, headers, payload, timeout):
+        requests.append(payload)
+        return {"model": "deepseek-v4-pro", "choices": [{"finish_reason": finish,
+            "message": {"content": VISIBLE, "reasoning_content": PROTECTED}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 25}}
+
+    with pytest.raises(LLMInvalidResponseError, match="incomplete") as caught:
+        OpenAICompatibleClient(_settings(model="deepseek-v4-pro"), transport=transport,
+            max_http_attempts=1).complete_json(
+            [{"role": "user", "content": "JSON"}], thinking_mode="enabled",
+            reasoning_effort="high", max_tokens=512, capture_provider_body=False,
+        )
+    assert len(requests) == 1 and PROTECTED not in str(caught.value)
+    assert caught.value.usage is not None and caught.value.usage.output_tokens == 25
+    assert caught.value.response_diagnostics is not None
+    assert caught.value.response_diagnostics.requested_reasoning_effort == "high"
+    assert caught.value.response_diagnostics.incomplete_reason == (
+        "max_output_tokens" if finish == "length" else "content_filter")

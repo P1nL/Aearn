@@ -210,7 +210,7 @@ def test_static_kc_blind_has_no_os_and_verifies_current_instance_only():
         assert "correct_option_id" not in json.dumps(request.scoring_descriptor)
 
 
-@pytest.mark.parametrize("mode", ["legacy", "diagnostic_wrong", "diagnostic_timeout"])
+@pytest.mark.parametrize("mode", ["legacy", "diagnostic_wrong", "diagnostic_timeout", "evidenced", "evidenced_partial"])
 def test_shared_current_profile_fences_single_dispatch_and_unknown_settlement(monkeypatch, mode):
     spec, materials, source = _candidate("python-kc-binding-v1")
     base, _ = make_request()
@@ -234,24 +234,32 @@ def test_shared_current_profile_fences_single_dispatch_and_unknown_settlement(mo
             return super().execute(sql, params)
     conn = Conn()
     calls, settled, stored = [], [], []
+    fresh = mode.startswith("evidenced")
+    model = "deepseek-v4-pro" if fresh else "fixture"
     settings = Settings(llm_type="deepseek", deepseek_api_key="offline-not-secret", deepseek_base_url="https://invalid.example",
-        deepseek_model="fixture", learning_item_supply_enabled=True, learning_item_network_enabled=True)
+        deepseek_model=model, learning_item_supply_enabled=True, learning_item_network_enabled=True)
     def transport(url, headers, body, timeout):
         assert conn.info.transaction_status == TransactionStatus.IDLE
         calls.append(body)
         if mode == "diagnostic_timeout" and len(calls) == 1:
             raise TimeoutError("offline bounded timeout")
         content = {"answer": (next(o.option_id for o in source.public.content.options if o.option_id != source.private.content.accepted_answers[0]) if mode == "diagnostic_wrong" else source.private.content.accepted_answers[0])} if len(calls) == 1 else {"verdict": "approved", "findings": []}
-        return {"model": "fixture", "choices": [{"message": {"content": json.dumps(content)}}]}
+        if fresh and len(calls) > 1:
+            content["schema_version"] = "item_supply_evidenced_review_output_v1"
+            assert body["thinking"] == {"type": "enabled"} and body["reasoning_effort"] == "high"
+            if mode == "evidenced_partial" and len(calls) == 5:
+                content["verdict"] = "rejected"  # Invalid empty denial, no bundle.
+        return {"model": model, "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(content)}}]}
     client = BoundedOpenAIReviewClient(settings, profile=profile, transport=transport)
     def identity(name):
-        return ProviderIdentityV2(identity=name, provider=client.configured_provider, model="fixture")
+        return ProviderIdentityV2(identity=name, provider=client.configured_provider, model=model)
     kwargs = dict(profile_hash=profile.profile_hash, timeout_seconds=1.0, max_output_tokens=2000)
     solver = JsonBlindSolverV2(client, identity=identity("blind.offline"), **kwargs)
-    reviewers = tuple(JsonReviewerV2(client, role=role, identity=identity("review."+role.value), **kwargs) for role in LearningItemReviewRole)
+    reviewers = tuple(JsonReviewerV2(client, role=role, identity=identity("review."+role.value),
+        review_protocol="evidenced-v1" if fresh else "legacy-v2", **kwargs) for role in LearningItemReviewRole)
     continuation = SharedCandidateContinuationOwner(conn, settings, enabled=True)
     owner = SharedReviewPipeline(conn, settings, enabled=True, continuation_owner=continuation,
-        trusted_model_bindings={(client.configured_provider,"model-v1"):"fixture"})
+        trusted_model_bindings={(client.configured_provider,"model-v1"):model})
     authority = RagSourceAuthority(SimpleNamespace(conn=conn), None)
     receipts = tuple(SourceReceiptV2(material_digest=material_digest(m), binding_digest=m.binding.binding_digest,
         corpus_version_id=UUID(m.binding.evidence[0].corpus_version_id), active_generation=m.binding.evidence[0].active_generation,
@@ -259,7 +267,7 @@ def test_shared_current_profile_fences_single_dispatch_and_unknown_settlement(mo
         mode="current_authority") for m in materials)
     generation = GenerationReceiptV2(candidate_id=request.candidate_id, scope_hash=request.scope_hash,
         source_hash=source.source_hash, content_hash=source.content_hash, sources=receipts,
-        provider=ProviderReceiptV2(provider=client.configured_provider, provider_version="offline-v1", configured_model="fixture", model="fixture",
+        provider=ProviderReceiptV2(provider=client.configured_provider, provider_version="offline-v1", configured_model=model, model=model,
             prompt_version="offline-v1", run_id=uuid4(), request_attempt_bound=1, usage=ProviderUsageV2(state="unknown"), mode="provider"))
     artifact = dict(id=uuid4(), root_id=uuid4(), item_id=uuid4(), version_id=uuid4(), job_id=uuid4(), lease_generation=7,
         source_hash=source.source_hash, content_hash=source.content_hash, source_json=source.model_dump(mode="json"),
@@ -310,8 +318,9 @@ def test_shared_current_profile_fences_single_dispatch_and_unknown_settlement(mo
     with pytest.raises(PipelineRepositoryError,match="PROFILE_MISMATCH"):
         owner.prepare_review(**call)
     assert not amounts and not calls
-    owner._models[(client.configured_provider,"model-v1")]="fixture"
+    owner._models[(client.configured_provider,"model-v1")]=model
     p=owner.prepare_review(**call)
+    assert p.review_protocol == ("evidenced-v1" if fresh else "legacy-v2")
     assert p.resources.requests==7 and p.resources.execution_seconds==0
     assert p.ambiguity_plan.correct is None and p.inputs.static_facts is not None
     assert p.request.profile == original_profile and p.lease.profile == profile
@@ -323,6 +332,19 @@ def test_shared_current_profile_fences_single_dispatch_and_unknown_settlement(mo
     assert not calls
     state["current"]=True
     result=owner.run_review(p)
+    if mode == "evidenced_partial":
+        assert result.bundle is None and result.safe_reason == "review_pending"
+        assert len(result.partial_reports) == 3 and len(calls) == 5
+        assert result.blind is not None
+        with conn.transaction():
+            owner.settle_review(p, result)
+            failed = owner.commit_review(p, result)
+        assert failed.review_receipt_id is None and all(row["kind"] != "review_bundle" for row in stored)
+        assert settled[0]["usage_state"] == "unknown" and settled[0]["actual"] is None
+        with pytest.raises(PipelineRepositoryError, match="ALREADY_DISPATCHED"):
+            owner.run_review(p)
+        assert len(calls) == 5
+        return
     if mode == "diagnostic_timeout":
         assert result.blind is result.bundle is None and result.safe_reason == "blind_solve_pending"
         assert len(calls) == 1  # No retry/solver voting and no manufactured score/run.

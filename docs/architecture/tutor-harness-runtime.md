@@ -1196,3 +1196,15 @@ main的零provider、未提交PG诊断记录在`.runtime/e-fast-continuation-202
 新增KC同连接pack装配helper已完成实现与独立窄检查，按实际内容slot计数2/2/1而非强制variant各异；仍由原501/502关系/消费owner及真实Artifact writer分别负责。23项native证据文件测试、4项helper测试及scoped Ruff/Mypy通过，**helper live包/交付尚未执行**。
 
 新的有界diagnostic-v3 campaign完成24个provider请求：1道KC题经原493/494内部发布，2道被重大独立审核否决而quarantine。零provider静态重建18个原role输入hash一致，但hash-only findings不足以定位具体缺陷，不能称为模型误判或重审放行。已停止余下付费生成，保留UNKNOWN及旧结果；P7b完整题包、P8–P10/E仍pending。最新实证与调用登记见`.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/fast-continuation-progress-20261008.md`及`.runtime/e-continue-20261008/acceptance.json`；不代表公开release。
+
+### 2026-10-09：版本化六角色证据审核与显式 high 思考
+
+用户要求直接修复角色职责、字段级否决证据、裁决一致性、失败回执及质量样本，并按官方文档开启思考。复用原题库任务，不替代原admission/publisher/Attempt/Gate权威。新审核协议为`evidenced-v1`，对应`item_supply_evidenced_review_input_v1`、`item_supply_evidenced_review_output_v1`、`item_supply_evidenced_review_report_v1`；旧`ReviewInputV2`/`ReviewReportV2`及外层V2/V3 policy/hash保持历史兼容。新版本不能将真实新output压缩成旧格式后冒充provider output_hash。
+
+六角色分别按课程匹配、难度、技术正确性、歧义、安全、对抗清单审核；重大主张必须提供私有problem、expected_behavior和精确pointer/value_hash引用，部分原因还需具体counterexample。引用校验只证明字段归属/完整性，不自动证明模型主张为真。无依据或矛盾输出不产生成功审核；不能把invalid/pending翻译为approved。任何角色发现真实硬问题仍可报告，不以专业分工屏蔽跨角色安全缺陷。旧quarantine与UNKNOWN不可重审刷通过。
+
+新fresh审核显式使用DeepSeek高强度思考，当前本地模型配置为`deepseek-flash`：Responses发送`reasoning.effort=high`；受支持的`deepseek-v4-pro` Chat发送`thinking.type=enabled`及`reasoning_effort=high`。使用原冻结token/输出/单请求限额，禁provider body捕获，不保存或显示思维链；输出预算耗尽或过滤必须pending。没有显式effort的旧传输调用保持原样；作者、旧盲解和Tutor不因此全局改策略。官方核验见题库任务`research/deepseek-review-thinking-official-20261009.md`。
+
+新协议需在新campaign中冻结；旧计划缺marker按legacy处理，不能因代码更新自动升级旧campaign/预算。部分已完成角色回执是私有诊断记录，不是完整bundle或发布许可。同模型相关性仍明确标记，高风险独立第二bundle规则不变。小型标注样本/离线测试仅证明协议和已知案例行为；真实模型误报/漏报率、真实新候选、完整题包、交付、P8/P9/P10/E仍须分别取得实证。此修复不含真实模型/DB/Docker执行、旧SQL迁移改写、Git提交推送或公开发布。
+
+独立检查进一步补齐：原生CLI、导入执行和直接campaign准备均在DB/provider/预留之前验证协议及既有冻结计划一致性；private准备在预留前拒绝mixed协议。预留REPLAY不重新签发prepared review或dispatch能力，不能借重放重审旧题或重置UNKNOWN。

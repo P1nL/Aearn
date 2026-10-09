@@ -15,6 +15,7 @@ from app.services.learning.item_bank.contracts import (
     LearningItemValidationCheckType, canonical_hash,
 )
 from app.services.learning.item_supply.admission import evaluate_admission_v2
+from app.services.learning.item_supply.budget import ReservationResult
 from app.services.learning.item_supply.pipeline import ItemSupplyPipeline
 from app.services.learning.item_supply.policies import ResourceAmounts
 from app.services.learning.item_supply.review_contracts_v2 import (
@@ -313,7 +314,7 @@ def test_prepare_review_reads_whole_v2_and_rejects_bad_json_before_reserving(mon
     pipeline.artifacts = SimpleNamespace(get_generation=lambda **kwargs: artifact)
     def reserve(**kwargs):
         reservations.append(kwargs)
-        return SimpleNamespace(allowed=True, reservation_id=uuid4())
+        return ReservationResult(True, "RESERVED", uuid4())
     pipeline.budget = SimpleNamespace(reserve=reserve)
     monkeypatch.setattr(pipeline, "_fence_source", lambda *args: None)
     resources = ResourceAmounts(requests=7, input_tokens=100, output_tokens=3584)

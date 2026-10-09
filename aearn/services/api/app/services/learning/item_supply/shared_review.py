@@ -6,7 +6,7 @@ allowance; committed validation is data, never rehydrated runner capability.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
 from typing import Any
@@ -34,10 +34,10 @@ from app.services.learning.item_supply.policies import ResourceAmounts
 from app.services.learning.item_supply.rag_evidence_adapter import RagSourceAuthority
 from app.services.learning.item_supply.repository import ItemSupplyRuntimeRepository, server_clock
 from app.services.learning.item_supply.review_contracts_v2 import (
-    BlindSolveReceiptV2, CandidateBindingV2, ProviderIdentityV2, check_subject,
+    BlindSolveReceiptV2, CandidateBindingV2, ProviderIdentityV2, ReviewReport, check_subject,
 )
 from app.services.learning.item_supply.review_provider import (
-    BoundedOpenAIReviewClient, JsonBlindSolverV2, JsonReviewerV2,
+    AutonomousReviewError, BoundedOpenAIReviewClient, JsonBlindSolverV2, JsonReviewerV2,
     blind_solve_candidate, review_candidate_for_policy, review_resource_plan,
 )
 from app.services.learning.item_supply.sandbox.blind_scorer import SandboxBlindAnswerScorer
@@ -49,6 +49,10 @@ from app.services.learning.item_supply.diagnostic_policy import (
     ReviewBundle, checked_bundle, completed_blind_allowed, policy_for_hash,
 )
 from app.services.learning.item_supply.validation_adapter import CandidateValidationV2
+from app.services.learning.item_supply.review_protocol import (
+    configured_review_protocol, make_review_request, report_protocol, verify_review_report,
+)
+from app.services.learning.item_supply.review_rubrics import LEGACY_REVIEW_PROTOCOL, ReviewProtocol
 
 Scorer = SandboxBlindAnswerScorer | FiniteStaticBlindScorer
 
@@ -72,6 +76,7 @@ class PreparedSharedReview:
     inputs: FiniteCandidateValidationInputsV1
     ambiguity_plan: FiniteAmbiguityPlanV1
     ambiguity_run_id: UUID
+    review_protocol: ReviewProtocol = LEGACY_REVIEW_PROTOCOL
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,7 @@ class SharedReviewResult:
     bundle: ReviewBundle | None
     safe_reason: str
     ambiguity: FiniteAmbiguityReceiptV1 | None = None
+    partial_reports: tuple[ReviewReport, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)
@@ -136,7 +142,7 @@ class SharedReviewPipeline:
 
     @staticmethod
     def _seal(p: PreparedSharedReview) -> str:
-        return canonical_hash({"lease": p.lease.model_dump(mode="json"), "artifact_id": str(p.artifact_id),
+        payload = {"lease": p.lease.model_dump(mode="json"), "artifact_id": str(p.artifact_id),
             "artifact_hash": p.artifact_hash, "validation_receipt_id": str(p.validation_receipt_id),
             "spec": p.spec.model_dump(mode="json"), "source": p.source.model_dump(mode="json"),
             "request": p.request.model_dump(mode="json"), "validation": p.validation.model_dump(mode="json"),
@@ -144,13 +150,19 @@ class SharedReviewPipeline:
             "reservation_id": str(p.reservation_id), "identities": [i.model_dump(mode="json") for i in p.provider_identities],
             "provider_resources": p.provider_resources.model_dump(mode="json"), "resources": p.resources.model_dump(mode="json"),
             "inputs": p.inputs.model_dump(mode="json"), "ambiguity_plan": p.ambiguity_plan.model_dump(mode="json"),
-            "ambiguity_run_id": str(p.ambiguity_run_id)})
+            "ambiguity_run_id": str(p.ambiguity_run_id)}
+        if p.review_protocol != LEGACY_REVIEW_PROTOCOL:
+            payload["review_protocol"] = p.review_protocol
+        return canonical_hash(payload)
 
     @staticmethod
     def _result_hash(result: SharedReviewResult) -> str:
-        return canonical_hash({"blind": None if result.blind is None else result.blind.model_dump(mode="json"),
+        payload: dict[str, object] = {"blind": None if result.blind is None else result.blind.model_dump(mode="json"),
             "bundle": None if result.bundle is None else result.bundle.model_dump(mode="json"), "reason": result.safe_reason,
-            "ambiguity": None if result.ambiguity is None else result.ambiguity.model_dump(mode="json")})
+            "ambiguity": None if result.ambiguity is None else result.ambiguity.model_dump(mode="json")}
+        if result.partial_reports:
+            payload["partial_reports"] = [r.model_dump(mode="json") for r in result.partial_reports]
+        return canonical_hash(payload)
 
     def _issued(self, p: PreparedSharedReview) -> tuple[RagSourceAuthority, JsonBlindSolverV2, tuple[JsonReviewerV2, ...], Scorer]:
         if not self.review_enabled:
@@ -287,12 +299,14 @@ class SharedReviewPipeline:
             return None
         p = PreparedSharedReview(lease, artifact_id, artifact["artifact_hash"], validation_receipt_id, spec, source,
             request, validation, binding, author, reserved.reservation_id, identities, provider_plan, resources,
-            inputs, ambiguity_plan, uuid4())
+            inputs, ambiguity_plan, uuid4(), configured_review_protocol(reviewers))
         self._prepared[p.reservation_id] = (p, self._seal(p), source_authority, solver, reviewers, scorer, runner, ambiguity_owner)
         return p
 
     def _fence(self, p: PreparedSharedReview, *, before_io: bool = False) -> None:
         authority, solver, reviewers, scorer = self._issued(p)
+        if configured_review_protocol(reviewers) != p.review_protocol:
+            raise PipelineRepositoryError("SHARED_REVIEW_PROTOCOL_CHANGED")
         _, ambiguity_owner = self._ambiguity_context(p)
         artifact, source, request, validation = self._load(lease=p.lease, artifact_id=p.artifact_id,
             validation_receipt_id=p.validation_receipt_id, spec=p.spec, authority=authority)
@@ -327,6 +341,7 @@ class SharedReviewPipeline:
         self._started.add(p.reservation_id)
         _, ambiguity_owner = self._ambiguity_context(p)
         blind, bundle, ambiguity, reason = None, None, None, "finite_ambiguity_pending"
+        partial_reports: tuple[ReviewReport, ...] = ()
         try:
             # Funded in prepare. Distinguish the finite interpretation first so
             # missing execution does not trigger seven unnecessary model calls.
@@ -350,9 +365,11 @@ class SharedReviewPipeline:
                     reason = "peer_review_staged"
                 else:
                     reason = "blind_solution_rejected"
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, AutonomousReviewError):
+                partial_reports = exc.partial_reports
             reason = "finite_ambiguity_pending" if ambiguity is None else ("blind_solve_pending" if blind is None else "review_pending")
-        result = SharedReviewResult(blind, bundle, reason, ambiguity)
+        result = SharedReviewResult(blind, bundle, reason, ambiguity, partial_reports)
         self._results[p.reservation_id] = (result, self._result_hash(result))
         return result
 
@@ -405,6 +422,12 @@ class SharedReviewPipeline:
             raise PipelineRepositoryError("SHARED_REVIEW_FULL_EVIDENCE_REQUIRED")
         blind = checked_model(result.blind, BlindSolveReceiptV2)
         bundle = checked_bundle(result.bundle)
+        with finite_review_context(p.source, spec=p.spec, materials=p.request.materials):
+            for report in bundle.reports:
+                if report_protocol(report) != p.review_protocol:
+                    raise PipelineRepositoryError("SHARED_REVIEW_PROTOCOL_CHANGED")
+                verify_review_report(report, make_review_request(p.source, binding=p.binding,
+                    validation_receipt=p.validation, role=report.role, protocol=p.review_protocol))
         if (blind.binding != p.binding or not completed_blind_allowed(blind, policy_for_hash(p.binding.policy_hash)) or bundle.binding != p.binding
                 or bundle.author_identity != p.author_identity or bundle.blind_solve != blind
                 or blind.run.provider_identity != p.provider_identities[0]
