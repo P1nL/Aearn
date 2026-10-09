@@ -49,6 +49,7 @@ from app.services.learning.item_supply.review_provider import (
 from app.services.learning.item_supply.storage_contracts import AutonomousEvidencePolicyV2
 from app.services.learning.item_supply.review_protocol import configured_review_protocol, report_protocol
 from app.services.learning.item_supply.review_rubrics import LEGACY_REVIEW_PROTOCOL, ReviewProtocol
+from app.services.learning.item_supply.review_observability import ReviewFailureObservation
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,7 @@ class ItemSupplyPipeline:
         self.artifacts = PipelineArtifactRepository(conn)
         self._review_started: set[UUID] = set()
         self.partial_review_reports: dict[UUID, tuple[ReviewReport, ...]] = {}
+        self.review_observations: dict[UUID, ReviewFailureObservation] = {}
 
     def sandbox_execution(self) -> "SandboxExecutionPipeline":
         """Explicit private P6 path; the original static validator stays unchanged."""
@@ -459,14 +461,16 @@ class ItemSupplyPipeline:
         validation = checked_validation_receipt(prepared.validation)
         check_subject(prepared.source, prepared.binding, validation)
         self._review_started.add(prepared.reservation_id)
-        blind = blind_solve_candidate(prepared.source, binding=prepared.binding,
-            author_identity=prepared.author_identity, solver=solver, scorer=scorer)
         try:
+            blind = blind_solve_candidate(prepared.source, binding=prepared.binding,
+                author_identity=prepared.author_identity, solver=solver, scorer=scorer)
             bundle = review_candidate(prepared.source, binding=prepared.binding,
                 validation_receipt=validation, author_identity=prepared.author_identity,
                 blind_solve_receipt=blind, reviewers=reviewers)
         except AutonomousReviewError as exc:
             self.partial_review_reports[prepared.reservation_id] = exc.partial_reports
+            if exc.observation is not None:
+                self.review_observations[prepared.reservation_id] = exc.observation
             raise
         return CompletedReview(bundle)
 

@@ -206,3 +206,44 @@ Focused `test_item_supply_evidenced_review.py`, `test_native_evidenced_review_pl
 
 ### 7. Wrong vs correct
 Wrong: all six model calls returned JSON, therefore the pack/review quality/publication passed. Correct: verify actual field-bound reports and unchanged budget/source/owner gates, retain pending/denial as facts, then independently validate native persistence and real supply. Do not replay old quarantine until green or declare P7b/E complete from protocol tests.
+
+## 2026-10-09 private review failure observations
+
+### 1. Scope / trigger
+A real new evidenced/high candidate reached machine validation and completed blind solve, then `review_pending` without a peer bundle. The former blanket adapter/bundle exception mapping discarded failure category and usage. This addition preserves closed **private diagnostics only**; it does not prove the old failure cause, permit its replay, change model/output budgets or make a failed candidate eligible. No API, schema migration or public DTO is added.
+
+### 2. Signatures
+- `observe_review_failure(exc, *, phase, failed_role=None, usage=None, response_diagnostics=None, logical_client_invocations=None, safe_code=None) -> ReviewFailureObservation` in `review_observability.py` maps trusted types/enums, never exception prose.
+- `ReviewFailureObservation.payload() -> dict[str, object]` revalidates the immutable closed projection. `AutonomousReviewError.observation_payload()` and `SharedReviewResult.observation_payload()` return this payload or `None`.
+- The private pipeline retains available failure observations by the original reservation ID; this is process-local state, not a persistent DB journal or replay capability.
+- Native `checkpoint_review_observation(folder, *, reservation_id, result)` exclusively saves `review-observation.json` immediately after `run_review` and **before** `settle_review`. The same payload is added to final `review.json` only when present.
+
+### 3. Contracts
+- Failure schema `item_supply_review_failure_observation_v1`: `phase`, `failed_role`, `safe_code`, nullable normalized `usage` and `response_diagnostics`, nullable `logical_client_invocations`, fixed count scope/semantics. Role is an existing `LearningItemReviewRole` or null for a non-peer stage.
+- Closed phases: provider_call, output_schema, evidence_verification, review_bundle, blind_score, finite_ambiguity. Codes distinguish provider timeout/transport/configuration, incomplete/failed/missing/non-JSON/envelope responses, schema validation, evidence verification, provider binding/output limits and unknown exceptions.
+- Reuse `LLMUsage` and `LLMResponseDiagnostics`: numeric token counts, allowlisted response status/incomplete reason/requested effort and output limit/visible length only. Unavailable usage remains null. Preserve usage after provider JSON parses but output schema or evidenced references fail; provider body/answers/reasoning text never enter this projection.
+- A logical client invocation of 1 attests only the failed adapter operation was entered; it is NOT the actual HTTP attempt count, whole-review count, reservation count or settled money. Pre-invocation failures leave it null. Do not invent aggregate usage or convert UNKNOWN settlement to known from these diagnostics.
+- Checkpoint schema `item_supply_private_review_observation_checkpoint_v1` binds the reservation ID and sets visibility=private_only, admission_eligible=false, publication_enabled=false, accounting_authority=false. It has no lease/dispatch capability and cannot overwrite a prior checkpoint.
+- Preserve partial completed role reports together with the original failed role/category. Outer V2/V3 report/bundle/admission hashes and safe_reason behavior stay unchanged. Nonempty new observation payloads participate in shared result integrity; no-observation legacy result hashes and receipt shape remain exact.
+
+### 4. Validation / error matrix
+| Condition | Observation and unchanged authority outcome |
+| --- | --- |
+| Incomplete output with max_output_tokens and usage | response_incomplete plus the allowlisted stop reason/known tokens; still pending/UNKNOWN |
+| Wrapped real transport timeout | provider_timeout by bounded trusted cause types, never message matching |
+| Parsed JSON violates output schema | output_schema/schema_validation; retain available usage |
+| Evidenced pointer/report verification fails | evidence_verification with actual role and available usage; no valid vote |
+| Later role fails | Keep earlier completed reports and the failing role's observation, not a synthetic successful bundle |
+| Unrecognized exception containing a URL/key/provider text | unknown_exception; no message, stack, raw Pydantic errors or provider content in payload |
+| Shared result observation is replaced/tampered | Original result integrity rejects before commit/settlement authority |
+| Settlement subsequently fails | Exclusive pre-settlement private checkpoint already exists; no second provider dispatch |
+| Metadata absent in historical result | observation_payload=None; no new observation file/key and unchanged legacy hash |
+
+### 5. Good / base / bad cases
+Good: a controlled incomplete response retains output usage and max_output_tokens reason under the technical role, then stays pending. Base: an old no-observation result serializes exactly as before. Bad: assuming high caused truncation from elapsed time alone, recording reserved seven requests as seven actual calls, or changing UNKNOWN accounting because one failed response supplied tokens.
+
+### 6. Tests required
+Focused private review-observability tests cover real bounded-client response/error types, safe secret-sentinel projection, schema/evidenced rejection metadata, late-role partials, shared result tampering and legacy hashes. Operator tests assert run_review < observation checkpoint < settle_review, exclusive no-overwrite receipts and no-observation zero-file behavior. Run existing legacy/evidenced/shared/private/operator regressions, scoped Ruff and API Mypy; controlled offline errors are not a live quality or publication acceptance.
+
+### 7. Wrong vs correct
+Wrong: `str(exc)` or Pydantic raw errors are useful diagnostics, so save them with the provider body and retry until approved. Correct: classify by trusted types/closed enums, suppress raw cause propagation after copying safe metadata, retain only private normalized observations, and leave the original failed candidate/history/UNKNOWN untouched. A future new immutable bounded candidate can supply fresh diagnostic evidence; the missing old metadata cannot be reconstructed as fact.

@@ -53,6 +53,9 @@ from app.services.learning.item_supply.review_protocol import (
     configured_review_protocol, make_review_request, report_protocol, verify_review_report,
 )
 from app.services.learning.item_supply.review_rubrics import LEGACY_REVIEW_PROTOCOL, ReviewProtocol
+from app.services.learning.item_supply.review_observability import (
+    ReviewFailureObservation, ReviewFailurePhase, observe_review_failure,
+)
 
 Scorer = SandboxBlindAnswerScorer | FiniteStaticBlindScorer
 
@@ -86,6 +89,10 @@ class SharedReviewResult:
     safe_reason: str
     ambiguity: FiniteAmbiguityReceiptV1 | None = None
     partial_reports: tuple[ReviewReport, ...] = field(default=(), repr=False)
+    observation: ReviewFailureObservation | None = field(default=None, repr=False)
+
+    def observation_payload(self) -> dict[str, object] | None:
+        return self.observation.payload() if self.observation is not None else None
 
 
 @dataclass(frozen=True)
@@ -162,6 +169,9 @@ class SharedReviewPipeline:
             "ambiguity": None if result.ambiguity is None else result.ambiguity.model_dump(mode="json")}
         if result.partial_reports:
             payload["partial_reports"] = [r.model_dump(mode="json") for r in result.partial_reports]
+        observation = result.observation_payload()
+        if observation is not None:
+            payload["observation"] = observation
         return canonical_hash(payload)
 
     def _issued(self, p: PreparedSharedReview) -> tuple[RagSourceAuthority, JsonBlindSolverV2, tuple[JsonReviewerV2, ...], Scorer]:
@@ -342,6 +352,8 @@ class SharedReviewPipeline:
         _, ambiguity_owner = self._ambiguity_context(p)
         blind, bundle, ambiguity, reason = None, None, None, "finite_ambiguity_pending"
         partial_reports: tuple[ReviewReport, ...] = ()
+        observation = None
+        phase: ReviewFailurePhase = "finite_ambiguity"
         try:
             # Funded in prepare. Distinguish the finite interpretation first so
             # missing execution does not trigger seven unnecessary model calls.
@@ -354,12 +366,14 @@ class SharedReviewPipeline:
             if self.conn.info.transaction_status != TransactionStatus.IDLE:
                 raise PipelineRepositoryError("PROVIDER_IO_REQUIRES_IDLE_TRANSACTION")
             with finite_review_context(p.source, spec=p.spec, materials=p.request.materials):
+                phase = "blind_score"
                 blind = blind_solve_candidate(p.source, binding=p.binding, author_identity=p.author_identity,
                                               solver=solver, scorer=scorer)
                 if not scorer.verify(blind.score, p.source):
                     raise PipelineRepositoryError("SHARED_BLIND_RESULT_UNVERIFIED")
                 policy = policy_for_hash(p.binding.policy_hash)
                 if completed_blind_allowed(blind, policy):
+                    phase = "review_bundle"
                     bundle = review_candidate_for_policy(p.source, binding=p.binding, validation_receipt=p.validation,
                         author_identity=p.author_identity, blind_solve_receipt=blind, reviewers=reviewers, policy=policy)
                     reason = "peer_review_staged"
@@ -368,8 +382,11 @@ class SharedReviewPipeline:
         except Exception as exc:
             if isinstance(exc, AutonomousReviewError):
                 partial_reports = exc.partial_reports
+                observation = exc.observation
+            if observation is None:
+                observation = observe_review_failure(exc, phase=phase)
             reason = "finite_ambiguity_pending" if ambiguity is None else ("blind_solve_pending" if blind is None else "review_pending")
-        result = SharedReviewResult(blind, bundle, reason, ambiguity, partial_reports)
+        result = SharedReviewResult(blind, bundle, reason, ambiguity, partial_reports, observation)
         self._results[p.reservation_id] = (result, self._result_hash(result))
         return result
 

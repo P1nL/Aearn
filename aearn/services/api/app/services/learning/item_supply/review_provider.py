@@ -9,11 +9,12 @@ from app.services.learning.item_supply.diagnostic_policy import (
 from app.services.learning.item_supply.storage_contracts import AutonomousEvidencePolicyV2
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, TypedDict
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from app.core.config import Settings
 
@@ -63,6 +64,7 @@ from app.services.learning.item_supply.review_contracts_v2 import (
 )
 from app.services.learning.item_supply.storage_contracts import StorageContract, checked_model
 from app.services.llm.llm_client import JsonTransport, LLMJsonResponse, OpenAICompatibleClient
+from app.services.llm.contracts import LLMResponseDiagnostics
 from app.services.learning.item_supply.review_protocol import (
     PYTHON_GOAL_REVIEW_PROMPT_VERSION as PYTHON_GOAL_REVIEW_PROMPT_VERSION,
     REVIEW_PROMPT_VERSION as REVIEW_PROMPT_VERSION, ReviewRequest,
@@ -71,6 +73,11 @@ from app.services.learning.item_supply.review_protocol import (
 )
 from app.services.learning.item_supply.review_rubrics import (
     EVIDENCED_REVIEW_PROTOCOL, LEGACY_REVIEW_PROTOCOL, ReviewProtocol, evidenced_review_instruction,
+)
+
+from app.services.learning.item_supply.review_observability import (
+    ReviewFailureCode, ReviewFailureObservation, ReviewFailurePhase,
+    merge_response_diagnostics, observe_review_failure,
 )
 
 BLIND_PROMPT_VERSION = "item-supply-blind-solve-v2.2"
@@ -119,11 +126,23 @@ class _BlindCommon(TypedDict):
 
 
 class AutonomousReviewError(ValueError):
-    """Safe fixed-code failure. Never includes provider content or diagnostics."""
+    """Safe fixed-code string; closed diagnostics have a separate PRIVATE projection."""
 
-    def __init__(self, code: str, *, partial_reports: tuple[ReviewReport, ...] = ()) -> None:
+    def __init__(self, code: str, *, partial_reports: tuple[ReviewReport, ...] = (),
+                 observation: ReviewFailureObservation | None = None) -> None:
         super().__init__(code)
         self.partial_reports = partial_reports
+        self.observation = observation
+
+    def observation_payload(self) -> dict[str, object] | None:
+        return self.observation.payload() if self.observation is not None else None
+
+
+def _failure_observation(exc: Exception, *, phase: ReviewFailurePhase,
+                         role: LearningItemReviewRole | None = None) -> ReviewFailureObservation:
+    if isinstance(exc, AutonomousReviewError) and exc.observation is not None:
+        return replace(exc.observation, failed_role=role) if role is not None else exc.observation
+    return observe_review_failure(exc, phase=phase, failed_role=role)
 
 
 class JsonReviewClient(Protocol):
@@ -341,15 +360,25 @@ class _JsonProviderAdapter:
     def _complete(
         self, request: BlindSolveInputV2 | ReviewRequest | ReviewDiagnosticInputV1, *, prompt_version: str,
         output_type: type[_BlindAnswer] | type[_ReviewVote] | type[ReviewDiagnosticOutputV1] | type[EvidencedReviewOutputV1], instruction: str,
-    ) -> tuple[_BlindAnswer | _ReviewVote | ReviewDiagnosticOutputV1 | EvidencedReviewOutputV1, ProviderRunV2]:
+    ) -> tuple[_BlindAnswer | _ReviewVote | ReviewDiagnosticOutputV1 | EvidencedReviewOutputV1, ProviderRunV2, ReviewFailureObservation]:
         if request.binding.profile_hash != self._profile_hash:
             raise AutonomousReviewError("frozen_profile_mismatch")
+        response = None
+        phase: ReviewFailurePhase = "provider_call"
+        invoked = None
+        request_diagnostics = None
+        role = self.role if isinstance(self, JsonReviewerV2) else None
         try:
             timeout = (self._client.bounded_timeout(self._timeout_seconds)
                        if isinstance(self._client, BoundedOpenAIReviewClient) else self._timeout_seconds)
             messages, output_schema, schema_name, _ = self._input_envelope(
                 request, instruction=instruction, output_type=output_type,
             )
+            invoked = 1
+            request_diagnostics = LLMResponseDiagnostics(requested_max_output_tokens=self._max_output_tokens,
+                requested_reasoning_effort=("high" if isinstance(self._client, BoundedOpenAIReviewClient)
+                    and schema_name in {"item_supply_evidenced_review_output_v1", "item_supply_review_diagnostic_output_v1"}
+                    else None))
             response = self._client.complete_json(
                 messages,
                 timeout_seconds=timeout, max_tokens=self._max_output_tokens,
@@ -358,10 +387,17 @@ class _JsonProviderAdapter:
                 capture_provider_body=False,
             )
             if response.model != self._identity.model:
-                raise ValueError("unexpected response model")
+                raise AutonomousReviewError("review_provider_failed", observation=observe_review_failure(
+                    ValueError(), phase=phase, failed_role=role, usage=response.usage,
+                    response_diagnostics=merge_response_diagnostics(response.response_diagnostics, request_diagnostics), logical_client_invocations=invoked,
+                    safe_code="provider_binding_mismatch"))
+            phase = "output_schema"
             encoded = canonical_json(response.content)
             if len(encoded.encode("utf-8")) > min(262_144, self._max_output_tokens * 32):
-                raise ValueError("oversized output")
+                raise AutonomousReviewError("review_provider_failed", observation=observe_review_failure(
+                    ValueError(), phase=phase, failed_role=role, usage=response.usage,
+                    response_diagnostics=merge_response_diagnostics(response.response_diagnostics, request_diagnostics), logical_client_invocations=invoked,
+                    safe_code="output_limit"))
             payload = output_type.model_validate_json(encoded, strict=True)
             run = ProviderRunV2(
                 provider_identity=self._identity, run_id=uuid4(), prompt_version=prompt_version,
@@ -372,10 +408,18 @@ class _JsonProviderAdapter:
                 input_tokens=response.usage.input_tokens if response.usage is not None else None,
                 output_tokens=response.usage.output_tokens if response.usage is not None else None,
             )
-            return payload, run
-        except Exception:
+            metadata = observe_review_failure(ValueError(), phase="evidence_verification", failed_role=role,
+                usage=response.usage, response_diagnostics=merge_response_diagnostics(response.response_diagnostics, request_diagnostics),
+                logical_client_invocations=invoked, safe_code="evidence_verification")
+            return payload, run, metadata
+        except Exception as exc:
             # Caller retains its reservation if transport usage is unknown.
-            raise AutonomousReviewError("review_provider_failed") from None
+            observation = (exc.observation if isinstance(exc, AutonomousReviewError) and exc.observation is not None
+                else observe_review_failure(exc, phase=phase, failed_role=role,
+                    usage=response.usage if response is not None else None,
+                    response_diagnostics=merge_response_diagnostics(response.response_diagnostics if response is not None else None, request_diagnostics),
+                    logical_client_invocations=invoked))
+            raise AutonomousReviewError("review_provider_failed", observation=observation) from None
 
 
 class JsonBlindSolverV2(_JsonProviderAdapter):
@@ -383,7 +427,7 @@ class JsonBlindSolverV2(_JsonProviderAdapter):
 
     def solve(self, request: BlindSolveInputV2) -> BlindSolveResultV2:
         request = checked_model(request, BlindSolveInputV2)
-        payload, run = self._complete(
+        payload, run, _ = self._complete(
             request, prompt_version=BLIND_PROMPT_VERSION, output_type=_BlindAnswer,
             instruction=_BLIND_INSTRUCTION,
         )
@@ -438,7 +482,7 @@ class JsonReviewerV2(_JsonProviderAdapter):
         request = checked_model(request, ReviewDiagnosticInputV1)
         if request.review_input.role is not self._role:
             raise AutonomousReviewError("review_role_mismatch")
-        payload, run = self._complete(
+        payload, run, _ = self._complete(
             request, prompt_version=REVIEW_DIAGNOSTIC_PROMPT_VERSION, output_type=ReviewDiagnosticOutputV1,
             instruction=_diagnostic_instruction(self._role),
         )
@@ -456,15 +500,17 @@ class JsonReviewerV2(_JsonProviderAdapter):
         if request.role is not self._role:
             raise AutonomousReviewError("review_role_mismatch")
         instruction, output_type = self._review_contract(request)
-        payload, run = self._complete(request, prompt_version=review_prompt_version(request),
+        payload, run, metadata = self._complete(request, prompt_version=review_prompt_version(request),
                                       output_type=output_type, instruction=instruction)
         if isinstance(payload, EvidencedReviewOutputV1) and isinstance(request, EvidencedReviewInputV1):
             try:
                 report = EvidencedReviewReportV1(binding=request.binding, role=self.role, run=run,
                                                 verdict=payload.verdict, findings=payload.findings)
                 return verify_review_report(report, request)
-            except Exception:
-                raise AutonomousReviewError("evidenced_review_failed") from None
+            except Exception as exc:
+                code: ReviewFailureCode = ("schema_validation" if isinstance(exc, ValidationError) else
+                    "evidence_verification" if isinstance(exc, ValueError) else "unknown_exception")
+                raise AutonomousReviewError("evidenced_review_failed", observation=replace(metadata, safe_code=code)) from None
         if not isinstance(payload, _ReviewVote):
             raise AutonomousReviewError("invalid_review_output")
         return ReviewReportV2(binding=request.binding, role=self._role, run=run,
@@ -553,8 +599,8 @@ def blind_solve_candidate(
                                           answer=result.answer), BlindScoreV2)
         return BlindSolveReceiptV2(binding=binding, run=result.run,
                                    solution_hash=canonical_hash(result.answer), score=score)
-    except Exception:
-        raise AutonomousReviewError("blind_solve_failed") from None
+    except Exception as exc:
+        raise AutonomousReviewError("blind_solve_failed", observation=_failure_observation(exc, phase="blind_score")) from None
 
 
 def _review_candidate(
@@ -588,26 +634,38 @@ def _review_candidate(
         raise AutonomousReviewError("author_solver_reviewer_identity_conflict")
     protocol = configured_review_protocol(ordered)
     reports: list[ReviewReport] = []
+    failed_role = None
+    phase: ReviewFailurePhase = "review_bundle"
     try:
         for reviewer, identity in zip(ordered, identities, strict=True):
+            failed_role = reviewer.role
+            phase = "review_bundle"
             # Rebuild an isolated snapshot for each role. No peer/solver output
             # can enter this typed input even after earlier calls finish.
             request = make_review_request(source, binding=binding, role=reviewer.role,
                 validation_receipt=validation_receipt, protocol=protocol)
             expected_input_hash = request.input_hash
-            report = verify_review_report(reviewer.review(request), request)
+            output = reviewer.review(request)
+            phase = "evidence_verification"
+            report = verify_review_report(output, request)
             if (report.binding != binding or report.role is not reviewer.role
                     or report.run.provider_identity != identity or report.run.input_hash != expected_input_hash
                     or report.run.prompt_version != review_prompt_version(request)):
                 raise ValueError("stale reviewer output")
             reports.append(report)
+        failed_role = None
+        phase = "review_bundle"
         bundle_type = ReviewBundleV3 if type(policy) is AutonomousEvidencePolicyV3 else ReviewBundleV2
         return checked_bundle(bundle_type(
             bundle_id=uuid4(), bundle_version=bundle_version, binding=binding,
             author_identity=author, blind_solve=blind, reports=tuple(reports),
         ))
-    except Exception:
-        raise AutonomousReviewError("review_bundle_failed", partial_reports=tuple(reports)) from None
+    except Exception as exc:
+        observation = _failure_observation(exc, phase=phase, role=failed_role)
+        if (not isinstance(exc, AutonomousReviewError) and isinstance(exc, ValueError)
+                and not isinstance(exc, ValidationError) and phase == "evidence_verification"):
+            observation = replace(observation, safe_code="evidence_verification")
+        raise AutonomousReviewError("review_bundle_failed", partial_reports=tuple(reports), observation=observation) from None
 
 
 def review_candidate(

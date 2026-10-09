@@ -336,6 +336,12 @@ def test_shared_current_profile_fences_single_dispatch_and_unknown_settlement(mo
         assert result.bundle is None and result.safe_reason == "review_pending"
         assert len(result.partial_reports) == 3 and len(calls) == 5
         assert result.blind is not None
+        observation = result.observation_payload()
+        assert observation["failed_role"] == LearningItemReviewRole.AMBIGUITY.value
+        assert observation["phase"] == "output_schema" and observation["safe_code"] == "schema_validation"
+        assert observation["usage"] is None and observation["logical_client_invocations"] == 1
+        assert observation["response_diagnostics"]["requested_max_output_tokens"] == 2000
+        assert observation["response_diagnostics"]["requested_reasoning_effort"] == "high"
         with conn.transaction():
             owner.settle_review(p, result)
             failed = owner.commit_review(p, result)
@@ -348,6 +354,9 @@ def test_shared_current_profile_fences_single_dispatch_and_unknown_settlement(mo
     if mode == "diagnostic_timeout":
         assert result.blind is result.bundle is None and result.safe_reason == "blind_solve_pending"
         assert len(calls) == 1  # No retry/solver voting and no manufactured score/run.
+        observation = result.observation_payload()
+        assert observation["safe_code"] == "provider_timeout" and observation["phase"] == "provider_call"
+        assert observation["failed_role"] is None and observation["usage"] is None
         with conn.transaction():
             owner.settle_review(p,result)
             failed = owner.commit_review(p,result)
@@ -363,6 +372,7 @@ def test_shared_current_profile_fences_single_dispatch_and_unknown_settlement(mo
             public_review = json.loads(message["messages"][1]["content"])
             assert "blind_solve" not in public_review and "solution_hash" not in public_review and "score" not in public_review
     assert result.bundle is not None and len(calls)==7
+    assert result.observation_payload() is None
     assert result.ambiguity.mode == "static_options" and result.ambiguity.terminals == ()
     with pytest.raises(PipelineRepositoryError,match="ALREADY_DISPATCHED"):
         owner.run_review(p)

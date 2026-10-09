@@ -186,6 +186,9 @@ def test_ast_chain_owner_lifetimes_fenced_settlement_and_no_new_schema_modules(o
     assert at("run_generation") < at("settle_generation") < at("commit_generation")
     assert at("run_validation") < at("settle_validation") < at("commit_validation")
     assert at("run_review") < at("settle_review") < at("commit_review") < at("issue") < at("publish_internal")
+    observation_checkpoint = next(n.lineno for n in calls if isinstance(n.func, ast.Name)
+        and n.func.id == "checkpoint_review_observation")
+    assert at("run_review") < observation_checkpoint < at("settle_review")
     assert not any(isinstance(n.func, ast.Attribute) and n.func.attr in ("complete", "heartbeat", "cancel") for n in calls)
     assert "source_authority=authority" in source
     assert "validation_prepared=validation_prepared, validation_result=validation_result" in source
@@ -652,3 +655,59 @@ def test_existing_campaign_or_failed_slot_cannot_relabel_policy(operator, tmp_pa
     with pytest.raises(operator.OperatorPending, match="IMMUTABLE_CAMPAIGN_CASES_CONFLICT"):
         operator.campaign_cases(tmp_path, changed)
     assert before == {p.relative_to(tmp_path):p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+
+def test_typed_failed_review_observation_reaches_private_native_checkpoint(operator, tmp_path):
+    from app.services.learning.item_bank.contracts import LearningItemReviewRole
+    from app.services.learning.item_supply.review_observability import ReviewFailureObservation
+    from app.services.learning.item_supply.shared_review import SharedReviewResult
+    from app.services.llm.contracts import LLMResponseDiagnostics, LLMUsage
+
+    observation = ReviewFailureObservation(phase="provider_call",
+        failed_role=LearningItemReviewRole.TECHNICAL, safe_code="response_incomplete",
+        usage=LLMUsage(input_tokens=500, output_tokens=2048, reasoning_tokens=2000),
+        response_diagnostics=LLMResponseDiagnostics(response_status="incomplete",
+            incomplete_reason="max_output_tokens", requested_max_output_tokens=2048,
+            requested_reasoning_effort="high", visible_output_chars=0),
+        logical_client_invocations=1)
+    result = SharedReviewResult(None, None, "review_pending", observation=observation)
+    reservation_id = uuid4()
+    payload = operator.checkpoint_review_observation(tmp_path,
+        reservation_id=reservation_id, result=result)
+    receipt = operator.read(tmp_path / "review-observation.json")
+    assert receipt["observation"] == payload == observation.payload()
+    assert payload["failed_role"] == "technical"
+    assert payload["usage"]["output_tokens"] == 2048
+    assert payload["response_diagnostics"]["incomplete_reason"] == "max_output_tokens"
+    assert payload["invocation_count_semantics"] == "logical_client_invocations_not_http_attempts"
+    assert receipt["accounting_authority"] is False
+    assert receipt["admission_eligible"] is False
+    assert not (tmp_path / "review.json").exists()
+
+
+def test_private_observation_checkpoint_is_exclusive_and_not_authority(operator, tmp_path):
+    reservation_id = uuid4()
+    payload = {"safe_code": "response_incomplete", "phase": "provider",
+        "failed_role": "technical", "usage": None,
+        "response_diagnostics": {"incomplete_reason": "max_output_tokens"}}
+    result = SimpleNamespace(observation_payload=lambda: payload)
+    assert operator.checkpoint_review_observation(tmp_path,
+        reservation_id=reservation_id, result=result) == payload
+    path = tmp_path / "review-observation.json"
+    receipt = json.loads(path.read_text(encoding="utf8"))
+    assert receipt == dict(schema_version="item_supply_private_review_observation_checkpoint_v1",
+        visibility="private_only", reservation_id=str(reservation_id),
+        admission_eligible=False, publication_enabled=False, accounting_authority=False,
+        observation=payload)
+    original = path.read_bytes()
+    with pytest.raises(FileExistsError):
+        operator.checkpoint_review_observation(tmp_path,
+            reservation_id=reservation_id, result=result)
+    assert path.read_bytes() == original
+
+
+def test_no_observation_keeps_legacy_checkpoint_behavior(operator, tmp_path):
+    result = SimpleNamespace(observation_payload=lambda: None)
+    assert operator.checkpoint_review_observation(tmp_path,
+        reservation_id=uuid4(), result=result) is None
+    assert list(tmp_path.iterdir()) == []

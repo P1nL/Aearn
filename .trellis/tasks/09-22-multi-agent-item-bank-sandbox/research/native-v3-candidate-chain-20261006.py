@@ -71,6 +71,24 @@ def event(folder: Path, stage: str, **facts: Any) -> None:
         os.fsync(stream.fileno())
 
 
+def checkpoint_review_observation(folder: Path, *, reservation_id: UUID, result: Any) -> dict[str, Any] | None:
+    """Persist the closed private failure projection before accounting can fail.
+
+    Observation data never grants admission, accounting or a second dispatch.
+    Absent observations retain the exact historical receipt/file behavior.
+    """
+    observation = result.observation_payload()
+    if observation is None:
+        return None
+    save(folder / "review-observation.json", dict(
+        schema_version="item_supply_private_review_observation_checkpoint_v1",
+        visibility="private_only", reservation_id=str(reservation_id),
+        admission_eligible=False, publication_enabled=False, accounting_authority=False,
+        observation=observation,
+    ))
+    return observation
+
+
 def dbnow(conn: Any) -> datetime:
     return conn.execute("SELECT clock_timestamp() AS n").fetchone()["n"].astimezone(timezone.utc)
 
@@ -556,6 +574,8 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
     event(folder, "review_dispatch_intent", reservation_id=str(review_prepared.reservation_id), max_HTTP_attempts=7)
     require_idle(conn)
     review_result = rp.run_review(review_prepared)
+    observation = checkpoint_review_observation(folder,
+        reservation_id=review_prepared.reservation_id, result=review_result)
     if review_result.partial_reports:
         # Private checkpoint precedes settlement: later accounting errors cannot
         # erase already completed roles, and never create successful bundle data.
@@ -569,6 +589,8 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
         bundle=None if review_result.bundle is None else review_result.bundle.model_dump(mode="json"),
         ambiguity=None if review_result.ambiguity is None else review_result.ambiguity.model_dump(mode="json"),
         usage_state="unknown", monetary_cost=None)
+    if observation is not None:
+        review_payload["observation"] = observation
     if review_result.partial_reports:
         review_payload["partial_reports"] = [report.model_dump(mode="json") for report in review_result.partial_reports]
     save(folder / "review.json", review_payload)
