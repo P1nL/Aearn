@@ -4,7 +4,7 @@ Original runner/port objects remain in this process. Database JSON is audit, not
 permission to execute again or to issue facts/admission/publication.
 """
 from __future__ import annotations
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 from psycopg import Connection
@@ -47,6 +47,7 @@ class SharedValidationPipeline:
                                          SandboxCandidateExecutionPort | None]] = {}
         self._started: set[UUID] = set()
         self._results: dict[UUID, tuple[SharedValidationResult, str]] = {}
+        self._operation_deadlines: dict[UUID, datetime] = {}
 
     @property
     def validation_enabled(self) -> bool:
@@ -76,6 +77,9 @@ class SharedValidationPipeline:
         seal = canonical_hash({"payload": self._payload(p), "reservation_id": str(p.reservation_id)})
         if entry is None or entry[0] is not p or entry[1] != seal:
             raise PipelineRepositoryError("SHARED_VALIDATION_PREPARED_UNAVAILABLE")
+        deadline = self._operation_deadlines.get(p.preparation_id)
+        if deadline is not None and entry[3] is not None and entry[3]._deadline != deadline:
+            raise PipelineRepositoryError("SHARED_VALIDATION_OPERATION_DEADLINE_CHANGED")
         return entry[2], entry[3]
 
     def _load(self, lease: JobLeaseV1, artifact_id: UUID, spec: FiniteCandidateSpecV1,
@@ -89,12 +93,21 @@ class SharedValidationPipeline:
         return resolved
 
     def prepare_validation(self, *, lease: JobLeaseV1, artifact_id: UUID, spec: FiniteCandidateSpecV1,
-                           source_authority: RagSourceAuthority, runner: RunnerPort | None = None) -> PreparedSharedValidation | None:
+                           source_authority: RagSourceAuthority, runner: RunnerPort | None = None,
+                           operation_deadline_at: datetime | None = None) -> PreparedSharedValidation | None:
         """Caller short transaction; supply a refreshed public lease after generation."""
         if not self.validation_enabled:
             return None
         self.artifacts.require_owner()
         lease, spec = checked_model(lease, JobLeaseV1), checked_model(spec, FiniteCandidateSpecV1)
+        deadline = min(lease.expires_at, lease.parent_deadline)
+        if operation_deadline_at is not None:
+            if operation_deadline_at.tzinfo is None:
+                raise PipelineRepositoryError("SHARED_VALIDATION_OPERATION_DEADLINE_REQUIRED")
+            deadline = min(deadline, operation_deadline_at, lease.profile.parent_deadline_at,
+                lease.profile.bound_at + timedelta(milliseconds=lease.profile.values.stage_deadline_ms))
+            if server_clock(self.conn, datetime.now(UTC)) >= deadline:
+                raise PipelineRepositoryError("SHARED_VALIDATION_OPERATION_DEADLINE_REACHED")
         resolved = self._load(lease, artifact_id, spec, source_authority)
         artifact, source, request = resolved.artifact, resolved.source, resolved.request
         inputs = prepare_finite_candidate_validation(source, spec=spec, materials=request.materials)
@@ -106,7 +119,7 @@ class SharedValidationPipeline:
             if runner is None:
                 raise PipelineRepositoryError("SHARED_EXECUTION_RUNNER_REQUIRED")
             port = SandboxCandidateExecutionPort(runner, probe_plan=inputs.probe_plan, finite_spec=spec,
-                                                parent_deadline_at=min(lease.expires_at, lease.parent_deadline))
+                                                parent_deadline_at=deadline)
             resources = execution_resources(port.resource_plan(source))
             if resources.execution_seconds * 1000 > lease.profile.values.stage_deadline_ms:
                 raise PipelineRepositoryError("EXECUTION_RESOURCE_PROFILE_BOUND")
@@ -140,10 +153,15 @@ class SharedValidationPipeline:
                 request, spec, inputs, resources, reserved.reservation_id)
         seal = canonical_hash({"payload": payload, "reservation_id": str(p.reservation_id)})
         self._prepared[pid] = (p, seal, source_authority, port)
+        if operation_deadline_at is not None:
+            self._operation_deadlines[pid] = deadline
         return p
 
     def _fence(self, p: PreparedSharedValidation, *, before_io: bool = False) -> None:
         authority, port = self._issued(p)
+        deadline = self._operation_deadlines.get(p.preparation_id)
+        if deadline is not None and server_clock(self.conn, datetime.now(UTC)) >= deadline:
+            raise PipelineRepositoryError("SHARED_VALIDATION_OPERATION_DEADLINE_REACHED")
         resolved = self._load(p.lease, p.artifact_id, p.spec, authority)
         artifact, source, request = resolved.artifact, resolved.source, resolved.request
         current_binding = None if resolved.continuation_binding is None else resolved.continuation_binding.binding_hash
@@ -190,6 +208,12 @@ class SharedValidationPipeline:
                 self._verify_terminal(p, result, port)
             except Exception:
                 # No fabricated terminal or zero usage for partial/failed IO.
+                result = SharedValidationResult(None, None, (), "execution_usage_unknown")
+        if p.preparation_id in self._operation_deadlines:
+            try:
+                with self.conn.transaction():
+                    self._fence(p)
+            except Exception:
                 result = SharedValidationResult(None, None, (), "execution_usage_unknown")
         if self.conn.info.transaction_status != TransactionStatus.IDLE:
             raise PipelineRepositoryError("EXECUTOR_IO_REQUIRES_IDLE_TRANSACTION")
@@ -293,3 +317,48 @@ class SharedValidationPipeline:
         else:
             self.runtime.mark_preparing(p.lease, reason="deterministic_evidence_pending", now=now)
         return SharedValidationStageResult(current.state, "validation_staged", UUID(str(row["id"])), evidence_id)
+
+    def verified_committed_validation(self, p: PreparedSharedValidation, result: SharedValidationResult, *,
+                                      lease: JobLeaseV1, receipt_id: UUID) -> CandidateValidationV2:
+        """Verify original completed evidence at a later CURRENT child stage.
+
+        Never call _fence(p): p's validating state_version has legitimately
+        advanced. Cached issuer/terminal verification performs no executor IO.
+        """
+        self.artifacts.require_owner()
+        port = self._result(p,result)
+        authority,_ = self._issued(p)
+        lease = checked_model(lease,JobLeaseV1)
+        if ((lease.job_id,lease.generation,lease.lease_owner,lease.profile,lease.visibility) !=
+                (p.lease.job_id,p.lease.generation,p.lease.lease_owner,p.lease.profile,"public")
+                or lease.owner_id is not None or lease.owner_epoch is not None or lease.state_version<p.lease.state_version):
+            raise PipelineRepositoryError("SHARED_VALIDATION_CURRENT_OPERATION_REQUIRED")
+        now = server_clock(self.conn,datetime.now(UTC))
+        self.runtime._control(lease,now=now)
+        resolved = self.artifacts.resolve_generation(lease=lease,artifact_id=p.artifact_id,now=now,
+            source_authority=authority,spec=p.spec,continuation_owner=self.continuation_owner)
+        if (resolved.source != p.source or resolved.request != p.request or resolved.artifact["artifact_hash"] != p.artifact_hash
+                or prepare_finite_candidate_validation(p.source,spec=p.spec,materials=p.request.materials) != p.inputs
+                or result.validation is None or result.validation.state != "machine_verified"):
+            raise PipelineRepositoryError("SHARED_VALIDATION_COMPLETED_DATA_CHANGED")
+        row = self.conn.execute("SELECT r.*,r.xmin::text::bigint=(txid_current() %% 4294967296) AS same_transaction "
+            "FROM tutor_item_supply_shared_pipeline_receipts r WHERE r.id=%s FOR SHARE",(receipt_id,)).fetchone()
+        evidence = self.conn.execute("SELECT e.*,e.xmin::text::bigint=(txid_current() %% 4294967296) AS same_transaction "
+            "FROM tutor_item_supply_shared_validation_evidence e WHERE e.preparation_id=%s",(p.preparation_id,)).fetchone()
+        if (row is None or row["same_transaction"] or row["job_id"] != lease.job_id or row["lease_generation"] != lease.generation
+                or row["generation_artifact_id"] != p.artifact_id or row["artifact_kind"] != "validation"
+                or row["receipt_hash"] != result.validation.evidence_hash or row["payload_json"] != result.validation.model_dump(mode="json")
+                or evidence is None or evidence["same_transaction"] or evidence["payload_json"] != self._result_payload(result)
+                or evidence["payload_hash"] != canonical_hash(self._result_payload(result))):
+            raise PipelineRepositoryError("SHARED_VALIDATION_COMMITTED_ORIGINAL_RECEIPTS_REQUIRED")
+        if port is None:
+            if p.inputs.static_facts is None or p.inputs.static_facts.validation != result.validation:
+                raise PipelineRepositoryError("SHARED_STATIC_ORIGINAL_FACTS_REQUIRED")
+        else:
+            self._verify_terminal(p,result,port)
+            usage = self.conn.execute("SELECT s.*,s.xmin::text::bigint=(txid_current() %% 4294967296) AS same_transaction "
+                "FROM tutor_item_supply_shared_runtime_settlements s WHERE s.reservation_id=%s AND s.settlement_key=%s",
+                (p.reservation_id,"shared.execution."+p.preparation_id.hex)).fetchone()
+            if usage is None or usage["same_transaction"] or usage["usage_state"] != "known":
+                raise PipelineRepositoryError("SHARED_VALIDATION_COMMITTED_EXECUTION_USAGE_REQUIRED")
+        return result.validation

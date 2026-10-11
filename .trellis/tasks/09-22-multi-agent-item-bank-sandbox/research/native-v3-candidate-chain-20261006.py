@@ -18,10 +18,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from native_v3_chain_support_20261006 import (
-    AUTHOR_INPUT, AUTHOR_OUTPUT, REVIEW_INPUT, REVIEW_OUTPUT,
+    AUTHOR_INPUT, REVIEW_INPUT, REVIEW_OUTPUT,
     ADMISSION_POLICIES, REVIEW_PROTOCOLS, SLOTS, TARGETS, OperatorPending, build_plan, campaign_cases, campaign_path, digest, read,
     remaining_time_plan, required_remaining, resume_decision, save, save_exact, selected_admission_policy, selected_review_protocol, time_bounds,
-    production_peer_output_cap, selected_peer_output_cap, selected_probe_slot, validate_campaign_state,
+    production_peer_output_cap, selected_author_output_cap, selected_blind_output_cap,
+    selected_peer_output_cap, selected_probe_slot, validate_campaign_state,
 )
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -204,7 +205,7 @@ def prepare_campaign(conn: Any, *, path: Path, plan: dict[str, Any], specs: list
     if selected_peer_output_cap(plan) != REVIEW_OUTPUT and (
             provider.provider_key != "deepseek" or provider.configured_model != "deepseek-flash"):
         raise OperatorPending("PRODUCTION_PEER_OUTPUT_PROVIDER_MISMATCH")
-    if probe is not None or "peer_review_output_budget" in plan:
+    if probe is not None or "peer_review_output_budget" in plan or "production_output_budget" in plan:
         if len(specs) != len(plan["slots"]) or any(
                 spec.target_id != plan["target"] or spec.seed != row["seed"]
                 or spec.allocation.model_dump(mode="json") != row["allocation"]
@@ -342,7 +343,9 @@ def require_production_peer_output(settings: Any, cap: int) -> None:
 
 
 def review_ports(settings: Any, lease: Any, *, review_protocol: str = "legacy-v2",
-                 peer_review_max_output_tokens: int = REVIEW_OUTPUT) -> tuple[Any, tuple[Any, ...]]:
+                 peer_review_max_output_tokens: int = REVIEW_OUTPUT,
+                 blind_max_output_tokens: int = REVIEW_OUTPUT,
+                 blind_protocol: str | None = None) -> tuple[Any, tuple[Any, ...]]:
     from app.services.learning.item_bank.review_contracts import REQUIRED_REVIEW_ROLES
     from app.services.learning.item_supply.review_contracts_v2 import ProviderIdentityV2
     from app.services.learning.item_supply.review_provider import BoundedOpenAIReviewClient, JsonBlindSolverV2, JsonReviewerV2
@@ -350,15 +353,23 @@ def review_ports(settings: Any, lease: Any, *, review_protocol: str = "legacy-v2
     if (type(peer_review_max_output_tokens) is not int or (peer_review_max_output_tokens != REVIEW_OUTPUT and
             (peer_review_max_output_tokens != production_peer_output_cap() or review_protocol != "evidenced-v1"))):
         raise OperatorPending("PLAN_PEER_OUTPUT_BUDGET_INVALID")
+    if (type(blind_max_output_tokens) is not int or (blind_max_output_tokens != REVIEW_OUTPUT and
+            (blind_max_output_tokens != production_peer_output_cap()
+                or peer_review_max_output_tokens != production_peer_output_cap()
+                or review_protocol != "evidenced-v1"))):
+        raise OperatorPending("PLAN_BLIND_OUTPUT_BUDGET_INVALID")
     require_production_peer_output(settings, peer_review_max_output_tokens)
+    require_production_peer_output(settings, blind_max_output_tokens)
     ports = []
     for role in ("blind_solver", *[r.value for r in REQUIRED_REVIEW_ROLES]):
         client = BoundedOpenAIReviewClient(settings, profile=lease.profile)
         identity = ProviderIdentityV2(identity=f"{client.configured_provider}.native.v3.{role}",
             provider=client.configured_provider, model=client.model)
         options = dict(identity=identity, profile_hash=lease.profile.profile_hash,
-            timeout_seconds=100, max_output_tokens=REVIEW_OUTPUT if role == "blind_solver" else peer_review_max_output_tokens,
+            timeout_seconds=100, max_output_tokens=blind_max_output_tokens if role == "blind_solver" else peer_review_max_output_tokens,
             max_input_bytes=REVIEW_INPUT)
+        if role == "blind_solver" and blind_protocol is not None:
+            options["blind_protocol"] = blind_protocol
         ports.append(JsonBlindSolverV2(client, **options) if role == "blind_solver" else
             JsonReviewerV2(client, role=next(r for r in REQUIRED_REVIEW_ROLES if r.value == role),
                 review_protocol=review_protocol, **options))
@@ -438,9 +449,22 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
     validate_campaign_state(path, plan, slot_name=slot_name)
     evidence_policy = selected_admission_policy(plan)
     review_protocol = selected_review_protocol(plan)
+    author_cap = selected_author_output_cap(plan)
+    blind_cap = selected_blind_output_cap(plan)
     peer_cap = selected_peer_output_cap(plan)
     probe = selected_probe_slot(plan)
     require_production_peer_output(settings, peer_cap)
+    require_production_peer_output(settings, blind_cap)
+    if "production_output_budget" in plan:
+        require_production_peer_output(settings, author_cap)
+        if provider.provider_key != "deepseek" or provider.configured_model != "deepseek-flash":
+            raise OperatorPending("PRODUCTION_OUTPUT_PROVIDER_MISMATCH")
+    folder = path / "slots" / slot_name
+    intent_path = folder / "candidate-intent.json"
+    # Historical defaults/peer-only plans are reconstruction/data compatibility,
+    # not permission to create another author with the old smaller output cap.
+    if "production_output_budget" not in plan and not intent_path.exists():
+        raise OperatorPending("NEW_AUTHOR_REQUIRES_PRODUCTION_OUTPUT_PLAN")
     # The importing-main seam must be just as isolated as the CLI, before writes.
     require_idle(conn)
     with conn.transaction():
@@ -448,9 +472,7 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
             raise OperatorPending("EXACT_ISOLATED_DATABASE_REQUIRED")
     slot = next(s for s in plan["slots"] if s["slot"] == slot_name)
     cases = campaign_cases(path, plan)
-    folder = path / "slots" / slot_name
     folder.mkdir(parents=True, exist_ok=True)
-    intent_path = folder / "candidate-intent.json"
     existed = intent_path.exists()
     artifact = None
     if existed:
@@ -484,6 +506,8 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
     continuation = SharedCandidateContinuationOwner(conn, settings, enabled=True)
     retry = RetryPolicyV1(max_transient_attempts=1, initial_backoff_ms=1, maximum_backoff_ms=1)
     if not existed:
+        if "production_output_budget" not in plan:
+            raise OperatorPending("NEW_AUTHOR_REQUIRES_PRODUCTION_OUTPUT_PLAN")
         candidate = UUID(cases["cases"][slot_name]["candidate_id"])
         intent = dict(plan_hash=digest(plan), slot=slot_name, candidate_id=str(candidate),
             item_key=cases["cases"][slot_name]["item_key"], new_author_call_bound=1)
@@ -505,7 +529,7 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
                 raise OperatorPending("EXACT_NEW_JOB_NOT_CLAIMED")
             request = build_finite_generation_request(spec, candidate_id=candidate, profile=lease.profile,
                 materials=materials, limits=GenerationLimitsV2(max_input_bytes=AUTHOR_INPUT,
-                    max_output_tokens=AUTHOR_OUTPUT, max_output_bytes=65_536))
+                    max_output_tokens=author_cap, max_output_bytes=65_536))
             generation_prepared = gp.prepare_generation(lease=lease, request=request, provider=provider,
                 source_authority=authority, evidence_policy=evidence_policy)
             if generation_prepared is None:
@@ -591,7 +615,7 @@ def execute_slot(conn: Any, *, settings: Any, authority: Any, materials: Any, pr
         lease = vp.runtime.refresh_lease(validation_prepared.lease, now=dbnow(conn))
         profile_key = vp.artifacts.context(lease, now=dbnow(conn))["key"]
     solver, reviewers = review_ports(settings, lease, review_protocol=review_protocol,
-        peer_review_max_output_tokens=peer_cap)
+        peer_review_max_output_tokens=peer_cap, blind_max_output_tokens=blind_cap)
     rp = SharedReviewPipeline(conn, settings, enabled=True, continuation_owner=continuation,
         trusted_model_bindings={(profile_key.provider, profile_key.model_version): solver.provider_identity.model})
     with conn.transaction():
@@ -714,8 +738,10 @@ def main(argv: list[str] | None = None) -> int:
         help="strict-v2 is the unchanged default; diagnostic-v3 requires a new immutable campaign plan")
     parser.add_argument("--review-protocol", choices=REVIEW_PROTOCOLS, default="evidenced-v1",
         help="NEW campaigns default to evidenced-v1 with enabled/high thinking; explicit legacy-v2 is historical compatibility, never an old-plan upgrade")
-    parser.add_argument("--peer-review-max-output-tokens", type=int, choices=(REVIEW_OUTPUT, production_peer_output_cap()), default=REVIEW_OUTPUT,
-        help="NEW evidenced-v1 campaigns only: six peers; blind and relation remain 2048")
+    parser.add_argument("--peer-review-max-output-tokens", type=int, choices=(REVIEW_OUTPUT, production_peer_output_cap()), default=production_peer_output_cap(),
+        help="NEW evidenced-v1 campaigns default to production output for author, blind and six peers; 2048 only reconstructs historical plans")
+    parser.add_argument("--legacy-output-limits", action="store_true",
+        help="historical default/peer-only plan reconstruction only; never migrates a frozen plan or authorizes a new author")
     parser.add_argument("--probe-only", action="store_true",
         help="freeze exactly --slot with eight calls and no relation/pack/anchor capability; existing budgets only")
     parser.add_argument("--campaign-output", help="exact shared campaign directory under .runtime/e-native-type-20261006")
@@ -724,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--probe-only requires --slot")
     plan = build_plan(args.target, args.seed, admission_policy=args.admission_policy, review_protocol=args.review_protocol,
         peer_review_max_output_tokens=args.peer_review_max_output_tokens,
+        production_output_limits=(not args.legacy_output_limits and args.review_protocol == "evidenced-v1"
+            and args.peer_review_max_output_tokens == production_peer_output_cap()),
         probe_slot=args.slot if args.probe_only else None)
     if not args.execute:
         print(json.dumps(dict(status="not_executed_offline_plan", database_io=False, provider_calls=0,

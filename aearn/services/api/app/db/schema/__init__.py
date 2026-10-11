@@ -83,6 +83,18 @@ SCHEMA_FRAGMENT_NAMES: tuple[str, ...] = (
     '505_learning_item_diagnostic_blind_admission.sql',
     '506_rag_actual_d_private_insert_alias.sql',
     '507_learning_item_generation_rowtypes.sql',
+    '508_learning_item_shared_review_investigation.sql',
+    '509_learning_item_shared_revision_lineage.sql',
+    '510_learning_item_shared_revision_recheck.sql',
+    '511_learning_item_controlled_counterexample.sql',
+    '512_learning_item_controlled_counterexample_root.sql',
+    '513_learning_item_controlled_counterexample_v2.sql',
+    '514_learning_item_shared_review_investigation_sender_v2.sql',
+    '515_learning_item_controlled_counterexample_v3.sql',
+    '516_learning_item_shared_revision_template_precedence.sql',
+    '517_learning_item_development_model_accounting.sql',
+    '518_learning_item_controlled_case_execution.sql',
+    '519_learning_item_controlled_case_execution_followup.sql',
 )
 
 

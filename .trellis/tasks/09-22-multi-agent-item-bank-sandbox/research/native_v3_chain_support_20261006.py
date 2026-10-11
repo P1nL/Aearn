@@ -132,6 +132,9 @@ def peer_output_marker() -> dict[str, Any]:
 
 def selected_peer_output_cap(plan: dict[str, Any]) -> int:
     """A closed server option, never an arbitrary caller-supplied token limit."""
+    if "production_output_budget" in plan:
+        _validate_production_output_budget(plan)
+        return production_peer_output_cap()
     if "peer_review_output_budget" not in plan:
         return REVIEW_OUTPUT
     marker = plan["peer_review_output_budget"]
@@ -139,6 +142,32 @@ def selected_peer_output_cap(plan: dict[str, Any]) -> int:
             or selected_review_protocol(plan) != "evidenced-v1"):
         raise OperatorPending("PLAN_PEER_OUTPUT_BUDGET_INVALID")
     return production_peer_output_cap()
+
+
+def production_output_marker() -> dict[str, Any]:
+    cap = production_peer_output_cap()
+    return dict(schema_version="native_v3_production_output_budget_v1",
+        limit_source="production_deepseek_flash_tutor_output_v1",
+        author_max_output_tokens=cap, blind_max_output_tokens=cap,
+        peer_max_output_tokens=cap, relation_max_output_tokens=REVIEW_OUTPUT)
+
+
+def _validate_production_output_budget(plan: dict[str, Any]) -> None:
+    marker = plan.get("production_output_budget")
+    if ("peer_review_output_budget" in plan or type(marker) is not dict
+            or digest(marker) != digest(production_output_marker())
+            or selected_review_protocol(plan) != "evidenced-v1"):
+        raise OperatorPending("PLAN_PRODUCTION_OUTPUT_BUDGET_INVALID")
+
+
+def selected_author_output_cap(plan: dict[str, Any]) -> int:
+    selected_peer_output_cap(plan)  # Reject mixed/malformed markers as one unit.
+    return production_peer_output_cap() if "production_output_budget" in plan else AUTHOR_OUTPUT
+
+
+def selected_blind_output_cap(plan: dict[str, Any]) -> int:
+    selected_peer_output_cap(plan)
+    return production_peer_output_cap() if "production_output_budget" in plan else REVIEW_OUTPUT
 
 
 def probe_marker(slot: str) -> dict[str, Any]:
@@ -173,7 +202,8 @@ def validate_plan(plan: dict[str, Any], *, slot_name: str | None = None) -> None
         seed = row["seed"] - SLOTS.index(probe) if probe is not None else row["seed"]
         expected = build_plan(plan["target"], seed,
             admission_policy="diagnostic-v3" if "admission_policy" in plan else "strict-v2",
-            review_protocol=protocol, peer_review_max_output_tokens=peer_cap, probe_slot=probe)
+            review_protocol=protocol, peer_review_max_output_tokens=peer_cap, probe_slot=probe,
+            production_output_limits="production_output_budget" in plan)
         exact = digest(plan) == digest(expected)
     except (KeyError, IndexError, TypeError, ValueError):
         raise OperatorPending("PLAN_FROZEN_CONTENT_INVALID") from None
@@ -222,8 +252,8 @@ def validate_campaign_state(path: Path, plan: dict[str, Any], *, slot_name: str 
 
 def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2",
                review_protocol: str = "legacy-v2", peer_review_max_output_tokens: int = REVIEW_OUTPUT,
-               probe_slot: str | None = None) -> dict[str, Any]:
-    """Resolve registered families, not labels invented by an operator/model."""
+               probe_slot: str | None = None, production_output_limits: bool = False) -> dict[str, Any]:
+    """Historical defaults reconstruct old plans; NEW CLI uses production limits."""
     from app.services.learning.item_supply.finite_candidate_factory import build_finite_slot_allocation
     from app.services.learning.item_supply.finite_task_families import families_for_course
 
@@ -234,6 +264,9 @@ def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2
     if (type(peer_review_max_output_tokens) is not int or (peer_review_max_output_tokens != REVIEW_OUTPUT and
             (peer_review_max_output_tokens != production_peer_output_cap() or review_protocol != "evidenced-v1"))):
         raise OperatorPending("PLAN_PEER_OUTPUT_BUDGET_INVALID")
+    if (type(production_output_limits) is not bool or (production_output_limits and
+            (peer_review_max_output_tokens != production_peer_output_cap() or review_protocol != "evidenced-v1"))):
+        raise OperatorPending("PLAN_PRODUCTION_OUTPUT_BUDGET_INVALID")
     if probe_slot is not None and (type(probe_slot) is not str or probe_slot not in SLOTS):
         raise OperatorPending("PLAN_PROBE_SCOPE_INVALID")
     if target not in TARGETS or type(seed) is not int or not 0 <= seed <= 251:
@@ -255,7 +288,9 @@ def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2
         rows.append({"slot": slot, "seed": seed + index, "allocation": allocation.model_dump(mode="json"),
             "allocation_hash": allocation.definition_hash, "max_HTTP_attempts": ITEM_CALLS})
     input_item = AUTHOR_INPUT + 7 * REVIEW_INPUT
-    output_item = AUTHOR_OUTPUT + REVIEW_OUTPUT + 6 * peer_review_max_output_tokens
+    author_cap = production_peer_output_cap() if production_output_limits else AUTHOR_OUTPUT
+    blind_cap = production_peer_output_cap() if production_output_limits else REVIEW_OUTPUT
+    output_item = author_cap + blind_cap + 6 * peer_review_max_output_tokens
     caps = dict(requests=44, input_tokens=5 * input_item + RELATION_CALLS * REVIEW_INPUT,
         output_tokens=5 * output_item + RELATION_CALLS * REVIEW_OUTPUT, execution_seconds=4500,
         fetches=0, candidates=5, revision_rounds=0, investigation_rounds=0)
@@ -288,7 +323,9 @@ def build_plan(target: str, seed: int = 0, *, admission_policy: str = "strict-v2
     if review_protocol == "evidenced-v1":
         from app.services.learning.item_supply.review_protocol import evidenced_protocol_marker
         plan["review_protocol"] = evidenced_protocol_marker()
-    if peer_review_max_output_tokens != REVIEW_OUTPUT:
+    if production_output_limits:
+        plan["production_output_budget"] = production_output_marker()
+    elif peer_review_max_output_tokens != REVIEW_OUTPUT:
         plan["peer_review_output_budget"] = peer_output_marker()
     if probe_slot is not None:
         row = next(row for row in rows if row["slot"] == probe_slot)
@@ -314,8 +351,8 @@ def required_remaining(plan: dict[str, Any], occupied: set[str], *, review_pendi
     if not occupied <= slots or not (review_pending or set()) <= slots:
         raise OperatorPending("PLAN_SELECTED_SLOT_OUTSIDE_SCOPE")
     input_item = AUTHOR_INPUT + 7 * REVIEW_INPUT
-    output_review = REVIEW_OUTPUT + 6 * selected_peer_output_cap(plan)
-    output_item = AUTHOR_OUTPUT + output_review
+    output_review = selected_blind_output_cap(plan) + 6 * selected_peer_output_cap(plan)
+    output_item = selected_author_output_cap(plan) + output_review
     relation_calls = plan["reserved_relation_calls"]
     remaining = [s for s in plan["slots"] if s["slot"] not in occupied]
     totals = dict(plan["global_caps"])

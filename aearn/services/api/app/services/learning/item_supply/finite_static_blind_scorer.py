@@ -11,6 +11,7 @@ from app.services.learning.item_supply.review_contracts_v2 import BlindScoreV2, 
 from app.services.learning.item_supply.storage_contracts import checked_model
 from app.services.learning.practice.contracts import ExerciseAttemptOutcome
 from app.services.learning.practice.policies import evaluate_static_reasoning
+from app.services.learning.item_supply.private_blind_diagnostics import PrivateBlindAudit
 
 
 class FiniteStaticBlindScorer:
@@ -33,12 +34,36 @@ class FiniteStaticBlindScorer:
         self._facts(source)
         return ResourceAmounts()
 
-    def _score(self, source: LearningItemSourceV1, answer: str) -> BlindScoreV2:
+    def _score(self, source: LearningItemSourceV1, answer: str, *,
+               private_audit: PrivateBlindAudit | None = None) -> BlindScoreV2:
         facts = self._facts(source)
         if type(answer) is not str or not 1 <= len(answer) <= 48000:
             raise ValueError("finite_static_blind_answer_invalid")
         evaluated = evaluate_static_reasoning(answer=answer, accepted_answers=(facts.correct_option_id,),
             required_capabilities=source.blueprint.required_capabilities, threshold=1.0, now=datetime.now(UTC))
+        if private_audit is not None:
+            try:
+                normalized = " ".join(answer.strip().casefold().split())
+                expected = " ".join(facts.correct_option_id.strip().casefold().split())
+                matches = bool(normalized) and normalized==expected
+                private_audit.finite_evaluation(dict(scorer_identity="finite-static-blind-scorer",
+                    scorer_version=facts.scorer_version,static_facts_hash=canonical_hash(facts.model_dump(mode="json")),
+                    solution_hash=canonical_hash(answer),normalization_rule="strip_casefold_split_join_exact_v1",
+                    normalized_answer=normalized if len(normalized)<=48000 else None,
+                    normalized_answer_hash=canonical_hash(normalized),
+                    normalized_answer_retention="full" if len(normalized)<=48000 else "unavailable_character_limit",
+                    expected_option_id=facts.correct_option_id,
+                    normalized_expected_option=expected,normalized_exact_match=matches,
+                    reason="normalized_exact_match" if matches else "normalized_exact_mismatch",
+                    original_evaluation=dict(outcome=evaluated.outcome.value,score=evaluated.score,
+                        policy_version=evaluated.policy_version,threshold=1.0,safe_feedback=evaluated.safe_feedback),
+                    semantic_cause="not_asserted"))
+            except Exception:
+                # Side-channel failure never changes the genuine calculation.
+                try:
+                    private_audit.finite_details_unavailable()
+                except Exception:
+                    pass
         passed = evaluated.outcome is ExerciseAttemptOutcome.PASSED
         digest = canonical_hash({"binding": self.binding.model_dump(mode="json"),
             "source_hash": source.source_hash, "specification_hash": self.spec.specification_hash,
@@ -47,12 +72,13 @@ class FiniteStaticBlindScorer:
         return BlindScoreV2(passed=passed, scorer_identity="finite-static-blind-scorer",
                             scorer_version=facts.scorer_version, receipt_hash=digest)
 
-    def score(self, source: LearningItemSourceV1, *, answer: str) -> BlindScoreV2:
+    def score(self, source: LearningItemSourceV1, *, answer: str,
+              private_audit: PrivateBlindAudit | None = None) -> BlindScoreV2:
         if self._issued:
             previous = next(iter(self._issued.values()))
             if previous[1:] != (source.source_hash, answer):
                 raise ValueError("finite_static_blind_answer_allowance_spent")
-        result = self._score(source, answer)
+        result = self._score(source, answer,private_audit=private_audit)
         self._issued[result.receipt_hash] = (result, source.source_hash, answer)
         return result
 

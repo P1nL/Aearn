@@ -9,6 +9,7 @@ from app.services.learning.item_supply.diagnostic_policy import (
 from app.services.learning.item_supply.storage_contracts import AutonomousEvidencePolicyV2
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, TypedDict
@@ -34,7 +35,14 @@ from app.services.learning.item_bank.review_contracts import (
     REQUIRED_REVIEW_ROLES,
     LearningItemReviewVerdict,
 )
+from app.services.learning.item_supply.blind_protocol import (
+    BlindProtocol, LEGACY_BLIND_PROTOCOL, SINGLE_CHOICE_BLIND_PROTOCOL,
+    SINGLE_CHOICE_BLIND_INSTRUCTION, SINGLE_CHOICE_BLIND_SCHEMA_NAME,
+    blind_prompt_version, checked_blind_protocol, problem_for_blind_protocol,
+    single_choice_option_ids, verify_blind_request,
+)
 from app.services.learning.item_supply.parameter_profiles import FrozenProfileSnapshot
+from app.services.learning.item_supply.private_blind_diagnostics import PrivateBlindAudit, PrivateBlindFailureStage
 from app.services.learning.item_supply.policies import ResourceAmounts
 from app.services.learning.item_supply.review_contracts_v2 import (
     BlindProblemV2,
@@ -72,7 +80,8 @@ from app.services.learning.item_supply.review_protocol import (
     verify_review_report,
 )
 from app.services.learning.item_supply.review_rubrics import (
-    EVIDENCED_REVIEW_PROTOCOL, LEGACY_REVIEW_PROTOCOL, ReviewProtocol, evidenced_review_instruction,
+    EVIDENCED_REVIEW_PROTOCOL, LEGACY_REVIEW_PROTOCOL, ROLE_CODES, ReviewProtocol,
+    evidenced_review_instruction, relevant_reference_groups,
 )
 
 from app.services.learning.item_supply.review_observability import (
@@ -81,6 +90,32 @@ from app.services.learning.item_supply.review_observability import (
 )
 
 BLIND_PROMPT_VERSION = "item-supply-blind-solve-v2.2"
+EVIDENCED_WIRE_SCHEMA_REVISION = "evidenced_role_refs_wire_v2"
+EVIDENCED_WIRE_SCHEMA_NAME = "item_supply_evidenced_review_role_refs_wire_v2"
+
+
+def _evidenced_reference_instruction(role: LearningItemReviewRole) -> str:
+    """Prospective sender guidance from the unchanged trusted receiver rubric."""
+    groups = {code: [list(group) for group in relevant_reference_groups(code)]
+              for code in sorted(ROLE_CODES[role])}
+    return (
+        "\nProspective sender wire revision: " + EVIDENCED_WIRE_SCHEMA_REVISION + ". "
+        "Output payload schema_version remains item_supply_evidenced_review_output_v1. "
+        "CODE_REFERENCE_GROUPS is trusted program guidance, not item text or proof of a claim: "
+        + canonical_json(groups) + ". "
+        "For EACH finding, use the groups for its selected safe_code. Each inner array is one required group "
+        "of alternative pointer prefixes: cite at least one exact evidence_index pointer/value_hash pair from "
+        "EVERY group. ALL cited pointers must start with a prefix in those groups; never append unrelated refs. "
+        "An authentic evidence_index entry alone does not make a field relevant to that code. "
+        "Never cite a leaf ending in _hash, or a leaf named schema_version, type, item_key or version. "
+        "Do not infer a business defect only from identity/hash/runtime-name differences or invent equalities "
+        "between different declarations. technical_failure and rubric_mismatch require concrete public task "
+        "requirements AND relevant private scoring/descriptor fields, not metadata in place of either group. "
+        "Keep the existing severity/counterexample rules. If a claim lacks valid supporting fields, do not "
+        "fabricate references, change a code merely to evade its groups, or invent a finding. Field references "
+        "authenticate locations only, not semantic truth, execution or discharge authority."
+    )
+
 
 _BLIND_INSTRUCTION = (
     "Solve the public problem independently. Return only JSON {answer: string}. "
@@ -217,7 +252,9 @@ class BoundedOpenAIReviewClient:
             self._settings.model_copy(update={"llm_timeout_seconds": timeout_seconds}),
             transport=self._transport, max_http_attempts=1,
         )
-        evidenced = schema_name in {"item_supply_evidenced_review_output_v1", "item_supply_review_diagnostic_output_v1"}
+        evidenced = schema_name in {"item_supply_evidenced_review_output_v1", EVIDENCED_WIRE_SCHEMA_NAME,
+                                   "item_supply_review_diagnostic_output_v1",
+                                   "native_shared_review_investigation_output_v1"}
         return client.complete_json(
             messages, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
             output_schema=output_schema, schema_name=schema_name,
@@ -314,6 +351,25 @@ class _JsonProviderAdapter:
         if request.binding.profile_hash != self._profile_hash:
             raise AutonomousReviewError("frozen_profile_mismatch")
         schema = output_type.model_json_schema()
+        if output_type is _BlindAnswer and isinstance(self, JsonBlindSolverV2):
+            if type(request) is not BlindSolveInputV2:
+                raise AutonomousReviewError("blind_request_protocol_mismatch")
+            verify_blind_request(request, self.blind_protocol)
+            if self.blind_protocol == SINGLE_CHOICE_BLIND_PROTOCOL:
+                # Sender-only public enum. Receiver/scorer retains the raw string;
+                # never extract, normalize or substitute a model answer here.
+                schema = deepcopy(schema)
+                schema["properties"]["answer"]["enum"] = list(single_choice_option_ids(request.problem))
+                schema["title"] = "BlindSingleChoiceOptionIdV3"
+        if output_type is EvidencedReviewOutputV1:
+            if type(request) is not EvidencedReviewInputV1:
+                raise AutonomousReviewError("evidenced_wire_input_mismatch")
+            # Modify only this future call's wire projection, never the DTO/default
+            # schema, payload bytes, receiver gates or their hash algorithms.
+            schema = deepcopy(schema)
+            schema["$defs"]["EvidencedReviewFindingV1"]["properties"]["safe_code"]["enum"] = sorted(ROLE_CODES[request.role])
+            schema["title"] = "EvidencedReviewOutputV1 " + EVIDENCED_WIRE_SCHEMA_REVISION + " " + request.role.value
+            instruction += _evidenced_reference_instruction(request.role)
         if isinstance(request, (ReviewDiagnosticInputV1, EvidencedReviewInputV1)):
             payload = request.input_payload
         elif type(request) is ReviewInputV2:
@@ -331,10 +387,13 @@ class _JsonProviderAdapter:
         messages = ({"role": "system", "content": system},
                     {"role": "user", "content": canonical_json(payload)})
         schema_name = "item_supply_blind_answer_v2" if output_type is _BlindAnswer else "item_supply_review_vote_v2"
+        if (output_type is _BlindAnswer and isinstance(self, JsonBlindSolverV2)
+                and self.blind_protocol == SINGLE_CHOICE_BLIND_PROTOCOL):
+            schema_name = SINGLE_CHOICE_BLIND_SCHEMA_NAME
         if output_type is ReviewDiagnosticOutputV1:
             schema_name = "item_supply_review_diagnostic_output_v1"
         elif output_type is EvidencedReviewOutputV1:
-            schema_name = "item_supply_evidenced_review_output_v1"
+            schema_name = EVIDENCED_WIRE_SCHEMA_NAME
         # Include both schema paths plus conservative fixed protocol metadata.
         input_bytes = len(canonical_json({"messages": messages, "output_schema": schema,
                                          "schema_name": schema_name}).encode("utf-8")) + 1024
@@ -347,7 +406,7 @@ class _JsonProviderAdapter:
         output_type: type[_BlindAnswer] | type[_ReviewVote] | type[EvidencedReviewOutputV1]
         if isinstance(self, JsonBlindSolverV2) and type(request) is BlindSolveInputV2:
             request = checked_model(request, BlindSolveInputV2)
-            instruction, output_type = _BLIND_INSTRUCTION, _BlindAnswer
+            instruction, output_type = self._blind_instruction(request), _BlindAnswer
         elif isinstance(self, JsonReviewerV2) and isinstance(request, (ReviewInputV2, EvidencedReviewInputV1)) and request.role is self.role:
             request = checked_review_request(request)
             instruction, output_type = self._review_contract(request)
@@ -377,7 +436,8 @@ class _JsonProviderAdapter:
             invoked = 1
             request_diagnostics = LLMResponseDiagnostics(requested_max_output_tokens=self._max_output_tokens,
                 requested_reasoning_effort=("high" if isinstance(self._client, BoundedOpenAIReviewClient)
-                    and schema_name in {"item_supply_evidenced_review_output_v1", "item_supply_review_diagnostic_output_v1"}
+                    and schema_name in {"item_supply_evidenced_review_output_v1", EVIDENCED_WIRE_SCHEMA_NAME,
+                                        "item_supply_review_diagnostic_output_v1"}
                     else None))
             response = self._client.complete_json(
                 messages,
@@ -423,13 +483,37 @@ class _JsonProviderAdapter:
 
 
 class JsonBlindSolverV2(_JsonProviderAdapter):
-    """Use a bounded production client or trusted offline port; no new HTTP stack."""
+    """Bounded sender, with explicit closed submission version; legacy by default."""
+
+    def __init__(self, client: JsonReviewClient, *, identity: ProviderIdentityV2,
+                 profile_hash: str, timeout_seconds: float, max_output_tokens: int,
+                 max_input_bytes: int = 262_144,
+                 blind_protocol: BlindProtocol = LEGACY_BLIND_PROTOCOL) -> None:
+        self._blind_protocol = checked_blind_protocol(blind_protocol)
+        super().__init__(client, identity=identity, profile_hash=profile_hash,
+            timeout_seconds=timeout_seconds, max_output_tokens=max_output_tokens,
+            max_input_bytes=max_input_bytes)
+
+    @property
+    def blind_protocol(self) -> BlindProtocol:
+        return checked_blind_protocol(self._blind_protocol)
+
+    def _blind_instruction(self, request: BlindSolveInputV2) -> str:
+        verify_blind_request(request, self.blind_protocol)
+        return (_BLIND_INSTRUCTION if self.blind_protocol == LEGACY_BLIND_PROTOCOL
+                else SINGLE_CHOICE_BLIND_INSTRUCTION)
+
+    def input_envelope_hash(self, request: BlindSolveInputV2) -> str:
+        """DATA hash of precisely the SYSTEM/user/schema envelope used by solve."""
+        messages, schema, name, _ = self._input_envelope(request,
+            instruction=self._blind_instruction(request), output_type=_BlindAnswer)
+        return canonical_hash({"messages": messages, "output_schema": schema, "schema_name": name})
 
     def solve(self, request: BlindSolveInputV2) -> BlindSolveResultV2:
-        request = checked_model(request, BlindSolveInputV2)
+        request = verify_blind_request(request, self.blind_protocol)
         payload, run, _ = self._complete(
-            request, prompt_version=BLIND_PROMPT_VERSION, output_type=_BlindAnswer,
-            instruction=_BLIND_INSTRUCTION,
+            request, prompt_version=blind_prompt_version(self.blind_protocol), output_type=_BlindAnswer,
+            instruction=self._blind_instruction(request),
         )
         if not isinstance(payload, _BlindAnswer):
             raise AutonomousReviewError("invalid_solver_output")
@@ -533,7 +617,7 @@ def review_resource_plan(
     if len(reviewers) != 6 or {reviewer.role for reviewer in reviewers} != set(REQUIRED_REVIEW_ROLES):
         raise AutonomousReviewError("six_review_roles_required")
     protocol = configured_review_protocol(reviewers)
-    plans = [solver.input_resource_plan(blind_input(source, binding))]
+    plans = [solver.input_resource_plan(blind_input(source, binding, blind_protocol=solver.blind_protocol))]
     for reviewer in reviewers:
         if not isinstance(reviewer, JsonReviewerV2):
             raise AutonomousReviewError("bounded_review_client_required")
@@ -544,7 +628,8 @@ def review_resource_plan(
         input_tokens=sum(plan.input_tokens for plan in plans), output_tokens=sum(plan.output_tokens for plan in plans))
 
 
-def blind_input(source: LearningItemSourceV1, binding: CandidateBindingV2) -> BlindSolveInputV2:
+def blind_input(source: LearningItemSourceV1, binding: CandidateBindingV2, *,
+                blind_protocol: BlindProtocol = LEGACY_BLIND_PROTOCOL) -> BlindSolveInputV2:
     """Allowlist only: do not serialize public hints/preview success or private content."""
     source = checked_model(source, LearningItemSourceV1)
     check_subject(source, binding)
@@ -576,31 +661,59 @@ def blind_input(source: LearningItemSourceV1, binding: CandidateBindingV2) -> Bl
         )
     else:
         raise AutonomousReviewError("blind_profile_unavailable")
-    return BlindSolveInputV2(binding=binding, problem=problem)
+    return BlindSolveInputV2(binding=binding, problem=problem_for_blind_protocol(problem, blind_protocol))
 
 
 def blind_solve_candidate(
     source: LearningItemSourceV1, *, binding: CandidateBindingV2, author_identity: str,
     solver: BlindSolverPortV2, scorer: BlindAnswerScorerPortV2,
+    private_audit: PrivateBlindAudit | None = None,
+    blind_protocol: BlindProtocol = LEGACY_BLIND_PROTOCOL,
 ) -> BlindSolveReceiptV2:
-    request = blind_input(source, binding)
+    blind_protocol = checked_blind_protocol(blind_protocol)
+    if ((isinstance(solver, JsonBlindSolverV2) and solver.blind_protocol != blind_protocol)
+            or (blind_protocol != LEGACY_BLIND_PROTOCOL and not isinstance(solver, JsonBlindSolverV2))):
+        raise AutonomousReviewError("blind_solver_protocol_mismatch")
+    request = blind_input(source, binding, blind_protocol=blind_protocol)
     author = stable_key(author_identity, label="v2 author identity")
     identity = checked_model(solver.provider_identity, ProviderIdentityV2)
     if identity.identity == author:
         raise AutonomousReviewError("author_cannot_blind_solve")
+    if private_audit is not None:
+        private_audit.started(source,binding,request)
+    diagnostic_stage: PrivateBlindFailureStage = "solver_call"
     try:
-        result = checked_model(solver.solve(request), BlindSolveResultV2)
+        original_result = solver.solve(request)
+        diagnostic_stage = "result_binding"
+        result = checked_model(original_result, BlindSolveResultV2)
         if (result.run.provider_identity != identity or result.run.input_hash != request.input_hash
                 or result.run.profile_hash != binding.profile_hash
-                or result.run.prompt_version != BLIND_PROMPT_VERSION
+                or result.run.prompt_version != blind_prompt_version(blind_protocol)
                 or result.run.output_hash != canonical_hash({"answer": result.answer})):
             raise ValueError("stale blind solve")
-        score = checked_model(scorer.score(checked_model(source, LearningItemSourceV1),
-                                          answer=result.answer), BlindScoreV2)
-        return BlindSolveReceiptV2(binding=binding, run=result.run,
-                                   solution_hash=canonical_hash(result.answer), score=score)
+        if private_audit is not None:
+            private_audit.before_scoring(source,binding,request,result)
+        diagnostic_stage = "scoring"
+        if private_audit is not None:
+            from app.services.learning.item_supply.finite_static_blind_scorer import FiniteStaticBlindScorer
+            if type(scorer) is FiniteStaticBlindScorer:
+                original_score = cast(FiniteStaticBlindScorer,scorer).score(
+                    checked_model(source,LearningItemSourceV1),answer=result.answer,private_audit=private_audit)
+            else:
+                original_score = scorer.score(checked_model(source,LearningItemSourceV1),answer=result.answer)
+        else:
+            original_score = scorer.score(checked_model(source,LearningItemSourceV1),answer=result.answer)
+        diagnostic_stage = "score_receipt"
+        score = checked_model(original_score,BlindScoreV2)
+        if private_audit is not None:
+            private_audit.scored(score)
+        diagnostic_stage = "blind_receipt"
+        return BlindSolveReceiptV2(binding=binding,run=result.run,solution_hash=canonical_hash(result.answer),score=score)
     except Exception as exc:
-        raise AutonomousReviewError("blind_solve_failed", observation=_failure_observation(exc, phase="blind_score")) from None
+        observation = _failure_observation(exc,phase="blind_score")
+        if private_audit is not None:
+            private_audit.failed(diagnostic_stage,observation.payload())
+        raise AutonomousReviewError("blind_solve_failed",observation=observation) from None
 
 
 def _review_candidate(
@@ -609,6 +722,7 @@ def _review_candidate(
     blind_solve_receipt: BlindSolveReceiptV2, reviewers: tuple[ReviewerPortV2, ...],
     bundle_version: int = 1,
     policy: EvidencePolicy,
+    blind_protocol: BlindProtocol = LEGACY_BLIND_PROTOCOL,
 ) -> ReviewBundle:
     policy = checked_policy(policy)
     source = checked_model(source, LearningItemSourceV1)
@@ -620,7 +734,8 @@ def _review_candidate(
     blind = checked_model(blind_solve_receipt, BlindSolveReceiptV2)
     author = stable_key(author_identity, label="v2 author identity")
     if (binding.policy_hash != policy.policy_hash or blind.binding != binding
-            or blind.run.input_hash != blind_input(source, binding).input_hash
+            or blind.run.input_hash != blind_input(source, binding, blind_protocol=blind_protocol).input_hash
+            or blind.run.prompt_version != blind_prompt_version(blind_protocol)
             or not completed_blind_allowed(blind, policy)):
 
         raise AutonomousReviewError("blind_solve_not_verified")
@@ -673,10 +788,12 @@ def review_candidate(
     validation_receipt: ValidationReceiptV2, author_identity: str,
     blind_solve_receipt: BlindSolveReceiptV2, reviewers: tuple[ReviewerPortV2, ...],
     bundle_version: int = 1,
+    blind_protocol: BlindProtocol = LEGACY_BLIND_PROTOCOL,
 ) -> ReviewBundleV2:
     return cast(ReviewBundleV2, _review_candidate(source, binding=binding, validation_receipt=validation_receipt,
         author_identity=author_identity, blind_solve_receipt=blind_solve_receipt,
-        reviewers=reviewers, bundle_version=bundle_version, policy=AutonomousEvidencePolicyV2()))
+        reviewers=reviewers, bundle_version=bundle_version, policy=AutonomousEvidencePolicyV2(),
+        blind_protocol=blind_protocol))
 
 
 def review_candidate_for_policy(
@@ -684,7 +801,8 @@ def review_candidate_for_policy(
     validation_receipt: ValidationReceiptV2, author_identity: str,
     blind_solve_receipt: BlindSolveReceiptV2, reviewers: tuple[ReviewerPortV2, ...],
     policy: EvidencePolicy, bundle_version: int = 1,
+    blind_protocol: BlindProtocol = LEGACY_BLIND_PROTOCOL,
 ) -> ReviewBundle:
     return _review_candidate(source, binding=binding, validation_receipt=validation_receipt,
         author_identity=author_identity, blind_solve_receipt=blind_solve_receipt,
-        reviewers=reviewers, policy=policy, bundle_version=bundle_version)
+        reviewers=reviewers, policy=policy, bundle_version=bundle_version, blind_protocol=blind_protocol)

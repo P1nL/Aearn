@@ -41,6 +41,9 @@ from app.services.learning.item_supply.diagnostic_policy import (
 from app.services.learning.item_supply.validation_adapter import CandidateValidationV2
 
 if TYPE_CHECKING:
+    from app.services.learning.item_supply.controlled_counterexample import ControlledCounterexampleOwner
+    from app.services.learning.item_supply.native_revision import NativeRevisionOwner, PreparedNativeRevision
+    from app.services.learning.item_supply.shared_pipeline_contracts import PreparedSharedGeneration
     from app.services.learning.item_supply.shared_continuation import (
         SharedCandidateContinuationBindingV1, SharedCandidateContinuationOwner,
     )
@@ -62,11 +65,12 @@ _TYPES: dict[str, type[BaseModel]] = {
 }
 
 
-def generation_resources(request: GenerationRequestV2, attempts: int) -> ResourceAmounts:
+def generation_resources(request: GenerationRequestV2, attempts: int, *, revision: bool = False) -> ResourceAmounts:
     if type(attempts) is not int or not 1 <= attempts <= 3:
         raise PipelineRepositoryError("PROVIDER_ATTEMPT_BOUND_INVALID")
     return ResourceAmounts(requests=attempts, input_tokens=request.limits.max_input_bytes * attempts,
-                           output_tokens=request.limits.max_output_tokens * attempts, candidates=1)
+                           output_tokens=request.limits.max_output_tokens * attempts, candidates=1,
+                           revision_rounds=1 if revision else 0)
 
 
 class SharedPipelineArtifactRepository:
@@ -221,10 +225,11 @@ class SharedPipelineArtifactRepository:
 
     def reservation(self, lease: JobLeaseV1, request: GenerationRequestV2, *, attempts: int,
                     settled: bool = False) -> UUID:
+        revision = self.revision_preparation(lease, request)
         row = self.budget._reservation_by_key(lease, f"gen.{request.candidate_id.hex}")
         if (row is None or row["lease_generation"] != lease.generation
                 or self.budget._reservation_amounts(lease, UUID(str(row["id"])))
-                != generation_resources(request, attempts).as_dict()):
+                != generation_resources(request, attempts, revision=revision is not None).as_dict()):
             raise PipelineRepositoryError("SHARED_GENERATION_RESERVATION_MISMATCH")
         rid = UUID(str(row["id"]))
         if settled and self.conn.execute(
@@ -235,14 +240,70 @@ class SharedPipelineArtifactRepository:
             raise PipelineRepositoryError("SHARED_GENERATION_UNSETTLED")
         return rid
 
+    def revision_preparation(self, lease: JobLeaseV1, request: GenerationRequestV2) -> dict[str, Any] | None:
+        """DATA routing only; finding a row never mints author capability."""
+        installed = self.conn.execute("SELECT to_regclass('public.tutor_item_supply_shared_revision_preparations') AS table_id").fetchone()
+        if installed is None or installed["table_id"] is None:
+            return None
+        row = self.conn.execute("SELECT * FROM tutor_item_supply_shared_revision_preparations WHERE child_job_id=%s FOR SHARE",
+            (lease.job_id,)).fetchone()
+        if row is not None and (row["candidate_id"] != request.candidate_id
+                or row["payload_json"]["request"] != request.model_dump(mode="json")):
+            raise PipelineRepositoryError("REVISION_CHILD_CONTEXT_REQUIRED")
+        return row
+
+    def controlled_preparation(self, lease: JobLeaseV1, request: GenerationRequestV2) -> dict[str,Any] | None:
+        """DENY-only routing. An immutable row does not restore a producer issuer."""
+        installed = self.conn.execute("SELECT to_regclass('public.tutor_item_supply_shared_controlled_counterexample_preparations') AS t, "
+            "to_regclass('public.tutor_item_supply_shared_controlled_execution_preparations') AS execution_t").fetchone()
+        if installed is None or installed["t"] is None:
+            return None
+        rows = self.conn.execute("SELECT * FROM tutor_item_supply_shared_controlled_counterexample_preparations "
+            "WHERE job_id=%s OR candidate_id=%s FOR SHARE",(lease.job_id,request.candidate_id)).fetchall()
+        if installed["execution_t"] is not None:
+            rows += self.conn.execute("SELECT * FROM tutor_item_supply_shared_controlled_execution_preparations "
+                "WHERE job_id=%s OR candidate_id=%s FOR SHARE",(lease.job_id,request.candidate_id)).fetchall()
+        if not rows:
+            return None
+        if (len(rows)!=1 or rows[0]["job_id"]!=lease.job_id or rows[0]["candidate_id"]!=request.candidate_id
+                or rows[0]["payload_json"]["request"]!=request.model_dump(mode="json")):
+            raise PipelineRepositoryError("CONTROLLED_CANDIDATE_CONTEXT_REQUIRED")
+        return rows[0]
+
     def store_generation(self, *, lease: JobLeaseV1, request: GenerationRequestV2,
                          result: GenerationResultV2, artifact_key: str, now: datetime,
-                         source_authority: RagSourceAuthority) -> dict[str, Any]:
+                         source_authority: RagSourceAuthority,
+                         revision_owner: NativeRevisionOwner | None = None,
+                         revision_preparation: PreparedNativeRevision | None = None,
+                         revision_generation: PreparedSharedGeneration | None = None,
+                         controlled_owner: ControlledCounterexampleOwner | None = None,
+                         controlled_generation: PreparedSharedGeneration | None = None) -> dict[str, Any]:
+        original_result = result
         request = checked_model(request, GenerationRequestV2)
         result = checked_model(result, GenerationResultV2)
         meta = self.request_context(lease, request, now=now)
         self.require_source(source_authority)
         self._key(artifact_key)
+        controlled = self.controlled_preparation(lease,request)
+        if controlled is not None:
+            from app.services.learning.item_supply.controlled_counterexample import ControlledCounterexampleOwner
+            if (type(controlled_owner) is not ControlledCounterexampleOwner or controlled_generation is None
+                    or controlled_owner.conn is not self.conn or controlled_owner.generation.artifacts is not self):
+                raise PipelineRepositoryError("CONTROLLED_ORIGINAL_AUTHOR_CONTEXT_REQUIRED")
+            controlled_owner.writer_binding(controlled_generation,original_result)
+        elif controlled_owner is not None or controlled_generation is not None:
+            raise PipelineRepositoryError("CONTROLLED_FROZEN_PARENT_REQUIRED")
+        revision = self.revision_preparation(lease,request)
+        if revision is not None:
+            from app.services.learning.item_supply.native_revision import NativeRevisionOwner
+
+            if (type(revision_owner) is not NativeRevisionOwner or revision_owner.conn is not self.conn
+                    or revision_preparation is None or revision_generation is None
+                    or revision_owner.generation.artifacts is not self):
+                raise PipelineRepositoryError("REVISION_ORIGINAL_AUTHOR_CONTEXT_REQUIRED")
+            revision_owner.author_binding(revision_preparation,revision_generation,original_result)
+        elif any(v is not None for v in (revision_owner,revision_preparation,revision_generation)):
+            raise PipelineRepositoryError("REVISION_FROZEN_CHILD_REQUIRED")
         if result.state != "staged" or result.source is None or result.receipt is None:
             raise PipelineRepositoryError("PIPELINE_CANDIDATE_NOT_STAGED")
         source, receipt = result.source, result.receipt

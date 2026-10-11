@@ -305,6 +305,24 @@ class SharedAdmissionFactsOwner:
         resolved = self.artifacts.resolve_generation(lease=lease, artifact_id=p.artifact_id, now=now,
             source_authority=authority, spec=p.spec, continuation_owner=rp.continuation_owner)
         a = resolved.artifact
+        controlled_schema = self.conn.execute("SELECT to_regclass('public.tutor_item_supply_shared_controlled_counterexample_preparations') AS p, "
+            "to_regprocedure('item_supply_internal.controlled_counterexample_held(uuid)') AS guard").fetchone()
+        if controlled_schema is not None and controlled_schema["p"] is not None:
+            if controlled_schema["guard"] is None:
+                raise SharedAdmissionFactsPending("SHARED_CONTROLLED_EXPERIMENT_HELD")
+            held = self.conn.execute("SELECT item_supply_internal.controlled_counterexample_held(%s) AS held",
+                (a["job_id"],)).fetchone()
+            if held is None or held["held"] is not False:
+                raise SharedAdmissionFactsPending("SHARED_CONTROLLED_EXPERIMENT_HELD")
+        revision_schema = self.conn.execute("SELECT to_regclass('public.tutor_item_supply_shared_revision_preparations') AS p, "
+            "to_regprocedure('item_supply_internal.native_revision_descendant(uuid)') AS guard").fetchone()
+        if revision_schema is not None and revision_schema["p"] is not None:
+            if revision_schema["guard"] is None:
+                raise SharedAdmissionFactsPending("SHARED_REVISION_DISCHARGE_OWNER_PENDING")
+            descendant = self.conn.execute("SELECT item_supply_internal.native_revision_descendant(%s) AS revision",
+                (a["job_id"],)).fetchone()
+            if descendant is None or descendant["revision"] is not False:
+                raise SharedAdmissionFactsPending("SHARED_REVISION_DISCHARGE_OWNER_PENDING")
         continuation_hash = None if resolved.continuation_binding is None else resolved.continuation_binding.binding_hash
         meta = self.artifacts.context(lease, now=now)
         if (resolved.lease != lease or resolved.source != p.source or resolved.request != p.request

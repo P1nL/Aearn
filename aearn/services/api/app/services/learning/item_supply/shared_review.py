@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -18,6 +18,9 @@ from psycopg.pq import TransactionStatus
 from app.core.config import Settings
 from app.services.learning.item_bank.contracts import LearningItemSourceV1, canonical_hash
 from app.services.learning.item_bank.review_contracts import REQUIRED_REVIEW_ROLES
+from app.services.learning.item_supply.blind_protocol import (
+    BlindProtocol, LEGACY_BLIND_PROTOCOL, blind_prompt_version, checked_blind_protocol,
+)
 from app.services.learning.item_supply.budget import ItemSupplyBudgetRepository
 from app.services.learning.item_supply.finite_candidate_factory import FiniteCandidateSpecV1, check_finite_source_spec
 from app.services.learning.item_supply.finite_candidate_validation import FiniteCandidateValidationInputsV1, prepare_finite_candidate_validation
@@ -27,6 +30,7 @@ from app.services.learning.item_supply.finite_task_ambiguity import (
 )
 from app.services.learning.item_supply.finite_review_descriptor import finite_review_context
 from app.services.learning.item_supply.finite_static_blind_scorer import FiniteStaticBlindScorer
+from app.services.learning.item_supply.private_blind_diagnostics import PrivateBlindAudit, PrivateBlindAuditSink
 from app.services.learning.item_supply.generation_contracts import GenerationReceiptV2, GenerationRequestV2
 from app.services.learning.item_supply.jobs import JobLeaseV1
 from app.services.learning.item_supply.pipeline_repository import PipelineRepositoryError
@@ -38,7 +42,7 @@ from app.services.learning.item_supply.review_contracts_v2 import (
 )
 from app.services.learning.item_supply.review_provider import (
     AutonomousReviewError, BoundedOpenAIReviewClient, JsonBlindSolverV2, JsonReviewerV2,
-    blind_solve_candidate, review_candidate_for_policy, review_resource_plan,
+    blind_input, blind_solve_candidate, review_candidate_for_policy, review_resource_plan,
 )
 from app.services.learning.item_supply.sandbox.blind_scorer import SandboxBlindAnswerScorer
 from app.services.learning.item_supply.sandbox.execution_contracts import RunnerPort
@@ -56,8 +60,15 @@ from app.services.learning.item_supply.review_rubrics import LEGACY_REVIEW_PROTO
 from app.services.learning.item_supply.review_observability import (
     ReviewFailureObservation, ReviewFailurePhase, observe_review_failure,
 )
+from app.services.learning.item_supply.review_deliberation import prepare_review_deliberation
+from app.services.learning.item_supply.review_deliberation_contracts import ReviewDeliberationPlanV1
 
 Scorer = SandboxBlindAnswerScorer | FiniteStaticBlindScorer
+
+if TYPE_CHECKING:
+    from app.services.learning.item_supply.native_review_investigation import (
+        NativeReviewInvestigationOwner, PreparedNativeReviewInvestigation,
+    )
 
 
 @dataclass(frozen=True)
@@ -80,6 +91,10 @@ class PreparedSharedReview:
     ambiguity_plan: FiniteAmbiguityPlanV1
     ambiguity_run_id: UUID
     review_protocol: ReviewProtocol = LEGACY_REVIEW_PROTOCOL
+    blind_protocol: BlindProtocol = LEGACY_BLIND_PROTOCOL
+    blind_input_hash: str | None = None
+    blind_envelope_hash: str | None = None
+    blind_configuration_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,8 +142,11 @@ class SharedReviewStageResult:
 class SharedReviewPipeline:
     def __init__(self, conn: Connection[dict[str, Any]], settings: Settings, *, enabled: bool = False,
                  trusted_model_bindings: Mapping[tuple[str, str], str] | None = None,
-                 continuation_owner: SharedCandidateContinuationOwner | None = None) -> None:
+                 continuation_owner: SharedCandidateContinuationOwner | None = None,
+                 private_blind_audit_sink: PrivateBlindAuditSink | None = None,
+                 blind_protocol: BlindProtocol | None = None) -> None:
         self.conn, self.settings, self.enabled = conn, settings, enabled
+        self._blind_protocol = None if blind_protocol is None else checked_blind_protocol(blind_protocol)
         self._models = dict(trusted_model_bindings or {})
         if continuation_owner is not None and (type(continuation_owner) is not SharedCandidateContinuationOwner
                                                or continuation_owner.conn is not conn):
@@ -142,6 +160,28 @@ class SharedReviewPipeline:
                                          RunnerPort | None, FiniteTaskAmbiguityOwner]] = {}
         self._started: set[UUID] = set()
         self._results: dict[UUID, tuple[SharedReviewResult, str]] = {}
+        self._independent_rounds: dict[UUID, tuple[int, frozenset[UUID]]] = {}
+        self._operation_deadlines: dict[UUID, datetime] = {}
+        self._private_blind_audit_sink = private_blind_audit_sink
+        self._private_blind_audits: dict[UUID,PrivateBlindAudit] = {}
+
+    def private_blind_audit_status(self, p: PreparedSharedReview) -> dict[str,object] | None:
+        """Private acknowledgement/status DATA only; no answer, expected option or authority."""
+        with finite_review_context(p.source,spec=p.spec,materials=p.request.materials):
+            self._issued(p)
+        audit = self._private_blind_audits.get(p.reservation_id)
+        return None if audit is None else audit.status()
+
+    @property
+    def blind_protocol(self) -> BlindProtocol | None:
+        """Optional composition expectation; preparation seals the actual solver."""
+        return None if self._blind_protocol is None else checked_blind_protocol(self._blind_protocol)
+
+    @staticmethod
+    def _blind_configuration_hash(solver: JsonBlindSolverV2) -> str:
+        return canonical_hash({"blind_protocol": solver.blind_protocol,
+            "profile_hash": solver._profile_hash, "timeout_seconds": solver._timeout_seconds,
+            "max_output_tokens": solver._max_output_tokens, "max_input_bytes": solver._max_input_bytes})
 
     @property
     def review_enabled(self) -> bool:
@@ -160,6 +200,11 @@ class SharedReviewPipeline:
             "ambiguity_run_id": str(p.ambiguity_run_id)}
         if p.review_protocol != LEGACY_REVIEW_PROTOCOL:
             payload["review_protocol"] = p.review_protocol
+        if checked_blind_protocol(p.blind_protocol) != LEGACY_BLIND_PROTOCOL:
+            payload["blind_protocol"] = p.blind_protocol
+            payload["blind_input_hash"] = p.blind_input_hash
+            payload["blind_envelope_hash"] = p.blind_envelope_hash
+            payload["blind_configuration_hash"] = p.blind_configuration_hash
         return canonical_hash(payload)
 
     @staticmethod
@@ -180,6 +225,16 @@ class SharedReviewPipeline:
         entry = self._prepared.get(p.reservation_id)
         if entry is None or entry[0] is not p or entry[1] != self._seal(p):
             raise PipelineRepositoryError("SHARED_REVIEW_PREPARED_UNAVAILABLE")
+        if ((self.blind_protocol is not None and p.blind_protocol != self.blind_protocol)
+                or entry[3].blind_protocol != p.blind_protocol
+                or (p.blind_protocol != LEGACY_BLIND_PROTOCOL
+                    and self._blind_configuration_hash(entry[3]) != p.blind_configuration_hash)):
+            raise PipelineRepositoryError("SHARED_BLIND_PROTOCOL_CHANGED")
+        deadline = self._operation_deadlines.get(p.reservation_id)
+        if deadline is not None:
+            if (any(getattr(port._client, "operation_deadline_at", deadline) != deadline for port in (entry[3], *entry[4]))
+                    or (type(entry[5]) is SandboxBlindAnswerScorer and entry[5]._deadline != deadline)):
+                raise PipelineRepositoryError("SHARED_RECHECK_DEADLINE_CHANGED")
         return entry[2], entry[3], entry[4], entry[5]
 
     @staticmethod
@@ -191,17 +246,20 @@ class SharedReviewPipeline:
         self._issued(p)
         runner, owner = self._prepared[p.reservation_id][6:]
         if (type(owner) is not FiniteTaskAmbiguityOwner or owner._runner is not runner
-                or owner._deadline != self._review_deadline(p.lease)):
+                or owner._deadline != self._operation_deadlines.get(p.reservation_id, self._review_deadline(p.lease))):
             raise PipelineRepositoryError("SHARED_AMBIGUITY_OWNER_MISMATCH")
         return runner, owner
 
     def _load(self, *, lease: JobLeaseV1, artifact_id: UUID, validation_receipt_id: UUID,
-              spec: FiniteCandidateSpecV1, authority: RagSourceAuthority) -> tuple[dict[str, Any], LearningItemSourceV1, GenerationRequestV2, CandidateValidationV2]:
+              spec: FiniteCandidateSpecV1, authority: RagSourceAuthority,
+              allowed_stages: tuple[str, ...] = ("reviewing",)) -> tuple[dict[str, Any], LearningItemSourceV1, GenerationRequestV2, CandidateValidationV2]:
+        if allowed_stages not in {("reviewing",), ("reviewing", "investigating")}:
+            raise PipelineRepositoryError("REVIEW_STAGE_MISMATCH")
         self.artifacts.require_source(authority)
         now = server_clock(self.conn, datetime.now(UTC))
         resolved = self.artifacts.resolve_generation(lease=lease, artifact_id=artifact_id, now=now,
             source_authority=authority, spec=spec, continuation_owner=self.continuation_owner)
-        if resolved.lease != lease or self.runtime.next_stage(lease) != "reviewing":
+        if resolved.lease != lease or self.runtime.next_stage(lease) not in allowed_stages:
             raise PipelineRepositoryError("REVIEW_STAGE_MISMATCH")
         artifact, request, source, generation = resolved.artifact, resolved.request, resolved.source, resolved.receipt
         # Original author facts remain immutable. Adoption inherits generation
@@ -257,7 +315,11 @@ class SharedReviewPipeline:
         model = self._models.get((key.provider, key.model_version))
         ports = (solver, *reviewers)
         identities = tuple(checked_model(port.provider_identity, ProviderIdentityV2) for port in ports)
-        if (model is None or any(type(port._client) is not BoundedOpenAIReviewClient
+        # Only this concrete native client may further narrow the original HTTP
+        # timeout. Arbitrary client/port subclasses remain denied.
+        from app.services.learning.item_supply.native_revision_recheck import _RecheckClient
+
+        if (model is None or any(type(port._client) not in {BoundedOpenAIReviewClient, _RecheckClient}
                 or port.frozen_profile != lease.profile or port.request_attempt_bound != 1 for port in ports)
                 or any(i.provider != meta["provider_key"] or i.model != model for i in identities)
                 or len({i.identity for i in identities}) != 7):
@@ -267,10 +329,16 @@ class SharedReviewPipeline:
     def prepare_review(self, *, lease: JobLeaseV1, artifact_id: UUID, validation_receipt_id: UUID,
                        spec: FiniteCandidateSpecV1, source_authority: RagSourceAuthority,
                        solver: JsonBlindSolverV2, reviewers: tuple[JsonReviewerV2, ...],
-                       runner: RunnerPort | None = None) -> PreparedSharedReview | None:
+                       runner: RunnerPort | None = None,
+                       operation_deadline_at: datetime | None = None) -> PreparedSharedReview | None:
         if not self.review_enabled:
             return None
         lease, spec = checked_model(lease, JobLeaseV1), checked_model(spec, FiniteCandidateSpecV1)
+        deadline = self._review_deadline(lease)
+        if operation_deadline_at is not None:
+            if operation_deadline_at.tzinfo is None:
+                raise PipelineRepositoryError("SHARED_RECHECK_DEADLINE_REQUIRED")
+            deadline = min(deadline, operation_deadline_at)
         self.artifacts.require_owner()
         artifact, source, request, validation = self._load(lease=lease, artifact_id=artifact_id,
             validation_receipt_id=validation_receipt_id, spec=spec, authority=source_authority)
@@ -278,6 +346,9 @@ class SharedReviewPipeline:
             source_hash=source.source_hash, content_hash=source.content_hash, policy_hash=self.artifacts.generation_policy(lease, request, now=server_clock(self.conn, datetime.now(UTC))).policy_hash,
             profile_hash=lease.profile.profile_hash, runtime_key=source.blueprint.runtime_profile_id or "static-exact-v1",
             risk_tier=source.blueprint.publication_policy.risk_tier)
+        blind_protocol = solver.blind_protocol
+        if self.blind_protocol is not None and blind_protocol != self.blind_protocol:
+            raise PipelineRepositoryError("SHARED_BLIND_PROTOCOL_MISMATCH")
         identities = self._identities(lease, solver, reviewers)
         generation = GenerationReceiptV2.model_validate_json(json.dumps(artifact["receipt_json"]))
         author = f"{generation.provider.provider}.item_author"
@@ -292,16 +363,22 @@ class SharedReviewPipeline:
             if runner is None:
                 raise PipelineRepositoryError("SHARED_BLIND_RUNNER_REQUIRED")
             scorer = SandboxBlindAnswerScorer(runner, binding=binding, finite_spec=spec,
-                                             parent_deadline_at=self._review_deadline(lease))
+                                             parent_deadline_at=deadline)
+        blind_input_hash, blind_envelope_hash, blind_configuration_hash = None, None, None
         with finite_review_context(source, spec=spec, materials=request.materials):
             check_subject(source, binding, validation)
+            if blind_protocol != LEGACY_BLIND_PROTOCOL:
+                blind_request = blind_input(source, binding, blind_protocol=blind_protocol)
+                blind_input_hash = blind_request.input_hash
+                blind_envelope_hash = solver.input_envelope_hash(blind_request)
+                blind_configuration_hash = self._blind_configuration_hash(solver)
             provider_plan = review_resource_plan(source, binding=binding, validation_receipt=validation,
                                                 solver=solver, reviewers=reviewers)
         inputs = prepare_finite_candidate_validation(source, spec=spec, materials=request.materials)
         ambiguity_plan = build_finite_ambiguity_plan(source, spec=spec, inputs=inputs)
-        ambiguity_owner = FiniteTaskAmbiguityOwner(runner, parent_deadline_at=self._review_deadline(lease))
+        ambiguity_owner = FiniteTaskAmbiguityOwner(runner, parent_deadline_at=deadline)
         resources = _combined_resources(provider_plan, scorer.resource_plan(source), ambiguity_owner.resource_plan(ambiguity_plan))
-        if resources.execution_seconds > (self._review_deadline(lease) - server_clock(self.conn, datetime.now(UTC))).total_seconds():
+        if resources.execution_seconds > (deadline - server_clock(self.conn, datetime.now(UTC))).total_seconds():
             raise PipelineRepositoryError("SHARED_REVIEW_EXECUTION_DEADLINE_INSUFFICIENT")
         reserved = self.budget.reserve(lease=lease, reservation_key=f"review.{artifact_id.hex}",
             amounts=resources, now=server_clock(self.conn, datetime.now(UTC)))
@@ -309,12 +386,38 @@ class SharedReviewPipeline:
             return None
         p = PreparedSharedReview(lease, artifact_id, artifact["artifact_hash"], validation_receipt_id, spec, source,
             request, validation, binding, author, reserved.reservation_id, identities, provider_plan, resources,
-            inputs, ambiguity_plan, uuid4(), configured_review_protocol(reviewers))
+            inputs, ambiguity_plan, uuid4(), configured_review_protocol(reviewers), blind_protocol,
+            blind_input_hash, blind_envelope_hash, blind_configuration_hash)
         self._prepared[p.reservation_id] = (p, self._seal(p), source_authority, solver, reviewers, scorer, runner, ambiguity_owner)
+        if operation_deadline_at is not None:
+            self._operation_deadlines[p.reservation_id] = deadline
+        return p
+
+    def prepare_independent_review(self, *, bundle_version: int, forbidden_run_ids: frozenset[UUID],
+                                   lease: JobLeaseV1, artifact_id: UUID, validation_receipt_id: UUID,
+                                   spec: FiniteCandidateSpecV1, source_authority: RagSourceAuthority,
+                                   solver: JsonBlindSolverV2, reviewers: tuple[JsonReviewerV2, ...],
+                                   runner: RunnerPort | None = None,
+                                   operation_deadline_at: datetime | None = None) -> PreparedSharedReview | None:
+        """Explicit new round; provider inputs remain precisely the NEW subject.
+
+        Version/ancestral IDs are server-side dispatch guards, never opinions
+        appended to blind/reviewer prompts. Historical default seals stay exact.
+        """
+        if type(bundle_version) is not int or bundle_version<2 or type(forbidden_run_ids) is not frozenset:
+            raise PipelineRepositoryError("SHARED_INDEPENDENT_ROUND_BINDING_REQUIRED")
+        p = self.prepare_review(lease=lease,artifact_id=artifact_id,validation_receipt_id=validation_receipt_id,
+            spec=spec,source_authority=source_authority,solver=solver,reviewers=reviewers,runner=runner,
+            operation_deadline_at=operation_deadline_at)
+        if p is not None:
+            self._independent_rounds[p.reservation_id] = (bundle_version,forbidden_run_ids)
         return p
 
     def _fence(self, p: PreparedSharedReview, *, before_io: bool = False) -> None:
         authority, solver, reviewers, scorer = self._issued(p)
+        deadline = self._operation_deadlines.get(p.reservation_id)
+        if deadline is not None and server_clock(self.conn, datetime.now(UTC)) >= deadline:
+            raise PipelineRepositoryError("SHARED_RECHECK_DEADLINE_REACHED")
         if configured_review_protocol(reviewers) != p.review_protocol:
             raise PipelineRepositoryError("SHARED_REVIEW_PROTOCOL_CHANGED")
         _, ambiguity_owner = self._ambiguity_context(p)
@@ -326,6 +429,11 @@ class SharedReviewPipeline:
                 or self._identities(p.lease, solver, reviewers) != p.provider_identities):
             raise PipelineRepositoryError("SHARED_REVIEW_INPUTS_CHANGED")
         with finite_review_context(source, spec=p.spec, materials=request.materials):
+            if p.blind_protocol != LEGACY_BLIND_PROTOCOL:
+                blind_request = blind_input(source, p.binding, blind_protocol=p.blind_protocol)
+                if (blind_request.input_hash != p.blind_input_hash
+                        or solver.input_envelope_hash(blind_request) != p.blind_envelope_hash):
+                    raise PipelineRepositoryError("SHARED_BLIND_ENVELOPE_CHANGED")
             plan = review_resource_plan(source, binding=p.binding, validation_receipt=validation, solver=solver, reviewers=reviewers)
         inputs = prepare_finite_candidate_validation(source, spec=p.spec, materials=request.materials)
         if inputs != p.inputs or build_finite_ambiguity_plan(source, spec=p.spec, inputs=inputs) != p.ambiguity_plan:
@@ -367,19 +475,43 @@ class SharedReviewPipeline:
                 raise PipelineRepositoryError("PROVIDER_IO_REQUIRES_IDLE_TRANSACTION")
             with finite_review_context(p.source, spec=p.spec, materials=p.request.materials):
                 phase = "blind_score"
+                audit = None
+                if self._private_blind_audit_sink is not None:
+                    audit = PrivateBlindAudit(self._private_blind_audit_sink,operation=dict(
+                        review_reservation_id=str(p.reservation_id),generation_artifact_id=str(p.artifact_id),
+                        artifact_hash=p.artifact_hash,job_id=str(p.lease.job_id),lease_generation=p.lease.generation,
+                        prepared_hash=self._seal(p)))
+                    self._private_blind_audits[p.reservation_id] = audit
                 blind = blind_solve_candidate(p.source, binding=p.binding, author_identity=p.author_identity,
-                                              solver=solver, scorer=scorer)
+                                              solver=solver, scorer=scorer,private_audit=audit,blind_protocol=p.blind_protocol)
                 if not scorer.verify(blind.score, p.source):
                     raise PipelineRepositoryError("SHARED_BLIND_RESULT_UNVERIFIED")
                 policy = policy_for_hash(p.binding.policy_hash)
                 if completed_blind_allowed(blind, policy):
                     phase = "review_bundle"
-                    bundle = review_candidate_for_policy(p.source, binding=p.binding, validation_receipt=p.validation,
-                        author_identity=p.author_identity, blind_solve_receipt=blind, reviewers=reviewers, policy=policy)
+                    independent = self._independent_rounds.get(p.reservation_id)
+                    if independent is None:
+                        bundle = review_candidate_for_policy(p.source, binding=p.binding, validation_receipt=p.validation,
+                            author_identity=p.author_identity, blind_solve_receipt=blind, reviewers=reviewers, policy=policy,
+                            blind_protocol=p.blind_protocol)
+                    else:
+                        bundle = review_candidate_for_policy(p.source,binding=p.binding,validation_receipt=p.validation,
+                            author_identity=p.author_identity,blind_solve_receipt=blind,reviewers=reviewers,policy=policy,
+                            bundle_version=independent[0],blind_protocol=p.blind_protocol)
+                        if independent[1] & {blind.run.run_id,*(r.run.run_id for r in bundle.reports)}:
+                            partial_reports = tuple(bundle.reports)
+                            bundle = None
+                            raise PipelineRepositoryError("SHARED_ANCESTRAL_REVIEW_RUN_REUSED")
                     reason = "peer_review_staged"
                 else:
                     reason = "blind_solution_rejected"
+            if p.reservation_id in self._operation_deadlines:
+                with self.conn.transaction():
+                    self._fence(p)
         except Exception as exc:
+            if p.reservation_id in self._operation_deadlines and bundle is not None:
+                partial_reports = tuple(bundle.reports)
+                bundle = None  # Retain reports as data, never a usable failed recheck bundle.
             if isinstance(exc, AutonomousReviewError):
                 partial_reports = exc.partial_reports
                 observation = exc.observation
@@ -405,6 +537,72 @@ class SharedReviewPipeline:
         self.budget.settle(lease=p.lease, reservation_id=p.reservation_id,
             settlement_key=f"review.{p.artifact_id.hex}", usage_state="unknown", actual=None,
             cost_amount=None, receipt_hash=None)
+
+    def prepare_investigation(self, p: PreparedSharedReview, result: SharedReviewResult, *,
+                             owner: NativeReviewInvestigationOwner, lease: JobLeaseV1,
+                             review_receipt_id: UUID) -> PreparedNativeReviewInvestigation | None:
+        """Explicit default-off original-owner seam, never called by run_review.
+
+        Requires already committed full review DATA. The concrete owner either
+        separately reserves one new investigation or stays pending; no invented
+        reviewing checkpoint, no revival of final/quarantined history.
+        """
+        from app.services.learning.item_supply.native_review_investigation import NativeReviewInvestigationOwner
+
+        if type(owner) is not NativeReviewInvestigationOwner or owner.review is not self or owner.conn is not self.conn:
+            raise PipelineRepositoryError("NATIVE_INVESTIGATION_ORIGINAL_SHARED_OWNER_REQUIRED")
+        return owner.prepare(original=p, result=result, lease=lease, review_receipt_id=review_receipt_id)
+
+    def _verify_blind_binding(self, p: PreparedSharedReview, blind: BlindSolveReceiptV2) -> None:
+        """Original expected protocol, not a receipt-selected authority upgrade."""
+        with finite_review_context(p.source, spec=p.spec, materials=p.request.materials):
+            request = blind_input(p.source, p.binding, blind_protocol=p.blind_protocol)
+            if (blind.binding != p.binding or blind.run.profile_hash != p.binding.profile_hash
+                    or blind.run.input_hash != request.input_hash
+                    or blind.run.prompt_version != blind_prompt_version(p.blind_protocol)):
+                raise PipelineRepositoryError("SHARED_BLIND_PROTOCOL_UNVERIFIED")
+
+    def prepare_review_followup(self, p: PreparedSharedReview, result: SharedReviewResult) -> ReviewDeliberationPlanV1:
+        """Explicit verified PRIVATE pending route with original-owner DB reads/fences.
+
+        No provider/runner IO, reservation or checkpoint is performed here.
+
+        No native investigation/revision/lineage owner is installed. The old
+        seven/eight-call reservation is never reused to dispatch another round.
+        Current cap-zero campaigns stay cap zero. A future server owner must
+        separately freeze/prepare every operation against the SAME original root
+        and history; this data projection cannot resume quarantined candidates.
+        """
+        self.artifacts.require_owner()
+        self._issued(p)
+        scorer = self._result(p, result)
+        self._fence(p)
+        self._require_settlement(p)
+        if result.bundle is None or result.blind is None:
+            raise PipelineRepositoryError("SHARED_REVIEW_FULL_BUNDLE_REQUIRED")
+        bundle = checked_bundle(result.bundle)
+        self._verify_blind_binding(p, result.blind)
+        if (bundle.binding != p.binding or bundle.blind_solve != result.blind
+                or bundle.author_identity != p.author_identity
+                or tuple(r.run.provider_identity for r in bundle.reports) != p.provider_identities[1:]
+                or result.blind.run.provider_identity != p.provider_identities[0]
+                or not scorer.verify(result.blind.score, p.source)):
+            raise PipelineRepositoryError("SHARED_REVIEW_FOLLOWUP_UNVERIFIED")
+        now = server_clock(self.conn, datetime.now(UTC))
+        meta = self.budget._job_meta(p.lease, now=now)
+        limits, user_limits = self.budget._active_limits(meta, p.lease, now)
+        if limits is None or user_limits is None:
+            raise PipelineRepositoryError("SHARED_REVIEW_FOLLOWUP_BUDGET_UNAVAILABLE")
+        # Passive upper bounds, NOT remaining allowance. The original P3 reserve
+        # must still enforce root/window, cumulative usage and retained UNKNOWN.
+        ceiling = ResourceAmounts(**{kind: min(int(row["cap_amount"]) for row in limits + user_limits
+            if row["resource_kind"] == kind) for kind in ResourceAmounts().as_dict()})
+        with finite_review_context(p.source, spec=p.spec, materials=p.request.materials):
+            if any(report_protocol(report) != p.review_protocol for report in bundle.reports):
+                raise PipelineRepositoryError("SHARED_REVIEW_PROTOCOL_CHANGED")
+            return prepare_review_deliberation(source=p.source, validation=p.validation, bundle=bundle,
+                lease=p.lease, budget_root_id=UUID(str(meta["root_id"])), resource_ceiling=ceiling,
+                blind_protocol=p.blind_protocol)
 
     def _verified_ambiguity(self, p: PreparedSharedReview, result: SharedReviewResult, *,
                             runner: RunnerPort | None) -> tuple[ResourceAmounts, tuple[RunnerTerminalProofV1, ...]]:
@@ -438,6 +636,7 @@ class SharedReviewPipeline:
         if result.blind is None or result.bundle is None or result.ambiguity is None:
             raise PipelineRepositoryError("SHARED_REVIEW_FULL_EVIDENCE_REQUIRED")
         blind = checked_model(result.blind, BlindSolveReceiptV2)
+        self._verify_blind_binding(p, blind)
         bundle = checked_bundle(result.bundle)
         with finite_review_context(p.source, spec=p.spec, materials=p.request.materials):
             for report in bundle.reports:
@@ -486,6 +685,7 @@ class SharedReviewPipeline:
         blind_id, bundle_id = None, None
         if result.blind is not None:
             blind = checked_model(result.blind, BlindSolveReceiptV2)
+            self._verify_blind_binding(p, blind)
             if (blind.binding != p.binding or blind.run.provider_identity != p.provider_identities[0]
                     or not scorer.verify(blind.score, p.source)):
                 raise PipelineRepositoryError("SHARED_BLIND_RESULT_UNVERIFIED")

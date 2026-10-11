@@ -852,6 +852,128 @@ class ItemSupplyRuntimeRepository:
             now=now,
         )
 
+    def recover_controlled_unspent_setup(self, *, prior_job_id: UUID, root_id: UUID,
+            candidate_id: UUID, item_key: str, profile: ExecutionParameterProfileV1,
+            window_id: UUID, global_limit_ids: tuple[UUID, ...], prior_intent_hash: str,
+            now: datetime, enabled: bool = False) -> tuple[UUID, JobLeaseV1, dict[str, Any]]:
+        """ONE default-off B1d pre-author recovery; JSON locators mint no seals.
+
+        Caller transaction includes every check, original cancel, new enqueue and
+        exact claim. Existing spend/UNKNOWN or a second recovery is never revived.
+        """
+        import re
+        from psycopg.pq import TransactionStatus
+        from app.core.config import DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
+        from app.services.learning.item_supply.budget import ItemSupplyBudgetRepository
+
+        if (enabled is not True or type(self) is not ItemSupplyRuntimeRepository
+                or self.conn.info.transaction_status != TransactionStatus.INTRANS
+                or prior_job_id != UUID("366339e4-bd5b-493c-afe0-65654799fea2")
+                or root_id != UUID("7d4b85ba-a0ec-4348-ac11-3401c6bded47")
+                or candidate_id != UUID("b3c3a38a-e6d4-49e9-97b0-dec8705f3035")
+                or item_key != "native.multi.round.kc."+candidate_id.hex
+                or re.fullmatch(r"[0-9a-f]{64}",prior_intent_hash) is None):
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_SCOPE_DENIED")
+        self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('native-v3-canonical-period',0))")
+        now = server_clock(self.conn,now)
+        if self.conn.execute("SELECT current_database() AS n").fetchone()["n"] != "aearn_b1d_sandbox_20261001":
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_DATABASE_DENIED")
+        guard = self.conn.execute("SELECT pg_get_functiondef(to_regprocedure("
+            "'item_supply_internal.enforce_controlled_counterexample_insert()')) AS body").fetchone()
+        if (guard is None or guard["body"] is None or "OR control_row.root_id IS DISTINCT FROM NEW.root_id" in guard["body"]
+                or "shared_jobs sj WHERE sj.id=NEW.job_id AND sj.root_id=NEW.root_id" not in guard["body"]):
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_512_REQUIRED")
+        row = self.conn.execute("SELECT c.*,j.root_id AS original_root_id,j.job_key,j.parent_job_id "
+            "FROM tutor_item_supply_shared_job_controls c JOIN tutor_item_supply_shared_jobs j ON j.id=c.job_id "
+            "WHERE j.id=%s FOR UPDATE OF c,j",(prior_job_id,)).fetchone()
+        if (row is None or row["original_root_id"]!=root_id or row["parent_job_id"] is not None
+                or row["job_key"]!=_key(root_id,"native.multi.round.author."+candidate_id.hex)
+                or row["state"]!="leased" or row["lease_owner"]!="native.multi.round."+candidate_id.hex
+                or row["lease_generation"]!=1 or row["breaker_open"]):
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_ORIGINAL_JOB_DENIED")
+        prior_lease = self._lease(row,"public")  # Fresh original DB owner view, NOT JSON hydration.
+        self._control(prior_lease,now=now)
+        if self.next_stage(prior_lease)!="generating":
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_STAGE_DENIED")
+        stage_key = "native.controlled.pre.author.setup.recovery.v1"
+        if self.conn.execute("SELECT id FROM tutor_item_supply_shared_jobs WHERE root_id=%s AND job_key=%s",
+                (root_id,_key(root_id,stage_key))).fetchone() is not None:
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_ALREADY_ISSUED")
+        checks = {
+            "reservations":("SELECT count(*) AS n FROM tutor_item_supply_shared_reservations WHERE job_id=%s",(prior_job_id,)),
+            "artifacts":("SELECT count(*) AS n FROM tutor_item_supply_shared_generation_artifacts WHERE job_id=%s OR candidate_id=%s",(prior_job_id,candidate_id)),
+            "markers":("SELECT count(*) AS n FROM tutor_item_supply_shared_controlled_counterexample_preparations WHERE job_id=%s OR candidate_id=%s",(prior_job_id,candidate_id)),
+            "inputs":("SELECT count(*) AS n FROM tutor_item_supply_shared_controlled_counterexample_receipts WHERE job_id=%s OR candidate_id=%s",(prior_job_id,candidate_id)),
+            "policy_bindings":("SELECT count(*) AS n FROM tutor_item_supply_shared_generation_policy_bindings WHERE job_id=%s OR candidate_id=%s",(prior_job_id,candidate_id)),
+            "pipeline_receipts":("SELECT count(*) AS n FROM tutor_item_supply_shared_pipeline_receipts WHERE job_id=%s",(prior_job_id,)),
+            "settlements":("SELECT count(*) AS n FROM tutor_item_supply_shared_runtime_settlements s JOIN tutor_item_supply_shared_reservations r ON r.id=s.reservation_id WHERE r.job_id=%s",(prior_job_id,)),
+            "checkpoints":("SELECT count(*) AS n FROM tutor_item_supply_shared_checkpoints WHERE job_id=%s",(prior_job_id,)),
+        }
+        counts = {name:self.conn.execute(sql,params).fetchone()["n"] for name,(sql,params) in checks.items()}
+        if any(n!=0 for n in counts.values()):
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_SPEND_OR_EVIDENCE_DENIED")
+        old_profile_row = self.conn.execute("SELECT profile_json FROM tutor_item_supply_parameter_profiles WHERE id=%s FOR SHARE",
+            (row["profile_id"],)).fetchone()
+        if old_profile_row is None:
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_PROFILE_DENIED")
+        old_profile = ExecutionParameterProfileV1.model_validate_json(json.dumps(old_profile_row["profile_json"]))
+        profile = checked_model(profile,ExecutionParameterProfileV1)
+        if (old_profile.profile_hash!=prior_lease.profile.profile_hash or profile.profile_key!=old_profile.profile_key
+                or profile.state!=old_profile.state or profile.version<=old_profile.version
+                or any(getattr(profile,k)!=getattr(old_profile,k) for k in
+                    ("initial","current","last_stable","floor","ceiling","trusted_initial_evidence"))
+                or profile.profile_key.provider!="deepseek" or profile.profile_key.model_version!="deepseek-flash"
+                or self.conn.execute("SELECT id FROM tutor_item_supply_parameter_profiles WHERE profile_key_hash=%s AND profile_version=%s",
+                    (profile.profile_key.key_hash,profile.version)).fetchone() is not None):
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_PROFILE_DENIED")
+        original_deadline = min(prior_lease.expires_at,prior_lease.parent_deadline,prior_lease.profile.parent_deadline_at,
+            prior_lease.profile.bound_at+timedelta(milliseconds=prior_lease.profile.values.stage_deadline_ms))
+        if (profile.current.parent_deadline_ms!=3600000 or profile.current.stage_deadline_ms!=3600000):
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_TIME_DENIED")
+        # New, still-unfunded job gets its own original 3600s profile. No field
+        # of the cancelled old job/profile or the existing window is extended.
+        deadline = now+timedelta(seconds=3600)
+        caps = dict(requests=17,input_tokens=4194304,output_tokens=17*DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,
+            execution_seconds=1,fetches=1,candidates=2,revision_rounds=1,investigation_rounds=1)
+        dimensions = {("system","item-supply"),("window","item-supply"),("pool","base"),("provider","deepseek")}
+        limits = self.conn.execute("SELECT * FROM tutor_item_supply_runtime_global_limits WHERE window_start<=%s AND window_end>%s "
+            "AND ((dimension_kind='system' AND dimension_key='item-supply') OR (dimension_kind='window' AND dimension_key='item-supply') "
+            "OR (dimension_kind='pool' AND dimension_key='base') OR (dimension_kind='provider' AND dimension_key='deepseek')) FOR UPDATE",
+            (now,now)).fetchall()
+        budget = ItemSupplyBudgetRepository(self.conn)
+        windows = self.conn.execute("SELECT * FROM tutor_item_supply_shared_budget_windows WHERE window_start<=%s AND window_end>%s FOR UPDATE",
+            (now,now)).fetchall()
+        if (len(limits)!=32 or len(global_limit_ids)!=32 or {r["id"] for r in limits}!=set(global_limit_ids)
+                or {(r["dimension_kind"],r["dimension_key"],r["resource_kind"]) for r in limits}
+                    != {(d,k,t) for d,k in dimensions for t in caps}
+                or any(r["cap_amount"]!=caps[r["resource_kind"]] or budget._global_used(r["id"],r["resource_kind"])!=0
+                    or r["window_end"]<deadline for r in limits)
+                or len(windows)!=1 or windows[0]["id"]!=window_id or windows[0]["root_id"]!=root_id
+                or windows[0]["pool_key"]!="base" or windows[0]["provider_key"]!="deepseek"
+                or windows[0]["request_cap"]!=17 or windows[0]["token_cap"]!=caps["input_tokens"]+caps["output_tokens"]
+                or windows[0]["resource_cap"]!=1 or windows[0]["window_end"]<deadline
+                or any(budget._root_used("shared",root_id,window_id).values())):
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_UNUSED_WINDOW_DENIED")
+        self.cancel(prior_lease,now=now)  # Original transition and immutable cancellation event.
+        new_job = self.enqueue(root_id=root_id,stage_key=stage_key,profile=profile,now=now,
+            priority=row["priority"],aging_seconds=row["aging_seconds"],visibility="public",
+            retry_policy=prior_lease.retry_policy)
+        lease = self.claim(root_id=root_id,lease_owner="native.controlled.setup.recovery."+candidate_id.hex,
+            now=now,lease_seconds=3600,visibility="public")
+        if lease is None or lease.job_id!=new_job:
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_EXACT_CLAIM_ROLLBACK_REQUIRED")
+        if lease.parent_deadline>windows[0]["window_end"] or any(lease.parent_deadline>r["window_end"] for r in limits):
+            raise SupplyRuntimeError("CONTROLLED_SETUP_RECOVERY_TIME_DENIED")
+        self.conn.execute("INSERT INTO tutor_item_supply_shared_job_events "
+            "(job_id,event_key,event_kind,lease_generation,state_version,safe_reason) VALUES(%s,%s,%s,%s,%s,%s)",
+            (new_job,_key(prior_intent_hash,prior_job_id,"controlled.setup.recovery.v1"),"setup_recovery_claimed",
+                lease.generation,lease.state_version,"controlled_unspent_setup_recovery"))
+        return new_job,lease,dict(schema_version="controlled_unspent_setup_recovery_db_v1",prior_job_id=str(prior_job_id),
+            new_job_id=str(new_job),candidate_id=str(candidate_id),root_id=str(root_id),prior_intent_hash=prior_intent_hash,
+            verified_original_counts=counts,original_deadline=original_deadline.isoformat(),new_parent_deadline=lease.parent_deadline.isoformat(),
+            old_deadline_modified=False,new_unfunded_profile_parent_ms=3600000,
+            account_billing_zero_asserted=False,json_capability_restored=False,new_budget_window_created=False)
+
     def cancel(self, lease: JobLeaseV1, *, now: datetime) -> None:
         self._control(lease, now=now)
         if lease.visibility == "public":

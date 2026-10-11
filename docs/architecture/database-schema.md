@@ -893,6 +893,8 @@ corpus 的实际 policy/summary；既有 immutable guard 和唯一 active CAS �
 
 ## 2026-10-03：原生 SQLite companion 来源与 shared 生成暂存（488–489）
 
+> 后续2026-10-09新增508 shared调查侧表的登记状态见本文末尾；不改变488–489历史片段或已安装状态。
+
 488 在既有来源证据中增加封闭 SQLite predicate/order profile：primary SELECT
 加两个必需的 expr/corefunc typed companions，分别固定 capture、外部 provenance、
 policy/root、完整断言和期限。新子类型参与签名；旧 prepared 不新增默认字段，不续旧
@@ -1045,3 +1047,114 @@ native发布/物化通过，Python首条真实review因material_review_failure�
 main在`.runtime/e-fast-continuation-20261007/schema507-record-diagnosis-c6da9b73d14f4d8da6885f04459427b0/result.json`记录真实隔离PG对照：generic record失败42846，仅generation表`%ROWTYPE`对照通过，全部未提交、0provider。该诊断本身不等于修复安装；后续append-only507已完成checker离线4 tests/Ruff及main审阅：仅3处声明变为`%ROWTYPE`，其余BEGIN之后body逐字不变，未修改旧505/历史事实。
 
 接受507 SHA256=`5cc76ad7f096eb5944a46d269b478ef3b4ca3f29d78e218feac930bd837e71a8`。真实PG同片重放、完整manifest截至507重放、292表行不变及rehearsal回滚恢复原函数/行均通过，随后正式隔离安装`ddl_committed=true`；证据`.runtime/e-fast-continuation-20261007/schema507-acceptance-6c7a29a58d1a4e658638488514a034b8/result.json`。DDL验收provider=0、新author=0。原491一次续跑已结束：复用同一题目、0新增author，continued-validation-staged.json确认machine_verified及校验回执已提交。随后盲解请求URLError，review.json为blind_solve_pending且blind/bundle均null；六角色未调用，facts/publication未产生。一次无鉴权、无推理HEAD也出现SSLEOFError，当前阻塞为provider TLS/network，不是已完成答错；不能按V3诊断策略放行。已停止新增付费调用，不重审刷通过、不改UNKNOWN或旧lease。原author known12841/2137、total14978 tokens和金额null保留，规划累计仍77；盲解请求尝试1次、六角色0次，服务端usage unknown及7请求原review预留保留；传输诊断`.runtime/e-fast-continuation-20261007/provider-head-diagnostic-20261007.json`。
+
+### 508：原完整审核后的shared争议调查（2026-10-09仅登记，未安装）
+
+追加 `508_learning_item_shared_review_investigation.sql`，登记于现有单一 schema manifest；本轮用户要求不再测试，因此没有执行DDL、bootstrap、数据库读写或安装，不能沿用507的历史通过证据宣称508成立。
+
+| 新表 | 归属与绑定 |
+| --- | --- |
+| `tutor_item_supply_shared_review_investigation_preparations` | shared-confidential准备：原root/job/current lease、generation artifact、已提交完整review receipt、独立调查reservation、版本化输入/资源/来源期限，generated snapshot hash；review receipt及reservation唯一 |
+| `tutor_item_supply_shared_review_investigation_receipts` | shared-confidential结果：复合FK绑定原preparation/root/job/review/reservation、独立UNKNOWN settlement、完整字段级分析或安全pending失败，generated snapshot hash；每preparation一条不可变结果 |
+
+两表均为publication_enabled=false，payload有大小/schema限制，lease/root/source/profile/完整原审核/独立资源预留/已提交结算由新增insert guard及原concrete owner核验；UPDATE/DELETE使用共享不可变门禁。仅追加508，不替换440–507函数或旧行。不包含learner-private材料/owner/epoch，分类纳入P7_SHARED_PIPELINE_TABLES/SHARED_TABLES，不进入用户export/reset或新增purge hooks。
+
+原shared commit_review只提交blind/bundle，不完成reviewing checkpoint；受控调查允许已提交完整首轮后的合法reviewing内部动作或合法investigating，不伪造checkpoint。现行续行用shared_stage_original_matches及原continuation binding对应旧artifact与当前review job，不强制二者job相同。已有终局admission/evaluation/publication时拒新增调查；调查supported/contested仅是模型分析，不能解除旧quarantine、覆盖原报告、形成新bundle资格或发布事实。
+
+代码为默认关闭的单次调查prepare/run/settle/persist，未接公开API/worker/operator自动调用。旧profile1、调查cap0、UNKNOWN与预算窗不升级；shared修订lineage/blocker discharge/独立复审及完整P7/P8-P10/E仍待实现/真实验收。
+
+### 509：同root修订准备与父子候选lineage（仅登记，未安装）
+
+追加 `509_learning_item_shared_revision_lineage.sql` 并登记单一schema manifest；本轮不执行DDL/数据库验证或安装。不得以507历史通过或508静态检查代替509的数据链证据。
+
+| 新表 | 归属与绑定 |
+| --- | --- |
+| `tutor_item_supply_shared_revision_preparations` | shared-confidential准备：原root/parent job/child job/parent artifact、已提交508 investigation receipt、新candidate、版本化request/context、祖先deadline；child job、investigation receipt、candidate各唯一，generated snapshot hash；mode=live_revision_pending |
+| `tutor_item_supply_shared_revision_lineage` | shared-confidential父子DATA：复合FK绑定preparation/root/child job/parent artifact，新child artifact、实际作者reservation/settlement/input trace；每preparation和child artifact唯一，generated snapshot hash；mode=verified_parent_child_data_only |
+
+两表均publication_enabled=false、不可变且payload受界；不包含learner-private owner/epoch，不进用户export/reset。509追加原root/lease/source/调查/child祖先关系、实际author request/context/resource/settlement、新artifact实质差异与typed closure约束，不修改440–508文件或历史行。
+
+标记为revision的child不能通过普通生成忽略冻结context；修订资源在原作者预留/重验/结算中明确计入revision_rounds=1，UNKNOWN/null费用不按零释放。基础GenerationRequestV2/ProviderReceiptV2及base-v2 author协议保留，新增supplemental-context版本与实际envelope绑定，不在原strict JSON内塞metadata。
+
+lineage只能证明父子生成关系，不能消除旧blocker或授准入。尚无历史discharge/完整新独立复审时，revision后代在原facts及SQL准入/发布入口保持failclosed，旧nonrevision不受影响。508/509均未安装/真实调用，旧profile1/cap0/预算窗保持，完整多轮与题包/P8-P10/E未完成。
+
+### 510：修订候选独立复审与逐条款证据（2026-10-10仅登记，未安装）
+
+追加 `510_learning_item_shared_revision_recheck.sql` 并登记同一manifest。用户停止测试指令持续有效；本轮无DDL/bootstrap/PG读写或安装，静态源码审阅不是数据库约束已运行通过。
+
+| 新表 | 归属与绑定 |
+| --- | --- |
+| `tutor_item_supply_shared_revision_recheck_preparations` | shared-confidential：原509 lineage、同root/child job/candidate/artifact/source/content/profile/policy、当前lease/deadline与完整旧dispute集合；不可变准备DATA，不是可从JSON恢复的运行权限 |
+| `tutor_item_supply_shared_revision_recheck_receipts` | shared-confidential：复合准备/lineage/root/child绑定，原owner签发并提交的新validation、独立blind/六审及usage证据，逐旧dispute的新证据链接与明确unsupported/pending状态；不可变、generated snapshot hash |
+
+新表通过 `P7_SHARED_PIPELINE_TABLES` 分类传入原shared cutover库存，不加入learner-private export/reset/delete。payload受界、schema/closure/hash/原receipt关系/current lease与来源时限必须在侧表入口校验；旧440–509文件及不可变历史不修改。
+
+新记录只说明新独立证据与旧问题的可追溯关系，publication_enabled/blockers_discharged/admission_eligible均false。509准入/发布hold原样保留；最新六审一致通过不替代具体条款级消除适配器、目标覆盖、风险验证、第二独立bundle与原final facts/publisher。508–510未安装，完整多轮与题包/P8–P10/E仍未验收。
+
+### 2026-10-10后续实际安装：508–510（仅原B1d本地库）
+
+用户批准真实链路优先、少量关键反例及独立静态审阅，并要求按原隔离顺序执行。首次原子回滚演练在510的`IS DISTINCT FROM CASE ... END`处失败SQLSTATE42601，未提交；保留`.runtime/native-multi-round-live-20261010/schema-05bafe7bf7ed/result.json`。仅补齐标量`(CASE ... END)`括号后，main在`aearn_b1d_sandbox_20261001`完成同3片真实编译、重复执行及回滚恢复，然后原子正式安装，`ddl_committed=true`。证据`.runtime/native-multi-round-live-20261010/schema-b0ef4123985d/result.json`及before/after行/函数摘要；既有292表行及原函数完全保留，新增6空表后298表，无provider/GET或其他业务库变更。
+
+已安装hash：508=`388254dca02ede33b7a0bc616f47f06c3321802795d8d78a1ca9ef4bf6c8f700`；509=`20249cf0d783472f8adabcca12916a3188565135d022a189865312313016e4b7`；510=`0ba8206fcb0493801a4099f60ee07848eeaf3a2dc698cad7c8fe0a93c014451c`。这三个片段从此作为已部署历史，后续SQL窄修追加编号，不原地改写。此次没有重跑完整manifest/旧自动测试矩阵，也没有填充新调查/lineage/recheck回执；安装不是数据链或全面blocker discharge的验收。509准入/发布hold保持，真实新候选及后续范围另记。
+
+**随后真实首轮数据状态：** 新KC candidate06cd2062-1a79-4366-b01e-6a67026bcf29、artifact6dc5b7d5-f18e-4329-b9f2-18e36ef44874由原owner生成并提交；validation/blind/review各1typed回执，blind passed、六角色high/61440批准，main回读reviewf0d1f533-bfdc-4f9e-8c10-5eed6b1c8092的完整payload与实际私有证据一致。0实质争议，因此508–510分支的6表仍为0行，不把未走分支写成通过。真实旧expired lease在原refresh_lease受控rollback中被LEASE_STALE拒绝且control行hash保持，0provider。证据`.runtime/native-multi-round-live-20261010/kc-real-20261010-1/main-readback-summary.json`；没有新增admission facts/准入/发布或learner状态，完整多轮/E仍未完成。
+
+**同日执行型续行数据：** SQLite新artifact39a15646-f311-4d58-95cb-5da9ec408332/version797c0917-e72b-5e58-9fc4-61b1c29697b7与Python新artifactbdefd5a4-0f20-4c20-b1a7-cf56e04472b9/versionb4b2eec1-57ba-59f4-a519-d0a4df29e2fb分别提交validation/blind各1typed回执，machine_verified/blindpassed；technical原审核gate拒绝使两份完整review receipt均0。二者没有508/509/510准备或回执，6分支表仍空；每新版本admission_facts/evaluations/publication_events均0。既有4canonical roots不变，旧KC/预算窗/UNKNOWN等14组原行仍全部存在且一致。仅原owner追加正常新campaign limits及各既有根window，无新DDL/安装片修改/旧时间改写。证据为task research/live-executable-progress-20261010.md及`.runtime/native-multi-round-live-20261010/{sqlite,python}-real-20261010-1/main-readback-summary.json`。不能以执行验证/盲解通过宣称完整六审、多轮或公开发布验收。
+
+### 511–512：受控反例审计与持久拒绝门禁（2026-10-10原B1d实际安装）
+
+用户明确允许一组受控反例验证分支。511追加两张shared-confidential不可变表：`tutor_item_supply_shared_controlled_counterexample_preparations`（作者预留前的实验context/request/source/profile/lease标记）及`..._receipts`（原作者实际输入trace/源结果/已提交结算绑定），不含learner owner/epoch，不进入learner export/reset。标记仅DENY/DATA，不授来源、模型、回执或发布能力；原parent及ancestry后代的facts/evaluation/nativeproof/publication受持久hold。
+
+511选片真实rollback/replay/install通过，原298public表行/227public函数/触发器保持，新增2空表共300；hash `a4c029819c574caf5ed850dd18542d8237af2e598d2a41028d9450530729f48c`。首个实际marker插入仍在作者调用前触发UndefinedColumn：guard的`control_row%ROWTYPE`是shared_job_controls，却读取不存在的root_id。它属于shared_jobs，说明DDL编译不能代替lazy PLpgSQL数据路径。511部署后不原改，512仅替换`item_supply_internal.enforce_controlled_counterexample_insert()`这一错误root绑定，保留其他lease/profile/source/trace/hold谓词。512hash `e441283392efd686bf0e09820420a01505ab4a5ec07c26ca39581ac4f43bfbd0`，实际选片演练/重放/恢复/安装通过，全部300表旧行及其他public/internal函数/旧触发器不变，无新增表。
+
+经原server验证旧setup0预留/工件/标记/trace/结算后，唯一同case准备恢复保留旧result/once/审计；原API取消未预留作业再创建新原job/profile/lease，同candidate/root/原unusedwindow，不延长旧profile/deadline或洗UNKNOWN。实际511prep/receipt各1：231918e6-30f7-4291-9a2c-019f2e76cc41。新artifact8e376d74-fb26-4d61-800d-0d4115397561/versiond85c89a0-9f48-5537-8297-c30f51bdedb2，validation/blind/fullreview各1；完整6角色bundle真实包含3阻塞意见，独立blind scorefalse，故停止，508–510六表仍空。facts/evaluations/publication0，4canonical roots及5687原行保持。临时rollback行形状调用实际deny函数、实际marker不可变UPDATE3个有限反例23514成立，不等于完整原facts/publisher操作或真实descendant验收。证据见task research/controlled-branch-progress-20261010.md及`.runtime/native-controlled-live-20261010/`；实验不是正常题库准入、完整多轮或semantic discharge。
+
+### 513：第二个实质不同V2受控组闭集（同日实际安装）
+
+最新用户执行授权在原counterexample family＋practice-1/seed0实施ONE新受控组。513只移除旧experiment-key CHECK并加入闭合V1/V2键CHECK，扩展原insert guard按两套固定context/rule/seed/program/blueprint选择，保留V1精确规则、512真实job/root修复、其余source/profile/lease/trace/settlement检查及DENY-only ancestry hold。V2完整程序来自实际option label，原allocator与finite public request仍由原owner核验；表结构/外层准备和authorreceipt不升级或授放行权。
+
+513已由Main选片真实演练/重放/回滚恢复/安装，SHA `c449bac69ffc05220f7fa97dbd63fd1aa76e469484eea9669e5ad0aaf3bc65a8`。300表及旧行保持，0新增表；public/internal函数除目标insertguard、约束除目标closedexperimentCHECK外保持，旧trigger definitions保持。证据`.runtime/native-controlled-v2-live-20261010/schema-5b2810d06516/result.json`。508–513现均不可原改，后续SQL修复append514+。
+
+18:48新真实进程已经原owner提交V2 marker并读回新parent held=true，证明这一preparation lazy分支实际到达；旧V1标记/作者trace/失败/once仍保留。阶段结果与后续508–510填充另记于task `research/controlled-v2-progress-20261010.md`，不因DDL/marker通过宣称全链或正常准入。
+
+**随后真实V2数据结果：** preparation/trace9960661a-9686-459e-8fa7-71e8334b600c、artifact83df680c-59d5-45f0-9338-994d4e5ffcf2/versionee005fe5-5bdf-5f3e-810d-21c9587434af，原validation/blind/fullreview回读与实际结果一致，blindpassed且6role7majorblocking。首次真实508preparation/receipt各1：fabce18b-e424-47b2-8c0e-c323dfeac867；该receipt是调查报告证据核验失败的pending记录，reportnull，不是有效报告。509准备/lineage及510准备/receipt四表仍0，无child。Main19:20回读5831原行实例/300表、since513函数/约束/触发器、4roots保持，newversion facts/admission/nativeproof/publication0，parentheldtrue；未实际验证descendant。详见run main-readback-summary.json/main-critical-binding-readback.json，不凭已填508表宣称完整正链或解除hold。
+
+## 2026-10-10 staged514 investigation sender compatibility (not installed)
+`514_learning_item_shared_review_investigation_sender_v2.sql` is staged/registered only. It copies the original508 investigation insert guard and changes ONLY the prompt predicate to a NULL-rejecting closed V1/V2 list; no table/trigger/payload shape/admission authority is added. Deployed508–513 remain unchanged. Explicit scalar-evidence-v2 owner checks actual installed guard definition before reserve and refuses the old-only guard. No DB/DDL was executed in this repair increment; installation and row/trigger/function rollback/readback acceptance remain separate. Detailed contracts: `.trellis/spec/backend/learning-item-supply-pipeline.md`; progress: task research/investigation-sender-v2-progress-20261010.md.
+
+### Actual selected514 install (2026-10-10, supersedes earlier staged-only status)
+Main selected514 rehearsal/replay/rollback restoration/installation actually passed in existing local development DB `aearn_b1d_sandbox_20261001`. SHA244f102ea80dc841a056891654514ff0f63ea8efe43f5c9d2e744f563402f1d6; evidence `.runtime/native-investigation-v2-live-20261010/schema-7fd5e9503e1c/result.json`.300oldtables andalloldrows/otherpublic+internalfunctions/alltriggers/allconstraints preserved,0newtable. Actual current guard definition readback includesV2. This is schema acceptance only, not a new model investigation/revision/recheck or production deployment.508–514 files immutable; any next repair appends515+.
+
+### Actual selected515 controlled repair case install (2026-10-10)
+515adds only the third closed experiment key/context branch for original repair/assessment-1/seed0 and expected_slot; priorV1/V2 remainpractice-1. Main rehearsal/replay/rollback/installation passed in existing local developmentDB;300oldtables/alloldrows/otherfunctions/triggers andconstraints exceptexplicitclosedexperimentCHECK preserved,0newtables. SHA2eea258f974c3c6fe938fd7677f71159b55f616bc238057199993d135afeed2f; evidence `.runtime/native-investigation-v2-live-20261010/schema-b160ab353149/result.json`.512ancestry DENY-only hold retained.508–515 deployed immutable; repair appends516+. New V3 control preparation/parenthold actually committed before author funding, but ongoing new model outcomes are separate evidence, not schema acceptance.
+
+### Actual selected516 revision JSON precedence repair (POST-GROUP,2026-10-10)
+Actualnewgroup valid508investigation then509preparation failed22P02beforechildauthor. ActualPGcontext named public_template; readonlyJSONexpression reproduction isolatedmissinginnerparentheses before jsonb subtraction.516copiesONLY509'senforce_native_revision_insert(), correctingbothpublic_template extraction operands before deleting item_key/version; allotherguardbytes preserved. Main selectedrehearsal/replay/rollback/install passed inexistinglocalDB,300tables/allpriorrows/otherfunctions/triggers/allconstraints preserved,0newtable. SHAcd4ab9c9fa9ae7ea6d320427684a5618cf64c381b3f249d4a8ea57b9e0197ed8; schema-1c42a9bb6038/result.json undernative-investigation-v2-live-20261010.508–516immutable,nextfix517+. This is prospectiveexpression/DDLacceptance, not acceptedpopulated509/510; originalfailedgroupnotreplayed.
+
+## 517：显式开发模型accounting-only scope（2026-10-10授权增量，安装验收另记）
+
+新增immutable开发核算批次和作业绑定：`tutor_item_supply_development_model_accounting_batches`、`tutor_item_supply_development_model_accounting_jobs`。scope严格限定现有B1D沙盘数据库、已授权的正式配置模型/原provider/现有canonical root及当前作业profile。默认关闭，由显式原owner启用，不能由日志JSON还原调用能力。新批次生成独立当前核算窗口和32维原global分配，旧window/reservation/settlement/UNKNOWN保留；旧cap字段的正数CHECK仅作兼容核算表示，不是“无限额度”，受tagged scope的累计配额不参与开发准入。普通生产/私有预算排除这些dev-tag rows后维持原累计封顶；新批次期限仍独立有效，父子原lease/profile/source/fence和模型真实限制仍验。
+
+绑定仅在实际新原enqueue/claim后、未预留时建立；修订child仅继承当前原parent对应账本scope，根/provider/model/期限及实际亲缘必须匹配。原reservation replay、所有32维用量写入与原UNKNOWN结算保持，用户叫停、结果/证据/once/受控hold及发布门禁不因无限累计调用放宽。已部署508–516不修改，517最小replay/rollback/history/install及有数据branch必须由Main另验；DDL成功本身不是模型或509/510通过。
+
+517实际已于2026-10-11选择性安装，旧300表6197行实例/函数/触发器/约束保全，新增两空表；后续ONE原执行新ledger batch/job插入接受，但旧controlled preparation表的全局UNIQUE(experiment_key)真实拒绝同案例marker（23505），在作者reserve/模型之前停止。517之后302表既有6197实例及全部旧DDL保持，未追加费用事件或正式facts/发布。508–517不可再改；同案例执行身份的default-off续跑契约属于后续518+，不可无条件删除旧unique/once来放行。
+
+## 518显式同案例执行身份（2026-10-11实施增量，尚待安装）
+
+旧controlled preparations的experiment_key全局UNIQUE不删除。追加default-off显式case execution授权表及并行执行preparation/receipt表；case key与旧ContextV3/语义保持，新execution authorization/ID独立唯一，按当前原job/batch/profile/lease及用户单次授权绑定。并行表保留原515完整closed/source/lease/envelope/result/usage验证及额外execution绑定。只有受控DENY祖先hold查询扩展识别新marker，发布/准入不放宽；旧511–517行/约束/guard保持，旧消费once/失败不得复活。旧V7 23505/0model为历史audit，非新modelcap。注册不等于部署或模型验收，Main独立审阅及最小rollback/replay/history安装/ONE原链证据另记。
+
+## 真实结果与事务边界窄修
+
+ONE V8原执行已结束exit1。新execution授权、parallel marker、原author resource reservation接受（1requests/192512tokens、32globals，legacy nominal token_cap1 underaccounting_only），case/context/rule hash不变，new+oldhold true。身份/真正累计配额预留已真实验证，不是只plan标签或大数字伪无限。
+
+模型调用前原SharedGenerationPipeline的IDLEguard报PROVIDER_IO_REQUIRES_IDLE_TRANSACTION：新增execution.verify()从原CPU issued()/original_generation()执行SQL/server_clock开隐式事务，使后来with transaction成nested savepoint，返回仍INTRANS。该安全guard正确拦下且未删除，0newmodel/0completed/0artifact/review/inv/child/facts/fees，noexpenseappend ledger145。此次授权/once和失败result/实际reservation保存，不恢复旧cap或自动重派。
+
+Main仅两SDK文件prospective修复：verify_identity纯CPU检查enabled/exact对象identity+payloadseal/current传参/attached；issued只sameconn+pureidentity，fullDB/schema/currentledger/lease/profile/committedrow/expiry/source检查放回fence的原caller transaction。Independent窄static PASS +少量实际方法AST DATA检查noDBcall，不是重新真实验证。新SOURCE afterattempt只有这2files变，原53中51未变；原74historyfiles/oldonce/ledger145/新旧hold保持，518后305tables6235priorrowinstances/全部旧schema exact。后续新真实执行需fresh明确execution identity/once，不消费本次已用key。未Git/归档/全E/发布。
+
+## 2026-10-11 受控execution2完整真实链结果
+
+`519_learning_item_controlled_case_execution_followup.sql`已由Main选择安装，SHA `bc82b48fea617b5ab0463dfee6759009ae5d61621a4255dda3206d2ac1051265`：仅authorization key CHECK及原授权insert/准备scopeinsert两guard允许闭集key1/key2；旧518字节/legacy experiment UNIQUE/其余functions/trigger/constraints不改。新execution2/V9固定once与fresh原owner/profile/lease/accounting batch保持同V3 case/root/seed，纯身份lookup不得隐式打开provider IO前transaction。
+
+真实链完成17个去重original-owner run（不是HTTP计数）：作者/独立盲解/六审/508调查/509新作者修订/新独立盲解/新六审；两原确定性validation均machine_verified。首轮4条material争议与有效4-analysis调查、native509preparation/childartifact/lineage及native510复审preparation/receipt均真实落库。新六审全approved，但4条旧争议均`unsupported/no_clause_specific_adapter`，`historical_finding_resolved=false`；无法因新审通过宣称discharge。parent/child及旧marked祖先仍holdtrue，facts/admission_evaluation/publication0，全E/Git尚未接受。
+
+305表6309旧行与安装后全部schema定义保持，96旧历史文件保持。旧key1未结算reservation/失败/once/UNKNOWN未改；账本145原事件保持，仅追加1条至146。可观察input361315/output82742，聚合cached/reasoning/reported total/CNY及HTTP尝试数UNKNOWN。详见 `.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/real-chain-completion-progress-20261011.md`。下一增量是精确原issuer的逐争议证据适配器及后续版本化解除规则，不重跑旧suite/不刷绿/不撤销现有hold。

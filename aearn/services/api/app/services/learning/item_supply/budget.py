@@ -156,6 +156,11 @@ class ItemSupplyBudgetRepository:
             ):
                 raise SupplyRuntimeError("RESERVATION_CONFLICT")
             return ReservationResult(True, "REPLAY", UUID(str(replay["id"])))
+        from app.services.learning.item_supply.development_model_accounting import accounting_batch_for_lease
+        development = accounting_batch_for_lease(self.conn, lease, now=now)
+        if development is not None and (requested.execution_seconds or requested.fetches):
+            return ReservationResult(False, "DEVELOPMENT_MODEL_SCOPE_NON_MODEL_RESOURCE_DENIED")
+        meta["development_accounting_batch"] = development
         rows, user_rows = self._active_limits(meta, lease, now)
         if rows is None:
             return ReservationResult(False, "BUDGET_CONFIGURATION_MISSING")
@@ -166,9 +171,14 @@ class ItemSupplyBudgetRepository:
         self.conn.execute(
             f"SELECT id FROM {root_table} WHERE id=%s FOR UPDATE", (meta["root_id"],)
         ).fetchone()
+        window_filter, window_params = "", ()
+        if development is not None:
+            window_filter, window_params = " AND id=%s", (development["window_id"],)
+        elif namespace == "shared" and self._development_accounting_available():
+            window_filter = " AND NOT EXISTS(SELECT 1 FROM tutor_item_supply_development_model_accounting_batches dev WHERE dev.window_id=tutor_item_supply_shared_budget_windows.id)"
         windows = self.conn.execute(
-            f"SELECT * FROM tutor_item_supply_{namespace}_budget_windows WHERE root_id=%s AND pool_key=%s AND provider_key=%s AND window_start<=%s AND window_end>%s ORDER BY window_start,id FOR UPDATE",
-            (meta["root_id"], meta["pool_class"], meta["provider_key"], now, now),
+            f"SELECT * FROM tutor_item_supply_{namespace}_budget_windows WHERE root_id=%s AND pool_key=%s AND provider_key=%s AND window_start<=%s AND window_end>%s" + window_filter + " ORDER BY window_start,id FOR UPDATE",
+            (meta["root_id"], meta["pool_class"], meta["provider_key"], now, now) + window_params,
         ).fetchall()
         if len(windows) != 1:
             return ReservationResult(
@@ -193,7 +203,7 @@ class ItemSupplyBudgetRepository:
         root_used = self._root_used(
             namespace, UUID(str(meta["root_id"])), UUID(str(window["id"]))
         )
-        if (
+        if development is None and (
             root_used["requests"] + requested.requests > window["request_cap"]
             or root_used["input_tokens"]
             + root_used["output_tokens"]
@@ -205,7 +215,7 @@ class ItemSupplyBudgetRepository:
         amount_map = requested.as_dict()
         # All active cumulative windows are enforced, not just the newest one.
         for limit in rows:
-            if (
+            if development is None and (
                 self._global_used(UUID(str(limit["id"])), str(limit["resource_kind"]))
                 + amount_map[limit["resource_kind"]]
                 > limit["cap_amount"]
@@ -289,9 +299,15 @@ class ItemSupplyBudgetRepository:
             "window": "item-supply",
             "pool": str(meta["pool_class"]),
         }
+        development = meta.get("development_accounting_batch")
+        limit_filter, limit_params = "", ()
+        if development is not None:
+            limit_filter, limit_params = " AND id=ANY(%s::uuid[])", (development["global_limit_ids"],)
+        elif self._development_accounting_available():
+            limit_filter = " AND NOT EXISTS(SELECT 1 FROM tutor_item_supply_development_model_accounting_batches dev WHERE tutor_item_supply_runtime_global_limits.id=ANY(dev.global_limit_ids))"
         rows = self.conn.execute(
-            "SELECT * FROM tutor_item_supply_runtime_global_limits WHERE window_start<=%s AND window_end>%s AND ((dimension_kind='system' AND dimension_key=%s) OR (dimension_kind='provider' AND dimension_key=%s) OR (dimension_kind='window' AND dimension_key=%s) OR (dimension_kind='pool' AND dimension_key=%s)) ORDER BY dimension_kind,dimension_key,resource_kind,id FOR UPDATE",
-            (now, now, keys["system"], keys["provider"], keys["window"], keys["pool"]),
+            "SELECT * FROM tutor_item_supply_runtime_global_limits WHERE window_start<=%s AND window_end>%s AND ((dimension_kind='system' AND dimension_key=%s) OR (dimension_kind='provider' AND dimension_key=%s) OR (dimension_kind='window' AND dimension_key=%s) OR (dimension_kind='pool' AND dimension_key=%s))" + limit_filter + " ORDER BY dimension_kind,dimension_key,resource_kind,id FOR UPDATE",
+            (now, now, keys["system"], keys["provider"], keys["window"], keys["pool"]) + limit_params,
         ).fetchall()
         covered = {(r["dimension_kind"], r["resource_kind"]) for r in rows}
         if covered != {
@@ -307,6 +323,10 @@ class ItemSupplyBudgetRepository:
             if {r["resource_kind"] for r in user_rows} != set(RESOURCE_KINDS):
                 return rows, None
         return rows, user_rows
+
+    def _development_accounting_available(self) -> bool:
+        row = self.conn.execute("SELECT to_regclass('public.tutor_item_supply_development_model_accounting_batches') AS t").fetchone()
+        return row is not None and row["t"] is not None
 
     def settle(
         self,

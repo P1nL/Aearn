@@ -48,6 +48,14 @@ P7_SHARED_PIPELINE_TABLES: tuple[str, ...] = (
     "tutor_item_supply_shared_validation_evidence",
     "tutor_item_supply_shared_candidate_continuations",
     "tutor_item_supply_shared_admission_facts",
+    "tutor_item_supply_shared_review_investigation_preparations",
+    "tutor_item_supply_shared_review_investigation_receipts",
+    "tutor_item_supply_shared_revision_preparations",
+    "tutor_item_supply_shared_revision_lineage",
+    "tutor_item_supply_shared_revision_recheck_preparations",
+    "tutor_item_supply_shared_revision_recheck_receipts",
+    "tutor_item_supply_shared_controlled_counterexample_preparations",
+    "tutor_item_supply_shared_controlled_counterexample_receipts",
 )
 
 SHARED_TABLES: tuple[str, ...] = (

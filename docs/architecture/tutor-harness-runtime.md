@@ -1208,3 +1208,118 @@ main的零provider、未提交PG诊断记录在`.runtime/e-fast-continuation-202
 新协议需在新campaign中冻结；旧计划缺marker按legacy处理，不能因代码更新自动升级旧campaign/预算。部分已完成角色回执是私有诊断记录，不是完整bundle或发布许可。同模型相关性仍明确标记，高风险独立第二bundle规则不变。小型标注样本/离线测试仅证明协议和已知案例行为；真实模型误报/漏报率、真实新候选、完整题包、交付、P8/P9/P10/E仍须分别取得实证。此修复不含真实模型/DB/Docker执行、旧SQL迁移改写、Git提交推送或公开发布。
 
 独立检查进一步补齐：原生CLI、导入执行和直接campaign准备均在DB/provider/预留之前验证协议及既有冻结计划一致性；private准备在预留前拒绝mixed协议。预留REPLAY不重新签发prepared review或dispatch能力，不能借重放重审旧题或重置UNKNOWN。
+
+### 2026-10-09：有界争议编排核心与全角色正式输出上限
+
+原路线的“首轮独立审核→争议调查→修订→独立复审”新增显式内部编排核心及原共享审核后的`prepare_review_followup`私有计划入口。计划绑定原source/profile/lease/root、具体角色发现及字段证据，保持原完整报告；各后续动作需原owner逐项预留、重验并保守保留UNKNOWN。仅换item/candidate/version使hash变化不算实质修订；新内容必须重做确定性验证、盲解和六审，旧run不能复用。复审仅接受中立检查类别/字段位置，不携带同行投票、原解答或私有推理。缺原owner、原调查/修订额度为零、到达冻结轮次/deadline或补证未形成新复审输入时保持pending。
+
+这是可执行离线编排与私有后续入口，不是已接通真实后台多轮。native调查回执、shared修订lineage、旧blocker消除resolver和独立prepared-round owner仍待接线；无准入/发布权，原Attempt/Gate/供题与正式准入owner不变，旧quarantine不能凭新意见解除。
+
+用户后续要求作者生成、独立盲解也采用正式生产输出上限。新CLI冻结`production_output_budget`，作者/盲解/六审均使用`DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS`及匹配的`Settings.tutor_max_output_tokens`（当前61440）；关系审核保持原2048。单槽八次调用output预留491520，完整五槽加四次关系审核2465792；adapter参数与root/global/remaining核算一致。旧无marker和peer-only计划继续按原内容重建，不能原地升级旧campaign或扩窗，缺新marker不新建作者候选。预留上限不是实际usage或人民币支出。
+
+遵照用户“不需要再做测试”，本次统一输出补丁只静态审阅，不新增或运行测试、CLI smoke、真实provider/PG/Docker；之前已结束的30项fake-owner编排测试和452文件Mypy仅证明当时离线核心，不证明最新cap补丁或真实多轮、完整题包、P8-P10/E完成。具体可执行合同见`.trellis/spec/backend/learning-item-supply-pipeline.md`。
+
+### 2026-10-09：原完整审核后的native调查owner（508仅登记）
+
+新增默认关闭的`NativeReviewInvestigationOwner`及`SharedReviewPipeline.prepare_investigation`显式入口，使用同connection原审核issuer、current RAG、租约及累计root预算：prepare独立预留→IDLE一次enabled/high调查→单独UNKNOWN结算→不可变receipt持久化。调查使用正式61440上限及当前lease/source/parent/stage最小剩余时限；只发送当前审核字段、具体争议和exact field index，不发送原盲解答案/score、完整bundle、lease/预算或思维链。逐条保留争议，supported/contested仍是模型意见，不消除旧blocker、不形成准入/发布权。
+
+实际原`commit_review`只persist完整blind/bundle而未完成reviewing checkpoint，所以允许该合法reviewing内部后续调查，不伪造checkpoint或跳过完整首轮；也兼容合法investigating。原终局facts/evaluation/publication存在则拒新调查，固定预留key的REPLAY不能重新mint能力。JSON只是DATA，不能恢复prepared；各阶段复核source/profile/model/lease/resources并保留原finite context。508新增两张shared-confidential准备/回执表并登记manifest/分类，不入learner export/reset、不改变440–507。默认审核循环、API、worker、operator没有自动开启调查。
+
+用户不再测试指令持续有效：本轮仅编码及独立静态审阅，未运行新增测试、DDL、真实provider/PG/Docker，也未安装508。旧profile1/调查cap0和预算窗保持原状，不借新owner调用旧失败题。shared修订lineage、历史blocker消除、独立新版本复审及完整题包/P8-P10/E仍待接线与真实验收。
+
+### 同root修订输入与候选lineage（509仅登记）
+
+新增默认关闭`NativeRevisionOwner`，只接受原native调查owner已签发、已提交的当前有效分析；通过原runtime在同canonical root下enqueue(parent_job_id)并精确claim子作业，继承祖先及来源时限。修订context以独立schema/hash固定原artifact/review/investigation和具体问题，进入实际作者消息且计入完整输入字节/trace，不是普通生成后贴“修订”标签。复用原SharedGeneration prepare/run/settle/commit，作者仍一次HTTP、正式61440，原模型/模式及factory public-template核心不改；普通生成不能漏context处理已标记子候选，revision_rounds=1在原预留/重验/结算一致计入。
+
+原writer已提交新artifact、结算与实际input trace后才追加parent-child lineage；仅换ID/version/title不算实质修订。旧候选/报告/失败不覆盖，parent/child的root/coverage/目标/用途/runtime/scorer/risk/注册profile/来源合同保持。lineage只证明生成关系，缺历史blocker discharge和完整新validation/blind/六审时，revision后代由原facts及新SQL准入/发布guard保持failclosed，不能凭最新绿意见洗掉旧问题。
+
+509追加两张shared-confidential准备/lineage侧表并登记，不进入learner export/reset。用户不再测试指令继续有效：没有新增/修改测试逻辑、运行测试/DDL或真实provider/PG/Docker，508/509均staged而未安装。旧profile1/cap0/预算窗/UNKNOWN保持，未接默认API/worker/operator自动调用，独立复审/discharge和完整多轮/题包/P8-P10/E仍未完成。
+
+### 2026-10-10：修订候选独立复审与旧条款证据绑定（510仅登记）
+
+新显式内部owner接原revision producer及已提交509 lineage，通过原validation、public-only blind与六角色peer-blind owner准备/执行/结算/提交新候选证据。旧同行意见、调查分析、旧盲解答案和作者修订context不注入新复审provider请求。新source/input/bundle及run身份须与原证据正确区分，仍受同canonical root、冻结profile、来源与祖先/lease/stage时限约束；盲解/每位peer正式61440，独立资源预留且UNKNOWN不退款。
+
+510逐条保留原dispute key、原report/finding与字段引用，绑定新候选/source/content及原issuer验证的新validation/blind/review。证据确实来自新独立检查与“证据足以消除旧语义阻断”是两件事；无法由具体条款适配器核实的问题仍unsupported/pending，不能因为六审全绿、hash变化或模型分析就解除。当前侧表仅shared-confidential DATA，509准入/发布hold保持，原coverage/final facts/high-risk/第二独立bundle与publisher仍是独立门禁。
+
+本轮遵从用户停止测试：只实施及独立静态审阅，不新增/运行测试、不发provider/PG/Docker/联网、不安装508–510；未自动启用API/worker/operator。新通路未实际运行，旧quarantine/预算窗/费用UNKNOWN保持，完整多轮、题包/P8–P10/E仍未完成。
+
+独立静态审核已修复五类具体不足：原端口exact-type入口、实际HTTP及ambiguity/scorer/runner的祖先deadline、后置fence失败清除可用成功结果、父子publication终局历史、510闭合typed字段/原receipt/新阻断投影与有限属性绑定。新复审继续使用原JSON端口，只允许闭合deadline-only bounded client；不是任意prompt代理。上述为源码审阅结论，不构成DDL或真实链路通过。
+
+### 2026-10-10后续：原隔离本地真实验收启动
+
+用户已取消真实模型调用次数及费用上限，确认改为真实链路优先＋独立静态审阅＋少量关键反例，再授权按原顺序执行。不新增testfiles、不重跑旧suite、不刷绿。main已在原本地B1d库受控安装508–510：首次510 CASE括号SQLSTATE42601回滚失败保留，窄修后3片真实编译/重放/恢复/atomic install通过，旧292表行/原functions保持，6空表追加。来源预检KC2/Python3/SQL5有效，配置deepseek-flash/61440及凭据存在；当时没有发模型请求。native live入口与新运行仍单独验收，空表安装不证明完整多轮或旧条款消除。不能直接切日常业务库或删除数据库owner白名单；旧历史/UNKNOWN/profile/预算窗口与509hold保留。
+
+随后真实新样本`kc-real-20261010-1`完成author生成/原machine validation/public-only blind通过/六角色全部high思考及61440输出上限审核批准，首轮0实质争议。新candidate06cd2062-1a79-4366-b01e-6a67026bcf29的validation/blind/review各1回执已提交，main PG回读完整bundle一致；8个已完成真实模型响应，观测total207881tokens，金额和实际HTTP计数不冒充已知。原review P3结算仍UNKNOWN保留；新增费用事件只追加，不改139旧事件或其他登记字段。prepare重放/复制prepared/再次dispatch与真实已过期旧lease四个关键拒绝边界0额外provider成立。证据`.runtime/native-multi-round-live-20261010/kc-real-20261010-1/main-readback-summary.json`及task进度。
+
+该首轮自然全绿，调查/修订/独立复审/510填充没有被触发；六张新分支表仍空，不造否决以覆盖分支，不宣称整轮多轮或条款discharge成立。没有final facts/admission/publication/Attempt/Gate，509hold保持；Python/SQL执行型样本、完整题包/P8-P10/E及Git收尾仍未完成。
+
+### 2026-10-10执行型续行：真实验证通过，完整六审仍pending
+
+main保留旧KC窗口直至13:22:05真实自然到期，复核0active globals/roots后经原owner创建有界双目标正常campaign（全局34requests/4candidates/3600执行秒，各既有原根17/2/1800，输出统一61440）。SQLite固定seed22后Python固定seed23，原P6固定镜像runner贯穿验证/盲解/ambiguity；Python复用同campaign globals，仅在其已存在根新增无重叠window，canonical roots仍4，不重置旧行/UNKNOWN。
+
+两新样本均machine_verified且public-only blind passed；SQLite验证保存15个live/approved_os_boundary terminals，Python9个，两者named-interpretation ambiguity各2terminal。两份审核仅curriculum/difficulty有效approved，technical输出在原role/evidence gate被拒，完整bundle/审核回执缺失：SQL失败phase=evidence_verification、role=technical、code=schema_validation；Python同phase/role、code=evidence_verification。失败观测及usage确已保留，不能把coarse review_pending误作观测丢失。未经接受的模型意见不作为实质争议，不补跑余角色/旧候选、不进入508–510、不解除509hold。
+
+两样本合计10个已完成模型响应、观测total325490tokens；实际HTTP计数/金额仍null，原review settlements UNKNOWN保留。main分别只追加两个费用事件并保留原140事件/其他字段，最终142事件。两版本facts/evaluation/publication均0；14组原有证据行保持。详细证据见task research/live-executable-progress-20261010.md及两run main-readback-summary.json。发送端通用wire enum过宽及引用组提示的未来窄修另记，旧模型响应不追认；真实完整多轮/全题包/交付/E尚未通过，无Git收尾。
+
+**未来请求窄修已实施、独立静态复核：** evidenced临时wire schema按原ROLE_CODES收窄，显式role_refs_wire_v2 marker及可信required reference groups提示，不变接收门禁/DTO默认/hash/旧输入。新名称保留high/61440路径。main纯目录/schema形状诊断成立；完整冻结JSON envelope重建在严格typed-tree处停下，未绕过恢复旧能力。完整future request大小/供应商/新实质候选真实验收仍待原owner路径，不能把此次格式补丁写作六审或多轮已通过。
+
+### 同日受控反例组：完整六审已到达，但盲解负例停止后续
+
+最新用户允许ONE受控反例组。原默认off `SharedGenerationPipeline(...controlled_counterexample_enabled=False)`在显式main入口把固定seed24错误解析作为首次作者SYSTEM/context约束及真实byte计价/trace，不替换模型输出或transport base Source schema；初始private解析精确矛盾、评分/core正常。511持久实验mark/trace与parent/后代hold，512修复实际无root_id列的guard访问；原4roots/历史/UNKNOWN不变。旧setup先在作者前SQL失败，原DB严格确认unspent后只恢复一次同candidate/root/unusedwindow，保留旧once/result并不从JSON恢复prepared能力。
+
+实际原作者保留错误解析，machine_verified，完整6角色peer回执及新角色收窄wire通过真实提交：curriculum/difficulty/ambiguity approved，technical technical_failure与security/adversarial deterministic_failure各majorblocking。独立盲解完成但评分false，按CONTROLLED_BLIND_FAILED_STOP_NO_RETRY停止，没有508调查/509修订/510复审。当前证据是实验的完整六审与拒绝分支，不是所需调查→修订→复审正链已通过；原blind答案只留hash/score，不能据此断定具体语义或格式原因，也不重复模型刷绿。
+
+原owner完成run下界8（非HTTP计数），已知inputsum164202/outputsum54404；cached/reasoning/reportedtotal整体不可得保留null，review UNKNOWN保留、金额null。只追加1费用事件保留原142项/其他字段，143total。3个有限hold/不可变负例0额外provider成立；正式facts/eval/publication均0，no learner/Gate/完整题包/E/Git收尾。详见task research/controlled-branch-progress-20261010.md、main-readback-summary.json及main-critical-hold-negatives.json，前者全outer trace比较false由独立projection5字段全一致读回正确限定，不修改旧证据。
+
+### 同日前瞻私有盲解诊断（不重派旧样本）
+
+`SharedReviewPipeline(...,private_blind_audit_sink=None)`默认关闭。在原blind的run/request/profile/prompt/output绑定核验后、原score之前，显式private sink接收精确原答案；随后实际finite计算的规范化比对、原outcome/policy/receipt单独留证，其他scorer未提供理由仍unavailable。原raw字段不进入公开DTO/正式评分回执/六角色输入；理由仅normalized_exact_match/mismatch，不据此判定语义根因。原评分和hash/结算不改，记录不是issuer/accounting authority。
+
+安全状态由`private_blind_audit_status(original_prepared)`查询：写入确认及构建/写入失败与评分成败分离。研究入口显式`private_blind_forensics=False`，opt-in只对controlled链，parent/child同sink；旧CLI不增加执行开关，旧once不复活。审计缺口只在原settle/commit后阻断实验后续，原blind失败码不删除。私有日志保存在ignored.runtime，exclusive/flush/fsync，最多16事件及每完整文件262144UTF8bytes，日志不会制造completed run计数。
+
+本轮仅原接线实施、独立静态检查及少量sink合成DATA检查；未发新真实模型/DB调用或安装新SQL。旧blind答案及格式/语义原因仍缺失，真实原答案落盘和508–510正向链仍待下一组实质不同counterexample结构方案（原allocator、新V2闭集/append513+、版本化单选格式协议），不是重复旧diagnose/seed24。详见当前task `research/blind-private-forensics-progress-20261010.md` 与 `controlled-next-case-design-20261010.md`。
+
+### 最新授权第二组：counterexample结构及显式单选协议
+
+用户继续“执行”后，第二组V2闭集与原registered allocator实际counterexample＋practice-1/seed0、513已实施，原独立pre-paid静态check通过。`JsonBlindSolverV2(...blind_protocol="single-choice-id-v3")`明确请求一个当前公开option-ID（全部ID枚举，不含正确key），prompt version `item-supply-blind-single-choice-id-v3`；legacy仍默认。原封装同路定价/发送/input-envelope hash，实际issued solver非legacy配置/协议绑定到prepared seal，parent/child继承并在bundle/deliberation/verified evidence核验。不改scorer、不抽取答案、不向peers传raw，不启用正常admission。六审/调查high与61440cap保留，blind仍保持其原thinking行为。
+
+新版main composition固定v4 scope once、mandatory privateblindforensics、禁止setup recovery，同原canonicalroot实际source/正常新period及17request/2candidate/3600parent/7200period。旧全局窗口自然17:58:26到期后才新执行；18:20read-only与原allocator/root预检不制造能力。18:48新marker实际提交及parent hold读回成功，初始固定错解析只进入原author真实context，child不得继承；原模型结果不改写。后续每个阶段以当前task controlled-v2-progress的真实结果为准：不足条件即停，不重复旧candidate或多样本刷争议/刷绿，不以实验冒充正常题包/E。
+
+**该唯一组最终实证：** 原作者/机器验证/新单选blind通过且实际rawchoice-3/规范化比对/原评分四事件私有留存、与原source/run/solution/score及eventhash吻合。完整六审各changes_required、合计7majorblocking，真实进入508。调查adapter响应completed、strictoutputDTO与ProviderRun构造通过后在report构造/verify_input的evidence_verification异常，reportnull，原unknown_exception/pending回执保持；粗停止码不证明sourcefence丢失，具体坏key/pointer与rejectedoutput未留存所以不能断言根因。509/510/child未发生。8dedup owner完成run下界＋1独立failedadapter完成响应，已知input192579/output85102，整体total/cached/reasoning/CNY仍partial/unknown；原review/investigation结算UNKNOWN不重写，仅追加1费用事件保留143旧事件。
+
+针对确定分类缺口仅作未来窄修：调查phase=evidence_verification的普通ValueError（排除ValidationError）使用已有安全code=evidence_verification；ValidationError保持schema_validation、其他沿原分类。静态复核通过，不改wire/DTO/receiver/结算、不重标或重发此次失败。下一步先补调查拒绝明细与parsedoutput私有留证，然后在显式新发送版本约束完整disputekey及scalar-index pointer/hash；parent容器ref与调查leaf-only索引差异是静态风险，不是已证明的本次根因。完整调查→修订→复审、正常题包/交付/E仍pending。
+
+## 2026-10-10 prospective investigation sender/private audit repair
+The internal default-off investigation owner retains legacy-v1 default and now explicitly supports scalar-evidence-v2, with exact original dispute count/key enum and scalar evidence-index pointer enum. Original receiver still requires each dispute once, exact leaf pointer/hash, unique references and original finding-region overlap. Original owner binds protocol and full SYSTEM/user/schema envelope in process-private seals; JSON cannot restore dispatch capability. This does not alter61440/high investigator limits or public/learner authority.
+An explicit private sink can retain original parsed allowlisted scalar output BEFORE strict DTO/report checks and bounded structural rejection details; no HTTP body/CoT/exception prose, no public report expansion or accounting authority. Sink failure only records an audit gap and does not change report/UNKNOWN/hold. Existing accepted campaign recipes and once files were not upgraded or replayed; a separate inert research helper is available for a later fresh planned case.
+514is staged only; V2prepare refuses the old installed guard before reserve. Current evidence is independent static review plus few synthetic DATA checks, not actual new provider/retention/revision acceptance. The prior real case remains7blocking findings/investigation pending/509–510unexercised; full E remains incomplete.
+
+Final incremental static review closed one pre-dispatch deadline P2: synchronous private run-start retention now returns before the adapter recomputes min(previous timeout, current client/profile bound, current original deadline remaining); exhaustion stops before invoked/provider dispatch. No-sink legacy flow is unchanged. Independent static PASS and bounded DATA arithmetic do not substitute for real model/514 installation acceptance.
+
+## Actual V3repair controlled campaign (2026-10-10 bounded outcome)
+Originalregisteredrepair/assessment-1/seed0 supplies a genuinelynewtwo-inputmechanism, withonefixedfalseprivategeneralization; no newfixture/oracle orblindanswerinjection. ExplicitplanV5binds blindV3+investigationV2 andbothprivateforensics. Actualauthor/validation/blind/fullsix completed,choice2passed; sixrolesproduced4majorblocking findings. Original508investigationV2 accepted4exact-key/scalar-ref analyses andcommittedUNKNOWNreceipt; fourblindandfourinv privateevents independentlymatch originalrun/source/input/output/score. This validates newinvestigation sender/private retention, not wholeloop or normalitemquality.
+509preparethenfailedSQL22P02beforechildauthor. No populated509/510/finalfacts/admission/publication; parenthold remains, originalgroup pending andonceconsumed. Postgroup516two-parenthesesSQLrepair independentlyreviewed andselecteddeployed, withoutreplaying originalcase. Nineacceptedcompletedownerrunslowerbound (notHTTP/methodcounter), knowninput192313/output57152; CNYandaggregateotherdimensionsunknown. Ledgeroneappend144→145, originalrecords/UNKNOWNpreserved. Fullpack/P8–P10/E stillincomplete.
+
+2026-10-10 same-case after516 amendment: explicit human authorization permits ONE fresh full-chain continuation of repair/assessment-1/seed0, not JSON capability restoration or old once revival. Extra active-window cooldown is cancelled; the default-off original controlled owner retains 32-row dimensional closure and requires effective usage plus full bounded resources to fit current caps, preserving UNKNOWN occupation and all original source/lease/atomic reserve fences. V6 old window end is historical audit-only, not a dispatch deadline. Existing capacity/time insufficiency may still reject. A later fresh-period live pass will not prove adequate-active-window reuse; old failure/4blockers/UNKNOWN/hold remain historical. New batch live and populated509/510 acceptance remain independently evidence-driven; no publication or whole-E/Git acceptance follows automatically.
+
+Latest development amendment supersedes capacity-only reuse: explicit default-off accounting-only batch/job scope removes cumulative model request/token/fee admission caps and previous-batch window deadlines for authorized developer calls. Each fresh original operation has its own valid window/lease/profile and existing canonical root; old allocations/UNKNOWN remain append-only accounting. The budget selects only that bound scope and continues writing ordinary original reservations/settlements, while normal/private production limits exclude developer-tagged rows and remain enforced. Current V7 same-case continuation keeps its one fixed intent and bounded stages; source/privacy/credentials/actual API limits, original capabilities, evidence correctness and publication/hold boundaries are not quota knobs. 517 and the actual paid chain still require separate evidence.
+
+2026-10-11 actual outcome: selected517 passed rehearsal/replay/rollback/history-preserving installation. ONE V7 same-case process committed a new accounting-only batch and current original job binding, then the original controlled-marker INSERT hit legacy globally unique experiment_key (SQLSTATE23505) before author reservation/model dispatch. Zero new model requests; budget.reserve accounting-only/paid path and509/510 remain unexercised. Preserve consumed continuation1 once and pending_retained_no_retry result, ledger145/UNKNOWN and old originalcase. A proper future controlled continuation issuer must distinguish immutable case identity from explicitly authorized execution identity; do not delete legacy duplicate defense, reroll random experiment keys or revive consumed once. No automatic second attempt or publication/fullE/Git acceptance.
+
+2026-10-11 explicit execution amendment: the stable V3 case/context remains unchanged; new default-off current execution authorization uses a distinct fixed single-use identity. New parallel execution preparation/trace stores preserve old globally unique legacy case rows and constraints. The original source/envelope/model/lease/result/evidence protocol checks are reused, with execution binding added. New markers extend DENY-only ancestry hold and have a matching original-generation trace guard; no normal publication or admission path is enabled. All old failed intents and UNKNOWN are retained. This extension still requires independent static, selected518 deployment and ONE real chain evidence.
+
+## 真实结果与事务边界窄修
+
+ONE V8原执行已结束exit1。新execution授权、parallel marker、原author resource reservation接受（1requests/192512tokens、32globals，legacy nominal token_cap1 underaccounting_only），case/context/rule hash不变，new+oldhold true。身份/真正累计配额预留已真实验证，不是只plan标签或大数字伪无限。
+
+模型调用前原SharedGenerationPipeline的IDLEguard报PROVIDER_IO_REQUIRES_IDLE_TRANSACTION：新增execution.verify()从原CPU issued()/original_generation()执行SQL/server_clock开隐式事务，使后来with transaction成nested savepoint，返回仍INTRANS。该安全guard正确拦下且未删除，0newmodel/0completed/0artifact/review/inv/child/facts/fees，noexpenseappend ledger145。此次授权/once和失败result/实际reservation保存，不恢复旧cap或自动重派。
+
+Main仅两SDK文件prospective修复：verify_identity纯CPU检查enabled/exact对象identity+payloadseal/current传参/attached；issued只sameconn+pureidentity，fullDB/schema/currentledger/lease/profile/committedrow/expiry/source检查放回fence的原caller transaction。Independent窄static PASS +少量实际方法AST DATA检查noDBcall，不是重新真实验证。新SOURCE afterattempt只有这2files变，原53中51未变；原74historyfiles/oldonce/ledger145/新旧hold保持，518后305tables6235priorrowinstances/全部旧schema exact。后续新真实执行需fresh明确execution identity/once，不消费本次已用key。未Git/归档/全E/发布。
+
+## 2026-10-11 受控execution2完整真实链结果
+
+`519_learning_item_controlled_case_execution_followup.sql`已由Main选择安装，SHA `bc82b48fea617b5ab0463dfee6759009ae5d61621a4255dda3206d2ac1051265`：仅authorization key CHECK及原授权insert/准备scopeinsert两guard允许闭集key1/key2；旧518字节/legacy experiment UNIQUE/其余functions/trigger/constraints不改。新execution2/V9固定once与fresh原owner/profile/lease/accounting batch保持同V3 case/root/seed，纯身份lookup不得隐式打开provider IO前transaction。
+
+真实链完成17个去重original-owner run（不是HTTP计数）：作者/独立盲解/六审/508调查/509新作者修订/新独立盲解/新六审；两原确定性validation均machine_verified。首轮4条material争议与有效4-analysis调查、native509preparation/childartifact/lineage及native510复审preparation/receipt均真实落库。新六审全approved，但4条旧争议均`unsupported/no_clause_specific_adapter`，`historical_finding_resolved=false`；无法因新审通过宣称discharge。parent/child及旧marked祖先仍holdtrue，facts/admission_evaluation/publication0，全E/Git尚未接受。
+
+305表6309旧行与安装后全部schema定义保持，96旧历史文件保持。旧key1未结算reservation/失败/once/UNKNOWN未改；账本145原事件保持，仅追加1条至146。可观察input361315/output82742，聚合cached/reasoning/reported total/CNY及HTTP尝试数UNKNOWN。详见 `.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/real-chain-completion-progress-20261011.md`。下一增量是精确原issuer的逐争议证据适配器及后续版本化解除规则，不重跑旧suite/不刷绿/不撤销现有hold。
