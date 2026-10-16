@@ -10,6 +10,8 @@ from psycopg import Connection
 from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
+from app.core.source_fence_diagnostics import observe_source_fence
+
 from app.services.grounding.assessment_course_adapter import ConfirmedAssessmentCourseReader
 from app.services.grounding.current_authorization import EvidenceDenied
 from app.services.grounding.autonomous.source_assessment_profiles import SourceAssessmentDenied
@@ -31,6 +33,7 @@ from app.services.learning.item_supply.finite_course_targets import (
     get_finite_course_target,
 )
 from app.services.learning.item_supply.finite_targets.python_kc import PYTHON_KC_SCORER_VERSION
+from app.services.learning.item_supply.generation_contracts import PublicMaterialV2
 from app.services.learning.item_supply.matrix import build_support_matrix
 from app.services.learning.item_supply.pack_contracts import AuthorizedSubDemandV1, PackRequestV1
 from app.services.learning.item_supply.repository import lock_private_namespace
@@ -201,6 +204,7 @@ class FiniteCourseMappingOwner:
                 self.current_authority.authorize(course,target_id=target_id)
             return FiniteCourseMappingResultV1(status="mapped_internal",reason="exact_frozen_mapping",receipt=receipt)
         except (EvidenceDenied,SourceAssessmentDenied) as exc:
+            observe_source_fence("mapping_bind", _REASONS.get(str(exc), "source_or_claim_stale"), exc)
             return FiniteCourseMappingResultV1.model_validate({"status":"pending",
                 "reason":_REASONS.get(str(exc),"source_or_claim_stale")})
 
@@ -231,6 +235,12 @@ class FiniteCourseMappingOwner:
         if persisted.model_dump(exclude=excluded) != receipt.model_dump(exclude=excluded):
             raise ValueError("immutable mapping replay conflict")
         return persisted
+
+    def resolve_source_successor(self, *, receipt_id: UUID, user_id: UUID, epoch: int,
+                                 materials: tuple[PublicMaterialV2, ...]) -> FiniteCourseMappingReceiptV1:
+        """Separate revision-only source proof path; ordinary resolve never selects a successor."""
+        from app.services.learning.item_supply.source_successor_mapping import resolve_source_successor
+        return resolve_source_successor(self,receipt_id=receipt_id,user_id=user_id,epoch=epoch,materials=materials)
 
     def resolve(self, *, receipt_id: UUID, user_id: UUID, epoch: int) -> FiniteCourseMappingResultV1:
         if not self.enabled:

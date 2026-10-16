@@ -40,6 +40,11 @@ from app.services.learning.plan_drafting import CompactPlanModule, CompactPlanPr
 from tests.grounding.test_course_material_lifetime import ProtocolStub
 
 NOW = datetime(2026, 10, 6, 8, 0, tzinfo=UTC)
+TRANSACTION_QUERY = (
+    "SELECT current_database() AS name, "
+    "current_setting('transaction_isolation') AS transaction_isolation, "
+    "current_setting('transaction_read_only') AS transaction_read_only"
+)
 
 
 class OfflineD:
@@ -99,7 +104,10 @@ class OfflineD:
         if q.startswith(("INSERT", "UPDATE", "DELETE")):
             self.writes.append(q)
             raise AssertionError("source write not expected in offline stale check")
-        if q == "SHOW transaction_isolation":
+        if q == TRANSACTION_QUERY:
+            row = {"name":"aearn_b1d_sandbox_20261001", "transaction_isolation":"read committed",
+                   "transaction_read_only":"off"}
+        elif q == "SHOW transaction_isolation":
             row = {"transaction_isolation":"read committed"}
         elif q == "SHOW transaction_read_only":
             row = {"transaction_read_only":"off"}
@@ -177,6 +185,57 @@ def repository(monkeypatch, conn):
     provenance = PinnedCaptureProvenanceComposition(conn, captures=resolvers) if len(resolvers)>1 else next(iter(resolvers.values()))
     return AssessmentReceiptRepository(conn, service_keys={"service.test":b"x"*32}, provenance=provenance, enabled=True,
                                        actual_d_private_provenance_enabled=True)
+
+
+def _transaction_repository(row):
+    """Pure transaction-front seam; no source or database authority is issued."""
+    calls = []
+    def execute(sql):
+        assert " ".join(sql.split()) == TRANSACTION_QUERY
+        calls.append(sql)
+        return SimpleNamespace(fetchone=lambda: row)
+    repo = object.__new__(AssessmentReceiptRepository)
+    repo.enabled = True
+    repo.conn = SimpleNamespace(autocommit=False,
+        info=SimpleNamespace(transaction_status=TransactionStatus.INTRANS), execute=execute)
+    return repo, calls
+
+
+@pytest.mark.parametrize("field,value", (("transaction_isolation", "serializable"), ("transaction_read_only", "on")))
+def test_require_transaction_reads_once_per_call_and_rejects_changed_settings(field, value):
+    row = {"name":"aearn_b1d_sandbox_20261001", "transaction_isolation":"read committed",
+           "transaction_read_only":"off"}
+    repo, calls = _transaction_repository(row)
+    repo.require_transaction()
+    assert len(calls) == 1
+    row[field] = value
+    with pytest.raises(SourceAssessmentDenied, match="^SOURCE_TRANSACTION_DENIED$"):
+        repo.require_transaction()
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("row,reason", (
+    (None, "SOURCE_DATABASE_DENIED"),
+    ({"name":"wrong_database", "transaction_isolation":"serializable", "transaction_read_only":"on"},
+     "SOURCE_DATABASE_DENIED"),
+    ({"name":"aearn_b1d_sandbox_20261001", "transaction_read_only":"off"}, "SOURCE_TRANSACTION_DENIED"),
+    ({"name":"aearn_b1d_sandbox_20261001", "transaction_isolation":"read committed"}, "SOURCE_TRANSACTION_DENIED"),
+))
+def test_require_transaction_missing_fields_and_database_denial_priority(row, reason):
+    repo, calls = _transaction_repository(row)
+    with pytest.raises(SourceAssessmentDenied, match="^"+reason+"$"):
+        repo.require_transaction()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("autocommit,status", ((True, TransactionStatus.INTRANS), (False, TransactionStatus.IDLE)))
+def test_require_transaction_front_rejects_before_sql(autocommit, status):
+    repo, calls = _transaction_repository(None)
+    repo.conn.autocommit = autocommit
+    repo.conn.info.transaction_status = status
+    with pytest.raises(SourceAssessmentDenied, match="^SOURCE_GATE_CLOSED$"):
+        repo.require_transaction()
+    assert calls == []
 
 
 def prepare(repo, conn):

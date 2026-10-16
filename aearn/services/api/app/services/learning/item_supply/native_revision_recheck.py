@@ -9,14 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 from psycopg.pq import TransactionStatus
 
 from app.core.config import DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
-from app.services.learning.item_bank.contracts import canonical_hash
+from app.services.learning.item_bank.contracts import LearningItemKnowledgeCheckPrivateV1, canonical_hash
 from app.services.learning.item_bank.review_contracts import REQUIRED_REVIEW_ROLES
 from app.services.learning.item_supply.finite_review_descriptor import finite_review_context
 from app.services.learning.item_supply.finite_static_blind_scorer import FiniteStaticBlindScorer
@@ -36,6 +36,13 @@ from app.services.learning.item_supply.shared_validation import PreparedSharedVa
 from app.services.learning.item_supply.storage_contracts import checked_model
 from app.services.learning.item_supply.diagnostic_policy import ReviewBundleV3, checked_bundle
 from app.services.learning.item_supply.review_contracts_v2 import ReviewBundleV2
+from app.services.learning.item_supply.persistent_pack_committed_recheck import (
+    CommittedChildRevisionData, IssuedCommittedChildRecheck,
+)
+
+if TYPE_CHECKING:
+    from app.services.learning.item_supply.shared_admission_facts import SharedAdmissionFactsOwner
+    from app.services.learning.item_supply.shared_admission_facts_contracts import IssuedSharedAdmissionFactsV1
 
 
 class _RecheckClient(BoundedOpenAIReviewClient):
@@ -59,9 +66,9 @@ class _RecheckClient(BoundedOpenAIReviewClient):
 @dataclass(frozen=True, repr=False)
 class PreparedNativeRevisionRecheck:
     preparation_id: UUID
-    revision: PreparedNativeRevision
-    author: PreparedSharedGeneration
-    author_result: GenerationResultV2
+    revision: PreparedNativeRevision | CommittedChildRevisionData
+    author: PreparedSharedGeneration | None
+    author_result: GenerationResultV2 | None
     lease: JobLeaseV1
     artifact_id: UUID
     artifact_hash: str
@@ -69,26 +76,57 @@ class PreparedNativeRevisionRecheck:
     ancestors: tuple[tuple[UUID,str], ...]
     forbidden_run_ids: frozenset[UUID]
     bundle_version: int
+    committed_child: IssuedCommittedChildRecheck | None = None
 
     def payload(self) -> dict[str, Any]:
-        return {"schema_version": "native_shared_revision_recheck_preparation_v1",
+        payload = {"schema_version": "native_shared_revision_recheck_preparation_v1",
             "preparation_id": str(self.preparation_id), "lineage_id": str(self.revision.preparation_id),
             "lineage_hash": self.lineage_hash, "root_id": str(self.revision.investigation.root_id),
             "lease": self.lease.model_dump(mode="json"), "artifact_id": str(self.artifact_id), "artifact_hash": self.artifact_hash,
-            "context_hash": self.revision.context.context_hash,
+            "context_hash": (self.revision.context.context_hash if isinstance(self.revision, PreparedNativeRevision)
+                else self.revision.context_hash),
             "original_disputes": [d.model_dump(mode="json") for d in self.revision.investigation.request.disputes],
             "ancestor_reviews": [{"receipt_id": str(i), "receipt_hash": h} for i,h in self.ancestors],
             "forbidden_run_ids": sorted(str(i) for i in self.forbidden_run_ids), "bundle_version": self.bundle_version,
             "deadline_at": self.revision.deadline_at.isoformat(), "publication_enabled": False, "blockers_discharged": False}
+        if self.committed_child is not None:
+            payload.update(schema_version="native_shared_revision_recheck_preparation_v2",
+                committed_child=self.committed_child.payload)
+        return payload
+
+
+@dataclass(frozen=True, repr=False)
+class CommittedNativeRevisionRecheckInputs:
+    """Original in-process inputs, NOT a reconstructible capability or verdict."""
+    validation_prepared: PreparedSharedValidation
+    validation_result: SharedValidationResult
+    validation_receipt_id: UUID
+    review_prepared: PreparedSharedReview
+    review_result: SharedReviewResult
+    blind_receipt_id: UUID
+    review_receipt_id: UUID
+    recheck_hash: str
 
 
 class NativeRevisionRecheckOwner:
-    def __init__(self, revision_owner: NativeRevisionOwner, validation: SharedValidationPipeline,
-                 review: SharedReviewPipeline, *, enabled: bool = False) -> None:
-        if (type(revision_owner) is not NativeRevisionOwner or type(validation) is not SharedValidationPipeline
-                or type(review) is not SharedReviewPipeline or revision_owner.conn is not validation.conn or review.conn is not validation.conn):
+    def __init__(self, revision_owner: NativeRevisionOwner | None, validation: SharedValidationPipeline,
+                 review: SharedReviewPipeline, *, enabled: bool = False, persistent_phase: Any = None,
+                 committed_child: IssuedCommittedChildRecheck | None = None) -> None:
+        if (type(validation) is not SharedValidationPipeline or type(review) is not SharedReviewPipeline
+                or review.conn is not validation.conn
+                or (committed_child is None and (type(revision_owner) is not NativeRevisionOwner or revision_owner.conn is not validation.conn))
+                or (committed_child is not None and (revision_owner is not None or type(committed_child) is not IssuedCommittedChildRecheck
+                    or committed_child.owner.conn is not review.conn or persistent_phase is not committed_child.phase))):
             raise PipelineRepositoryError("RECHECK_SAME_CONCRETE_ORIGINAL_OWNERS_REQUIRED")
         self.revision_owner,self.validation,self.review,self.conn,self.enabled = revision_owner,validation,review,review.conn,enabled
+        if persistent_phase is not None:
+            from app.services.learning.item_supply.persistent_pack import PersistentPackTaskOwner
+            from app.services.learning.item_supply.persistent_pack_contracts import IssuedPackPhase
+            if (type(persistent_phase) is not IssuedPackPhase or type(persistent_phase.owner) is not PersistentPackTaskOwner
+                    or persistent_phase.owner.conn is not self.conn or persistent_phase.record.kind!="candidate"):
+                raise PipelineRepositoryError("RECHECK_CONCRETE_PERSISTENT_PHASE_REQUIRED")
+        self._persistent_phase=persistent_phase
+        self._committed_child=committed_child
         self._prepared: dict[UUID,tuple[PreparedNativeRevisionRecheck,str]] = {}
         self._validations: dict[UUID,PreparedSharedValidation] = {}
         self._validation_results: dict[UUID,SharedValidationResult] = {}
@@ -97,17 +135,20 @@ class NativeRevisionRecheckOwner:
         self._review_results: dict[UUID,SharedReviewResult] = {}
         self._review_ids: dict[UUID,tuple[UUID,UUID]] = {}
         self._runners: dict[UUID,RunnerPort | None] = {}
+        self._dispute_receipts: dict[UUID, str] = {}
 
     def _guard(self) -> None:
         if not self.enabled or not self.validation.validation_enabled or not self.review.review_enabled:
             raise PipelineRepositoryError("NATIVE_REVISION_RECHECK_DISABLED")
+        if self._persistent_phase is not None:
+            self._persistent_phase.owner.require_phase(self._persistent_phase,kind="candidate")
         self.validation.artifacts.require_owner()
         row = self.conn.execute("SELECT to_regclass('public.tutor_item_supply_shared_revision_recheck_preparations') AS p, "
             "to_regclass('public.tutor_item_supply_shared_revision_recheck_receipts') AS r").fetchone()
         if row is None or row["p"] is None or row["r"] is None:
             raise PipelineRepositoryError("NATIVE_REVISION_RECHECK_SCHEMA_REQUIRED")
 
-    def _ancestry(self, revision: PreparedNativeRevision) -> tuple[tuple[tuple[UUID,str], ...],frozenset[UUID],int]:
+    def _ancestry(self, revision: PreparedNativeRevision | CommittedChildRevisionData) -> tuple[tuple[tuple[UUID,str], ...],frozenset[UUID],int]:
         # Immutable DB history is used ONLY to reject reused identities, not to
         # restore any provider/executor/author capability. Include every reachable
         # committed bundle, including 491-origin artifacts via lineage parent IDs.
@@ -119,7 +160,9 @@ class NativeRevisionRecheckOwner:
             "WHERE r.artifact_kind='review_bundle' ORDER BY r.id",(revision.preparation_id,)).fetchall()
         if not rows or len(rows)>64:
             raise PipelineRepositoryError("RECHECK_COMPLETE_ANCESTRAL_HISTORY_REQUIRED")
-        receipts,ids,version = [],set(),1
+        receipts: list[tuple[UUID, str]] = []
+        ids: set[UUID] = set()
+        version = 1
         for row in rows:
             schema = row["payload_json"].get("schema_version")
             kind = ReviewBundleV3 if schema=="item_supply_review_bundle_v3" else ReviewBundleV2
@@ -136,6 +179,10 @@ class NativeRevisionRecheckOwner:
 
     def _parent_solver(self, revision: PreparedNativeRevision) -> JsonBlindSolverV2:
         parent = revision.investigation.original
+        if type(parent) is not PreparedSharedReview:
+            raise PipelineRepositoryError("RECHECK_COMMITTED_EVIDENCE_NOT_RECHECK_AUTHORITY")
+        if self.revision_owner is None:
+            raise PipelineRepositoryError("RECHECK_ORIGINAL_REVIEW_OWNER_REQUIRED")
         owner = self.revision_owner.investigation_owner.review
         if type(owner) is not SharedReviewPipeline or owner.conn is not self.conn:
             raise PipelineRepositoryError("RECHECK_ORIGINAL_REVIEW_OWNER_REQUIRED")
@@ -150,16 +197,40 @@ class NativeRevisionRecheckOwner:
         if type(p) is not PreparedNativeRevisionRecheck:
             raise PipelineRepositoryError("RECHECK_ORIGINAL_PREPARED_REQUIRED")
         entry = self._prepared.get(p.preparation_id)
-        self._parent_solver(p.revision)
+        if p.committed_child is not None:
+            if (p.committed_child is not self._committed_child or p.revision is not p.committed_child.revision
+                    or p.author is not None or p.author_result is not None):
+                raise PipelineRepositoryError("RECHECK_COMMITTED_CHILD_PROCESS_FRAME_REQUIRED")
+        else:
+            if not isinstance(p.revision, PreparedNativeRevision):
+                raise PipelineRepositoryError("RECHECK_ORIGINAL_PREPARED_REQUIRED")
+            self._parent_solver(p.revision)
         parent = p.revision.investigation.original
         with finite_review_context(parent.source,spec=parent.spec,materials=parent.request.materials):
             if entry is None or entry[0] is not p or entry[1] != canonical_hash(p.payload()):
                 raise PipelineRepositoryError("RECHECK_ORIGINAL_PREPARED_REQUIRED")
 
-    def _current(self, p: PreparedNativeRevisionRecheck, lease: JobLeaseV1, *, committed: bool = True) -> dict[str,Any]:
+    def _current(self, p: PreparedNativeRevisionRecheck, lease: JobLeaseV1, *, committed: bool = True,
+                 normal_facts_owner: SharedAdmissionFactsOwner | None = None,
+                 normal_facts: IssuedSharedAdmissionFactsV1 | None = None) -> dict[str,Any]:
         self._guard()
         self._issued(p)
-        current = self.revision_owner.verified_committed_lineage(p.revision,p.author,p.author_result,lease=lease)
+        if p.committed_child is not None:
+            from app.services.learning.item_supply.persistent_pack_committed_recheck import require
+            current = require(p.committed_child, lease=lease)
+            terminal = self.conn.execute("SELECT id FROM tutor_item_supply_shared_admission_facts WHERE generation_artifact_id=%s",
+                (p.artifact_id,)).fetchone()
+            if terminal is not None:
+                if normal_facts_owner is None or normal_facts is None or normal_facts_owner.normal_readmission_owner is None:
+                    raise PipelineRepositoryError("RECHECK_EXACT_NORMAL_TERMINAL_FRAME_REQUIRED")
+                normal_facts_owner.normal_readmission_owner.require_terminal_frame(facts_owner=normal_facts_owner,
+                    facts=normal_facts, lease=lease)
+        else:
+            if (self.revision_owner is None or not isinstance(p.revision, PreparedNativeRevision)
+                    or p.author is None or p.author_result is None):
+                raise PipelineRepositoryError("RECHECK_ORIGINAL_PREPARED_REQUIRED")
+            current = self.revision_owner.verified_committed_lineage(p.revision,p.author,p.author_result,lease=lease,
+                normal_facts_owner=normal_facts_owner, normal_facts=normal_facts)
         row = self.conn.execute("SELECT rr.*,rr.xmin::text::bigint=(txid_current() %% 4294967296) AS same_transaction "
             "FROM tutor_item_supply_shared_revision_recheck_preparations rr WHERE rr.id=%s FOR SHARE",(p.preparation_id,)).fetchone()
         parent = p.revision.investigation.original
@@ -179,6 +250,8 @@ class NativeRevisionRecheckOwner:
                 author_result: GenerationResultV2, lease: JobLeaseV1) -> PreparedNativeRevisionRecheck | None:
         self._guard()
         self._parent_solver(revision)
+        if self.revision_owner is None or self._committed_child is not None:
+            raise PipelineRepositoryError("RECHECK_ORIGINAL_LIVE_MODE_REQUIRED")
         current = self.revision_owner.verified_committed_lineage(revision,author,author_result,lease=lease)
         if self.validation.runtime.next_stage(lease) != "validating":
             raise PipelineRepositoryError("RECHECK_NEW_VALIDATION_STAGE_REQUIRED")
@@ -195,6 +268,29 @@ class NativeRevisionRecheckOwner:
         if row is None:
             return None
         self._prepared[p.preparation_id] = (p,canonical_hash(payload))
+        return p
+
+    def prepare_committed_child(self, frame: IssuedCommittedChildRecheck, *, lease: JobLeaseV1) -> PreparedNativeRevisionRecheck | None:
+        """New issuer, exact historical DATA and fresh operation; no author frame."""
+        from app.services.learning.item_supply.persistent_pack_committed_recheck import require
+        if frame is not self._committed_child:
+            raise PipelineRepositoryError("RECHECK_COMMITTED_CHILD_PROCESS_FRAME_REQUIRED")
+        self._guard()
+        current = require(frame, lease=lease)
+        if self.validation.runtime.next_stage(lease) != "validating":
+            raise PipelineRepositoryError("RECHECK_NEW_VALIDATION_STAGE_REQUIRED")
+        ancestors, ids, version = self._ancestry(frame.revision)
+        p = PreparedNativeRevisionRecheck(uuid4(), frame.revision, None, None, checked_model(lease, JobLeaseV1),
+            current["artifact"]["id"], current["artifact"]["artifact_hash"], current["lineage"]["snapshot_hash"],
+            ancestors, ids, version, frame)
+        payload = p.payload()
+        row = self.conn.execute("INSERT INTO tutor_item_supply_shared_revision_recheck_preparations "
+            "(id,lineage_id,root_id,job_id,generation_artifact_id,payload_json,valid_until) VALUES(%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT(lineage_id) DO NOTHING RETURNING id", (p.preparation_id, frame.revision.preparation_id,
+                frame.phase.record.root_id, lease.job_id, p.artifact_id, Jsonb(payload), frame.revision.deadline_at)).fetchone()
+        if row is None:
+            return None
+        self._prepared[p.preparation_id] = (p, canonical_hash(payload))
         return p
 
     def prepare_validation(self, p: PreparedNativeRevisionRecheck, *, lease: JobLeaseV1,
@@ -239,10 +335,26 @@ class NativeRevisionRecheckOwner:
             raise PipelineRepositoryError("RECHECK_ORIGINAL_COMMITTED_VALIDATION_REQUIRED")
         self.validation.verified_committed_validation(self._validations[p.preparation_id],self._validation_results[p.preparation_id],
             lease=lease,receipt_id=self._validation_ids[p.preparation_id])
-        original_solver = self._parent_solver(p.revision)
+        if p.committed_child is None:
+            if not isinstance(p.revision, PreparedNativeRevision):
+                raise PipelineRepositoryError("RECHECK_ORIGINAL_PREPARED_REQUIRED")
+            original_solver = self._parent_solver(p.revision)
+            assert self.revision_owner is not None
+            configured_models = self.revision_owner.generation._models
+        else:
+            # Fresh configuration, not the old parent's solver registry.
+            from app.services.learning.item_supply.persistent_pack_candidate import PersistentCandidateExecutor
+            executor = p.committed_child.phase.prepared["candidate_executor"]
+            if type(executor) is not PersistentCandidateExecutor:
+                raise PipelineRepositoryError("RECHECK_COMMITTED_CHILD_EXECUTOR_REQUIRED")
+            original_solver, _ = executor._ports(lease, p.revision.spec)
+            configured_models = p.committed_child.phase.prepared["generation_owner"]._models
         settings = self.review.settings
+        model = settings.llm_model
+        if not isinstance(model, str) or not model:
+            raise PipelineRepositoryError("RECHECK_FORMAL_CONFIGURED_MODEL_REQUIRED")
         if (not settings.uses_deepseek_v4_flash_responses or settings.tutor_max_output_tokens != DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
-                or self.review._models != self.revision_owner.generation._models):
+                or self.review._models != configured_models):
             raise PipelineRepositoryError("RECHECK_FORMAL_FROZEN_OUTPUT_MODEL_REQUIRED")
         timeout = min(3600.0,lease.profile.values.request_timeout_ms/1000,
             (min(lease.expires_at,lease.parent_deadline,p.revision.deadline_at)-server_clock(self.conn,datetime.now(UTC))).total_seconds())
@@ -250,8 +362,7 @@ class NativeRevisionRecheckOwner:
             raise PipelineRepositoryError("RECHECK_ORIGINAL_DEADLINE_REACHED")
         def identity(role: str) -> ProviderIdentityV2:
             return ProviderIdentityV2(identity="deepseek.recheck."+p.preparation_id.hex+"."+role,
-                provider="deepseek",model=settings.llm_model)
-        kwargs = dict(profile_hash=lease.profile.profile_hash,timeout_seconds=timeout,max_output_tokens=DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS)
+                provider="deepseek",model=model,model_version=model if self._persistent_phase is not None else "unreported")
         operation_deadline = min(p.revision.deadline_at,self.review._review_deadline(lease))
         if original_solver._max_output_tokens != DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS:
             raise PipelineRepositoryError("RECHECK_FORMAL_FROZEN_BLIND_OUTPUT_REQUIRED")
@@ -261,7 +372,8 @@ class NativeRevisionRecheckOwner:
             max_output_tokens=original_solver._max_output_tokens,
             max_input_bytes=original_solver._max_input_bytes, blind_protocol=original_solver.blind_protocol)
         reviewers = tuple(JsonReviewerV2(_RecheckClient(settings,profile=lease.profile,operation_deadline_at=operation_deadline),
-            role=r,identity=identity(r.value),review_protocol="evidenced-v1",**kwargs) for r in REQUIRED_REVIEW_ROLES)
+            role=r,identity=identity(r.value),review_protocol="evidenced-v1", profile_hash=lease.profile.profile_hash,
+            timeout_seconds=timeout,max_output_tokens=DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS) for r in REQUIRED_REVIEW_ROLES)
         review = self.review.prepare_independent_review(bundle_version=p.bundle_version,forbidden_run_ids=p.forbidden_run_ids,
             lease=lease,artifact_id=p.artifact_id,validation_receipt_id=self._validation_ids[p.preparation_id],spec=p.revision.spec,
             source_authority=current["authority"],solver=solver,reviewers=reviewers,runner=self._runners[p.preparation_id],
@@ -296,7 +408,7 @@ class NativeRevisionRecheckOwner:
         return stage
 
     def persist_dispute_evidence(self, p: PreparedNativeRevisionRecheck, *, lease: JobLeaseV1) -> UUID:
-        current = self._current(p,lease)
+        self._current(p,lease)
         r,result = self._reviews[p.preparation_id],self._review_results[p.preparation_id]
         if r.lease != lease or p.preparation_id not in self._review_ids:
             raise PipelineRepositoryError("RECHECK_COMPLETE_COMMITTED_NEW_REVIEW_REQUIRED")
@@ -320,6 +432,7 @@ class NativeRevisionRecheckOwner:
         if (type(scorer) is FiniteStaticBlindScorer and static is not None and validation==static.validation
                 and scorer.verify(verified.blind.score,r.source) and scorer._facts(r.source)==static
                 and sum(o.accepted for o in static.options)==1
+                and isinstance(r.source.private.content, LearningItemKnowledgeCheckPrivateV1)
                 and tuple(r.source.private.content.accepted_answers)==(static.correct_option_id,)):
             proof = canonical_hash({"check":"finite_kc_unique_truth_v1","source_hash":r.source.source_hash,
                 "static_facts_hash":canonical_hash(static.model_dump(mode="json")),"scorer_version":static.scorer_version,
@@ -334,27 +447,65 @@ class NativeRevisionRecheckOwner:
                     and any(x.startswith("/source/public/content/options") for x in pointers)
                     and any(x.startswith("/source/private/content/accepted_answers") for x in pointers)):
                 state,check,evidence,reason = "check_supported","finite_kc_unique_truth_v1",proof,"finite_property_only_not_claim_resolution"
-            entries.append(NativeRevisionDisputeEvidenceV1.model_validate_json(json.dumps({"original_dispute":d.model_dump(mode="json"),
+            from app.services.learning.item_supply.persistent_pack_repair import (
+                PersistentCloneFindingV1, PersistentRevisionFindingEvidenceV1,
+            )
+            evidence_model=(PersistentRevisionFindingEvidenceV1 if type(d) is PersistentCloneFindingV1
+                else NativeRevisionDisputeEvidenceV1)
+            entries.append(evidence_model.model_validate_json(json.dumps({"original_dispute":d.model_dump(mode="json"),
                 "new_binding":r.binding.model_dump(mode="json"),"validation_receipt_id":str(self._validation_ids[p.preparation_id]),
                 "validation_hash":validation.evidence_hash,"review_receipt_id":str(review_id),"review_hash":verified.bundle.bundle_hash,
                 "state":state,"supported_check":check,"issuer_evidence_hash":evidence,"safe_reason":reason})))
         parent = p.revision.investigation.original
         with finite_review_context(parent.source,spec=parent.spec,materials=parent.request.materials):
             prep_hash = canonical_hash(p.payload())
-        payload = {"schema_version":"native_shared_revision_recheck_receipt_v1","preparation_id":str(p.preparation_id),
+        receipt_payload = {"schema_version":"native_shared_revision_recheck_receipt_v1","preparation_id":str(p.preparation_id),
             "preparation_hash":prep_hash,"lease":lease.model_dump(mode="json"),"artifact_id":str(p.artifact_id),
             "lineage_hash":p.lineage_hash,"validation_receipt_id":str(self._validation_ids[p.preparation_id]),
             "blind_receipt_id":str(blind_id),"review_receipt_id":str(review_id),"review_hash":verified.bundle.bundle_hash,
             "entries":[e.model_dump(mode="json") for e in entries],"new_material_disputes":[d.model_dump(mode="json") for d in review_disputes(verified.bundle)],
             "finite_unique_property_hash":proof,"publication_enabled":False,"admission_eligible":False,"blockers_discharged":False}
+        if p.committed_child is not None:
+            receipt_payload["schema_version"] = "native_shared_revision_recheck_receipt_v2"
         row = self.conn.execute("INSERT INTO tutor_item_supply_shared_revision_recheck_receipts "
             "(id,preparation_id,root_id,job_id,generation_artifact_id,validation_receipt_id,blind_receipt_id,review_receipt_id,payload_json) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(preparation_id) DO NOTHING RETURNING id",
             (p.preparation_id,p.preparation_id,p.revision.investigation.root_id,lease.job_id,p.artifact_id,
-                self._validation_ids[p.preparation_id],blind_id,review_id,Jsonb(payload))).fetchone()
+                self._validation_ids[p.preparation_id],blind_id,review_id,Jsonb(receipt_payload))).fetchone()
         if row is None:
             prior = self.conn.execute("SELECT id,snapshot_hash,payload_json FROM tutor_item_supply_shared_revision_recheck_receipts WHERE preparation_id=%s",
                 (p.preparation_id,)).fetchone()
-            if prior is None or prior["payload_json"]!=payload or prior["snapshot_hash"]!=canonical_hash(payload):
+            if prior is None or prior["payload_json"]!=receipt_payload or prior["snapshot_hash"]!=canonical_hash(receipt_payload):
                 raise PipelineRepositoryError("RECHECK_IMMUTABLE_EVIDENCE_CONFLICT")
+        self._dispute_receipts[p.preparation_id] = canonical_hash(receipt_payload)
         return p.preparation_id
+
+    def verified_readmission_inputs(self, p: PreparedNativeRevisionRecheck, *, lease: JobLeaseV1,
+                                    recheck_receipt_id: UUID, normal_facts_owner: SharedAdmissionFactsOwner | None = None,
+                                    normal_facts: IssuedSharedAdmissionFactsV1 | None = None) -> CommittedNativeRevisionRecheckInputs:
+        """New explicit reader of SAME original issuers; 510 DATA stays unchanged."""
+        self._current(p, lease, normal_facts_owner=normal_facts_owner, normal_facts=normal_facts)
+        if recheck_receipt_id != p.preparation_id or p.preparation_id not in self._dispute_receipts:
+            raise PipelineRepositoryError("NORMAL_READMISSION_ORIGINAL_510_ISSUER_REQUIRED")
+        r, result = self._reviews[p.preparation_id], self._review_results[p.preparation_id]
+        if r.lease != lease or p.preparation_id not in self._review_ids:
+            raise PipelineRepositoryError("NORMAL_READMISSION_CURRENT_CHILD_REVIEW_REQUIRED")
+        verified = self.review.verified_review_evidence(r, result, runner=self._runners[p.preparation_id])
+        self.validation.verified_committed_validation(self._validations[p.preparation_id],
+            self._validation_results[p.preparation_id], lease=lease, receipt_id=self._validation_ids[p.preparation_id])
+        if verified.bundle.bundle_version != p.bundle_version or p.forbidden_run_ids & {
+                verified.blind.run.run_id, *(x.run.run_id for x in verified.bundle.reports)}:
+            raise PipelineRepositoryError("RECHECK_ANCESTRAL_REVIEW_IDENTITY_REUSED")
+        blind_id, review_id = self._review_ids[p.preparation_id]
+        row = self.conn.execute("SELECT rr.*,rr.xmin::text::bigint=(txid_current() %% 4294967296) AS same_transaction "
+            "FROM tutor_item_supply_shared_revision_recheck_receipts rr WHERE id=%s FOR SHARE", (recheck_receipt_id,)).fetchone()
+        if (row is None or row["same_transaction"] or row["snapshot_hash"] != self._dispute_receipts[p.preparation_id]
+                or canonical_hash(row["payload_json"]) != row["snapshot_hash"]
+                or (row["job_id"], row["generation_artifact_id"], row["validation_receipt_id"], row["blind_receipt_id"], row["review_receipt_id"])
+                != (lease.job_id, p.artifact_id, self._validation_ids[p.preparation_id], blind_id, review_id)
+                or row["payload_json"]["lease"] != lease.model_dump(mode="json")
+                or row["payload_json"]["review_hash"] != verified.bundle.bundle_hash):
+            raise PipelineRepositoryError("NORMAL_READMISSION_COMMITTED_EXACT_510_REQUIRED")
+        return CommittedNativeRevisionRecheckInputs(self._validations[p.preparation_id],
+            self._validation_results[p.preparation_id], self._validation_ids[p.preparation_id],
+            r, result, blind_id, review_id, row["snapshot_hash"])

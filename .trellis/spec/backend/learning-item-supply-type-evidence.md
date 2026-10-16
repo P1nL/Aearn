@@ -129,3 +129,50 @@ and full delivery remain separate acceptance. Legacy495 family hashes are not V2
 Do not weaken the old reservation owner or mint reviewer/source/exposure receipts
 to bridge missing authority. Actual-D private lifecycle, real full-pack delivery,
 P8/P9/P10 and E require their own recorded acceptance. No implicit Git/public release.
+
+## 2026-10-12 persistent PUBLIC source ingress — selected slice
+
+### 1. Scope / trigger
+Applies to public_normal_source_ingress.py and reviewed SQL530. Installed SQL
+bytes are immutable; this source/migration slice is not whole P7 acceptance.
+
+### 2. Signatures
+require_public_normal_receivers(conn) verifies exact effective pins. SQL
+public_normal_mapping_current(uuid,uuid,bigint) and
+public_native_source_current(jsonb) retain original PUBLIC actual-D/source
+resolution. Original continuation/normal repair still require concrete issuers.
+
+### 3. Contracts
+Signed source-proof hash and ClaimEvidenceReceipt DTO hash are distinct domains.
+Verify the signed proof against its physical proof/claim registration, and
+independently rebuild the original PUBLIC resolver's23-key DTO before comparing
+coordinate.claim_receipt_hash. Retain source/version/link/capture/policy/claim,
+namespace/oracle and active-pointer locks; recheck clock after waits. Reject actual
+PRIVATE proofs in this PUBLIC ingress. Source predicate true is not a capability.
+
+### 4. Validation / error matrix
+Wrong epoch/source/namespace/claim, controlled ancestry, stale fresh phase or
+mismatched fixed artifact/spec retain false/deny/block. Producer expiry does not
+erase committed quality or create a replacement task. A JSON containment RHS
+with chained arrow paths must be parenthesized; boolean-arrow SQL errors never
+mean implicit clearance.
+
+### 5. Good / base / bad cases
+Good: original same task/five slots obtain a fresh original phase after checks.
+Base: old legacy guards/history/once/UNKNOWN remain immutable. Bad: equate two
+hash domains, borrow PRIVATE authority, suppress errors or replace seed/item/root
+on a technical stop.
+
+### 6. Required assertions
+Original source-only rollback predicate checks and actual zero-HTTP phase
+preparation are separate gates. Selected compile/replay/rollback/install preserve
+all old rows/unrelated objects. SQL527 adds only three nullable PRIVATE KC keys:
+compare every old row/column after excluding only those three new JSON keys,
+verify exact column metadata/all-NULL values, and permit only reviewed public
+version NOTNULL true-to-false. Never ignore the whole old table.
+
+### 7. Wrong vs correct
+Wrong: chunk.facets_json @> material->'access_request'->'scope'->'facets'.
+Correct: chunk.facets_json @> (material->'access_request'->'scope'->'facets').
+Wrong: compare signed-proof hash directly with DTO hash. Correct: verify each
+against its original distinct representation and physical registration.

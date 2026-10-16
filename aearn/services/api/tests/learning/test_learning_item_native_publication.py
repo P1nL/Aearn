@@ -198,3 +198,74 @@ def test_static_native_chain_atomic_rollback_and_durable_current_query_after_pro
     # current-source read. This is a pure ordering seam, not a live PG race test.
     source_current.update(allowed=True, quarantine_on_check=True)
     assert query.query_exact(handle=handle, spec=spec, source_authority=authority) is None
+
+
+def test_exact_query_default_source_path_stays_stale_and_rejects_naked_context(monkeypatch):
+    """Only the changed source dispatch boundary; no PG/issuer/quality acceptance."""
+    from app.services.learning.item_bank.native_publication_contracts import NativePublicationProofV1
+    from tests.learning.test_item_supply_generation import make_request
+
+    spec, materials, source = _candidate("python-kc-binding-v1")
+    request, _ = make_request()
+    profile = request.profile
+    from app.services.learning.item_supply.jobs import JobLeaseV1
+    lease = JobLeaseV1(job_id=uuid4(),visibility="public",lease_owner="offline.source",generation=1,state_version=1,
+        expires_at=profile.parent_deadline_at,parent_deadline=profile.parent_deadline_at,profile=profile)
+    scope=spec.coverage_blueprint.scope
+    runtime=NativeInternalRuntimeBindingV1(target_id=spec.target_id,runtime_id=scope.runtime_profile_id,
+        runtime_profile_hash=scope.runtime_profile_hash,scorer_version=scope.scorer_version,runner_version=None,runtime_lock=None)
+    now=profile.bound_at
+    receipts=tuple(SourceReceiptV2(material_digest=material_digest(m),binding_digest=m.binding.binding_digest,
+        corpus_version_id=UUID(m.binding.evidence[0].corpus_version_id),active_generation=m.binding.evidence[0].active_generation,
+        checked_at_iso=now.isoformat(),claim_receipt_hashes=(m.binding.evidence[0].claim_receipt_hash,),mode="current_authority") for m in materials)
+    material=build_native_practice_material(source,spec=spec,materials=materials)
+    handle=learning_item_handle(source.public.item_key,source.public.version,source.content_hash)
+    identity_fields=("proof_id","version_id","generation_artifact_id","bank_validation_id","validation_receipt_id","review_receipt_id",
+        "evaluation_receipt_id","facts_receipt_id","materialization_id","exercise_version_id","publication_event_id","review_event_id","pilot_event_id")
+    proof=NativePublicationProofV1(**{k:uuid4() for k in identity_fields},item_handle=handle,source_hash=source.source_hash,
+        content_hash=source.content_hash,specification_hash=spec.specification_hash,target_id=spec.target_id,target_definition_hash=spec.target_definition_hash,
+        clauses=(),materials=materials,source_receipts=receipts,lease=lease,runtime=runtime,
+        validation_hash="a"*64,review_hash="b"*64,evaluation_hash="c"*64,facts_hash="d"*64,evidence_hash="e"*64,
+        materialization_hash="f"*64,runner_material_hash=canonical_hash(dict(material.runner_payload)),policy_hash=AutonomousEvidencePolicyV3().policy_hash,
+        checked_at=now,valid_until=lease.expires_at)
+    row=dict(proof_json=proof.model_dump(mode="json"),proof_hash=proof.proof_hash,occurred_at=now,
+        source_json=source.model_dump(mode="json"),public_json=source.public.model_dump(mode="json"),
+        exercise_content_hash=material.exercise.content_hash,rubric_hash=material.rubric.rubric_hash,
+        materialization_hash=proof.materialization_hash,runner_material_json=dict(material.runner_payload))
+    sqls=[]
+    def execute(sql,params=()):
+        sqls.append(sql)
+        if "clock_timestamp()" in sql:
+            return SimpleNamespace(fetchone=lambda:{"now":now})
+        assert sql.startswith("SELECT p.proof_json")
+        return SimpleNamespace(fetchone=lambda:row)
+    query=object.__new__(NativePublishedItemQuery)
+    query.conn=SimpleNamespace(execute=execute)
+    query._bindings={spec.target_id:runtime}
+    query.artifacts=SimpleNamespace(require_owner=lambda:None,require_source=lambda a:None,
+        published_generation_policy=lambda r:AutonomousEvidencePolicyV3())
+    monkeypatch.setattr(query,"_require_actual_public_proof",lambda *args:())
+    authority=object.__new__(RagSourceAuthority)
+    checks=[]
+    def stale(self,m,r):
+        checks.append(m)
+        raise ValueError("original_current_source_stale")
+    monkeypatch.setattr(RagSourceAuthority,"assert_current",stale)
+    with pytest.raises(ValueError,match="original_current_source_stale"):
+        query.query_exact(handle=handle,spec=spec,source_authority=authority)
+    assert checks==[materials[0]] and not any("FOR SHARE" in sql for sql in sqls)
+    with pytest.raises(ValueError,match="original_issuer_required"):
+        query.query_exact(handle=handle,spec=spec,source_authority=authority,current_source_binding={"source_current":True})
+
+
+def test_current_source_dataclass_is_not_a_restorable_issuer():
+    from app.services.learning.item_supply.persistent_pack import PersistentPackTaskOwner
+    from app.services.learning.item_supply.persistent_pack_current_source import IssuedCurrentPackSourceBinding,require
+    from app.services.learning.item_supply.pipeline_repository import PipelineRepositoryError
+    core=object.__new__(PersistentPackTaskOwner)
+    core._current_source_bindings={}
+    copied=object.__new__(IssuedCurrentPackSourceBinding)
+    object.__setattr__(copied,"owner",core)
+    object.__setattr__(copied,"binding_id",uuid4())
+    with pytest.raises(PipelineRepositoryError,match="ORIGINAL_ISSUER_REQUIRED"):
+        require(copied)

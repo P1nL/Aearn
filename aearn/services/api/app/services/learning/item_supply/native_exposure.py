@@ -6,7 +6,7 @@ Historical/unknown surfaces fail pending. These ports do not grant pack readines
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import json
 from typing import Any
 from uuid import UUID, uuid4
@@ -21,7 +21,7 @@ from app.services.learning.item_bank.native_publication_contracts import NativeP
 from app.services.learning.item_supply.finite_candidate_factory import FiniteCandidateSpecV1
 from app.services.learning.item_supply.finite_task_families import families_for_course
 from app.services.learning.item_supply.native_exposure_contracts import (
-    COLLECTOR_VERSION, NativeExposureBindingV1, NativeExposurePending, NativeExposureSnapshot,
+    COLLECTOR_VERSION, CURRENT_PACK_TTL, NativeExposureBindingV1, NativeExposurePending, NativeExposureSnapshot,
 )
 from app.services.learning.item_supply.pack_contracts import CompleteExposureV1, NativeExposureV1
 from app.services.learning.item_supply.rag_evidence_adapter import RagSourceAuthority
@@ -159,7 +159,7 @@ class NativeExposureOwner:
         return NativeExposureSnapshot("complete", "native_exposure_current", CompleteExposureV1(
             learner_id=self.user_id, epoch=self.epoch, collector_version=COLLECTOR_VERSION,
             watermark=raw["watermark"], completeness_receipt_hash=digest, observed_at=now,
-            valid_until=now + timedelta(seconds=30), records=records), UUID(str(receipt["id"])))
+            valid_until=now + CURRENT_PACK_TTL, records=records), UUID(str(receipt["id"])))
 
     def _scope_binding(self, scope_id: UUID, version_id: UUID) -> NativeExposureBindingV1:
         scope = self.private._scope(scope_id)

@@ -5,6 +5,8 @@ from uuid import UUID
 from typing import Any
 from psycopg import Connection
 
+from app.core.source_fence_diagnostics import observe_source_fence
+
 from app.services.grounding.autonomous.assessment_contracts import (
     ClaimEvidenceReceipt, ClaimReceiptResolver,
 )
@@ -36,10 +38,12 @@ class RagSourceAuthority:
         """Final caller-owned transaction; RAG takes the exact publication fence."""
         expected = checked_model(expected, SourceReceiptV2)
         if expected.mode != "current_authority":
+            observe_source_fence("rag_assert_current", "native_receipt_mode_invalid")
             raise SourceEvidenceDenied()
         current = self._authorize(material, expected_generation=expected.active_generation)
         if current.model_dump(exclude={"checked_at_iso"}) != expected.model_dump(
                 exclude={"checked_at_iso"}):
+            observe_source_fence("rag_assert_current", "native_receipt_current_mismatch")
             raise SourceEvidenceDenied()
         return current
 
@@ -51,6 +55,7 @@ class RagSourceAuthority:
             claim = item.exact_claims[0]
             resolved = self._claims.resolve(claim.claim_receipt_id)
             if resolved is None:
+                observe_source_fence("rag_authorize", "claim_missing_or_denied")
                 raise SourceEvidenceDenied()
             receipt = checked_model(resolved, ClaimEvidenceReceipt)
             binding = coordinate.binding
@@ -92,6 +97,7 @@ class RagSourceAuthority:
                 checked_at_iso=current.checked_at.isoformat(),
                 claim_receipt_hashes=(receipt_hash,), mode="current_authority",
             )
-        except Exception:
+        except Exception as exc:
             # No URLs, raw resolver errors, claims or source text leave this boundary.
+            observe_source_fence("rag_authorize", "source_authorization_denied", exc)
             raise SourceEvidenceDenied() from None

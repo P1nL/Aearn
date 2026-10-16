@@ -2,14 +2,17 @@
 # ruff: noqa: F403, F405
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+from uuid import UUID
 
 from ._namespace import *
 from ._mixin import PersistenceMixin
 
 if TYPE_CHECKING:
     from app.services.learning.artifacts.repository import LearningArtifactWriteResult
-    from app.services.learning.teaching_artifacts import PreparedTeachingArtifact
+    from app.services.learning.teaching_artifacts import NativeTeachingPracticeDeliveryContext, PreparedTeachingArtifact
+    from app.services.learning.item_supply.private_enhancement_contracts import PrivateTeachingDeliveryContext
+    from app.services.learning.item_supply.native_fallback_delivery import NativeTeachingWholeBaseFallbackContext
     from app.services.learning.source_inspector import PreparedSourceInspector
 
 
@@ -23,6 +26,107 @@ class _TeachingStepCommit:
 
 class EffectsPersistenceMixin(PersistenceMixin):
     """由 PostgresTutorRepository 组合的内部职责 mixin。"""
+
+    _native_teaching_practice_deliveries: dict[str, NativeTeachingPracticeDeliveryContext | PrivateTeachingDeliveryContext]
+
+    _native_teaching_fallback_deliveries: dict[str, NativeTeachingWholeBaseFallbackContext]
+
+    def register_native_teaching_fallback_delivery(
+        self, *, run_id: str, context: NativeTeachingWholeBaseFallbackContext,
+    ) -> None:
+        """Explicit original per-run fallback; registration grants no authority."""
+        from app.services.learning.item_supply.native_fallback_delivery import NativeTeachingWholeBaseFallbackContext
+
+        if (type(context) is not NativeTeachingWholeBaseFallbackContext
+                or run_id != str(context.run_id) or context.private_service.conn is not self._conn
+                or context.private_service.settings is not self._settings):
+            raise TutorTerminalStateConflict('fallback delivery concrete same-connection run required')
+        try:
+            context._binding(run_id)
+        except ValueError as exc:
+            raise TutorTerminalStateConflict('fallback delivery exact original binding required') from exc
+        existing = self._native_teaching_fallback_deliveries.get(run_id)
+        if existing is not None and existing is not context:
+            raise TutorTerminalStateConflict('fallback delivery run is already bound')
+        self.register_native_teaching_practice_delivery(run_id=run_id, context=context.native_context)
+        self._native_teaching_fallback_deliveries[run_id] = context
+
+    def _require_native_teaching_fallback_for_run(
+        self, *, run: Mapping[str, object], stage: Literal['prepare', 'create'],
+    ) -> None:
+        context = self._native_teaching_fallback_deliveries.get(str(run['id']))
+        if context is None:
+            return  # Original curated/base-only composition is unchanged.
+        self.register_native_teaching_fallback_delivery(run_id=str(run['id']), context=context)
+        if str(context.task_ref.user_id) != str(run['user_id']):
+            raise TutorTerminalStateConflict('fallback delivery actual run user required')
+        try:
+            context.require_current(run_id=str(run['id']), stage=stage)
+        except ValueError as exc:
+            raise TutorTerminalStateConflict('fallback delivery current whole-base union unavailable') from exc
+
+
+
+    def register_native_teaching_practice_delivery(
+        self, *, run_id: str, context: NativeTeachingPracticeDeliveryContext | PrivateTeachingDeliveryContext,
+    ) -> None:
+        """Bind one concrete context to one run on this repository, without IO.
+
+        Registration grants no current authority. The ORIGINAL atomic terminal
+        materializer must resolve the actual run/mapping/content/pack/exposure
+        afresh and prepare delivery on this same connection before its writer.
+        """
+        from app.services.learning.teaching_artifacts import NativeTeachingPracticeDeliveryContext
+
+        from app.services.learning.item_supply.private_enhancement_contracts import PrivateTeachingDeliveryContext
+
+        if type(run_id) is not str or type(context) not in (NativeTeachingPracticeDeliveryContext, PrivateTeachingDeliveryContext):
+            raise TutorTerminalStateConflict("native teaching delivery exact run and concrete context are required")
+        try:
+            key = str(UUID(run_id))
+        except ValueError as exc:
+            raise TutorTerminalStateConflict("native teaching delivery exact run is required") from exc
+        if key != run_id:
+            raise TutorTerminalStateConflict("native teaching delivery canonical run is required")
+        from app.services.learning.item_supply.native_type_evidence import NativeTypeEvidenceOwner
+        from app.services.learning.item_supply.native_type_exposure import NativeExposureOwnerV2
+
+        from app.services.learning.item_supply.private_native_exposure import PrivateNativeExposureOwner
+        from app.services.learning.item_supply.private_native_type_evidence import PrivateNativeTypeEvidenceOwner
+
+        private = type(context) is PrivateTeachingDeliveryContext
+        if isinstance(context, PrivateTeachingDeliveryContext) and str(context.run_id) != key:
+            raise TutorTerminalStateConflict('private delivery exact per-run context required')
+        owner = context.exposure_owner
+        if (
+            type(owner) is not (PrivateNativeExposureOwner if private else NativeExposureOwnerV2)
+            or owner.conn is not self._conn
+            or type(owner.type_owner) is not (PrivateNativeTypeEvidenceOwner if private else NativeTypeEvidenceOwner)
+            or owner.type_owner.conn is not self._conn
+            or owner.type_owner.settings is not self._settings
+            or owner.user_id != owner.type_owner.user_id
+            or owner.epoch != owner.type_owner.epoch
+            or not owner.enabled or not owner.type_owner.enabled
+            or type(context.mapping_receipt_id) is not UUID
+            or type(context.selected_version_id) is not UUID
+        ):
+            raise TutorTerminalStateConflict("native teaching delivery concrete same-connection owner is required")
+        existing = self._native_teaching_practice_deliveries.get(key)
+        if existing is not None and existing is not context:
+            raise TutorTerminalStateConflict("native teaching delivery run is already bound")
+        self._native_teaching_practice_deliveries[key] = context
+
+    def _native_teaching_practice_delivery_for_run(
+        self, *, run: Mapping[str, object],
+    ) -> NativeTeachingPracticeDeliveryContext | PrivateTeachingDeliveryContext | None:
+        context = self._native_teaching_practice_deliveries.get(str(run["id"]))
+        if context is None:
+            return None
+        # Owner wiring may not be changed between registration and consumption.
+        self.register_native_teaching_practice_delivery(run_id=str(run["id"]), context=context)
+        if str(context.exposure_owner.user_id) != str(run["user_id"]):
+            raise TutorTerminalStateConflict("native teaching delivery exact run user is required")
+        return context
 
     def record_skill_selection(
         self,
@@ -817,9 +921,11 @@ class EffectsPersistenceMixin(PersistenceMixin):
             )
 
             try:
+                self._require_native_teaching_fallback_for_run(run=run, stage="prepare")
                 prepared_artifact = PostgresTeachingArtifactMaterializer(
                     self._conn,
                     settings=self._settings,
+                    native_practice_delivery=self._native_teaching_practice_delivery_for_run(run=run),
                 ).prepare(
                     step=result.teaching_step,
                     run_id=str(run["id"]),
@@ -876,9 +982,11 @@ class EffectsPersistenceMixin(PersistenceMixin):
             )
 
             try:
+                self._require_native_teaching_fallback_for_run(run=run, stage="create")
                 artifact_result = PostgresTeachingArtifactMaterializer(
                     self._conn,
                     settings=self._settings,
+                    native_practice_delivery=self._native_teaching_practice_delivery_for_run(run=run),
                 ).create(commit.prepared_artifact, occurred_at=created_at)
             except TeachingArtifactCommitError as exc:
                 raise TutorTerminalStateConflict(

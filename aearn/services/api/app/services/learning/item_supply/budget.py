@@ -171,11 +171,16 @@ class ItemSupplyBudgetRepository:
         self.conn.execute(
             f"SELECT id FROM {root_table} WHERE id=%s FOR UPDATE", (meta["root_id"],)
         ).fetchone()
-        window_filter, window_params = "", ()
+        window_filter = ""
+        window_params: tuple[Any, ...] = ()
         if development is not None:
             window_filter, window_params = " AND id=%s", (development["window_id"],)
         elif namespace == "shared" and self._development_accounting_available():
             window_filter = " AND NOT EXISTS(SELECT 1 FROM tutor_item_supply_development_model_accounting_batches dev WHERE dev.window_id=tutor_item_supply_shared_budget_windows.id)"
+        if development is None and namespace == "private":
+            from app.services.learning.item_supply.private_development_model_accounting import ordinary_private_window_filter
+
+            window_filter += ordinary_private_window_filter(self.conn)
         windows = self.conn.execute(
             f"SELECT * FROM tutor_item_supply_{namespace}_budget_windows WHERE root_id=%s AND pool_key=%s AND provider_key=%s AND window_start<=%s AND window_end>%s" + window_filter + " ORDER BY window_start,id FOR UPDATE",
             (meta["root_id"], meta["pool_class"], meta["provider_key"], now, now) + window_params,
@@ -189,6 +194,13 @@ class ItemSupplyBudgetRepository:
         # All limits and the root window were locked after the live control.
         # Recheck both time fences AFTER waiting for cumulative-budget locks.
         self._job_meta(lease, now=now)
+        if development is not None and namespace == "private":
+            # Revalidate the full exact closure and lease AFTER all budget locks;
+            # the pre-lock batch projection never grants a cap bypass by itself.
+            current_development = accounting_batch_for_lease(self.conn, lease, now=now)
+            if current_development != development:
+                raise SupplyRuntimeError("PRIVATE_DEVELOPMENT_ACCOUNTING_SCOPE_CHANGED")
+            now = server_clock(self.conn, now)
         if intent_id is not None:
             from app.services.learning.item_supply.sandbox.repository import SandboxRepository
 
@@ -224,7 +236,7 @@ class ItemSupplyBudgetRepository:
                     False, f"{str(limit['dimension_kind']).upper()}_CAP_EXHAUSTED"
                 )
         for limit in user_rows:
-            if (
+            if development is None and (
                 self._user_used(UUID(str(limit["id"])), str(limit["resource_kind"]))
                 + amount_map[limit["resource_kind"]]
                 > limit["cap_amount"]
@@ -300,11 +312,22 @@ class ItemSupplyBudgetRepository:
             "pool": str(meta["pool_class"]),
         }
         development = meta.get("development_accounting_batch")
-        limit_filter, limit_params = "", ()
+        limit_filter = ""
+        limit_params: tuple[Any, ...] = ()
         if development is not None:
             limit_filter, limit_params = " AND id=ANY(%s::uuid[])", (development["global_limit_ids"],)
         elif self._development_accounting_available():
             limit_filter = " AND NOT EXISTS(SELECT 1 FROM tutor_item_supply_development_model_accounting_batches dev WHERE tutor_item_supply_runtime_global_limits.id=ANY(dev.global_limit_ids))"
+        from app.services.learning.item_supply.private_development_model_accounting import (
+            BATCH_TABLE, GLOBAL_MODE_TABLE, private_accounting_available,
+        )
+
+        private_development_available = private_accounting_available(self.conn)
+        if development is None and private_development_available:
+            # These anonymous tags survive PRIVATE purge. Never reinterpret the
+            # surviving cap1 global rows as ordinary production limits.
+            limit_filter += (" AND NOT EXISTS(SELECT 1 FROM " + GLOBAL_MODE_TABLE +
+                             " dev WHERE dev.global_limit_id=tutor_item_supply_runtime_global_limits.id)")
         rows = self.conn.execute(
             "SELECT * FROM tutor_item_supply_runtime_global_limits WHERE window_start<=%s AND window_end>%s AND ((dimension_kind='system' AND dimension_key=%s) OR (dimension_kind='provider' AND dimension_key=%s) OR (dimension_kind='window' AND dimension_key=%s) OR (dimension_kind='pool' AND dimension_key=%s))" + limit_filter + " ORDER BY dimension_kind,dimension_key,resource_kind,id FOR UPDATE",
             (now, now, keys["system"], keys["provider"], keys["window"], keys["pool"]) + limit_params,
@@ -316,9 +339,16 @@ class ItemSupplyBudgetRepository:
             return None, []
         user_rows: list[dict[str, Any]] = []
         if lease.visibility == "private":
+            user_filter = ""
+            user_params: tuple[Any, ...] = ()
+            if development is not None:
+                user_filter, user_params = " AND id=ANY(%s::uuid[])", (development["user_limit_ids"],)
+            elif private_development_available:
+                user_filter = (" AND NOT EXISTS(SELECT 1 FROM " + BATCH_TABLE +
+                               " dev WHERE tutor_item_supply_private_runtime_user_limits.id=ANY(dev.user_limit_ids))")
             user_rows = self.conn.execute(
-                "SELECT * FROM tutor_item_supply_private_runtime_user_limits WHERE user_id=%s AND epoch=%s AND window_start<=%s AND window_end>%s ORDER BY resource_kind,id FOR UPDATE",
-                (lease.owner_id, lease.owner_epoch, now, now),
+                "SELECT * FROM tutor_item_supply_private_runtime_user_limits WHERE user_id=%s AND epoch=%s AND window_start<=%s AND window_end>%s" + user_filter + " ORDER BY resource_kind,id FOR UPDATE",
+                (lease.owner_id, lease.owner_epoch, now, now) + user_params,
             ).fetchall()
             if {r["resource_kind"] for r in user_rows} != set(RESOURCE_KINDS):
                 return rows, None

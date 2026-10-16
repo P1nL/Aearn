@@ -12,7 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _STABLE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_LEARNING_ITEM_HANDLE = re.compile(r"^li:[0-9a-f]{64}$")
+_LEARNING_ITEM_HANDLE = re.compile(
+    r"^(?:li:[0-9a-f]{64}|lip:v2:[0-9a-f]{8}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
 
 
 class _Strict(BaseModel):
@@ -372,7 +375,9 @@ ARTIFACT_INTERACTION_INTENTS = frozenset({
 class TeachingInteractionDecision(_Strict):
     mode: TeachingLearnerResponseMode
     intent: TeachingInteractionIntent
-    artifact_handle: str | None = Field(default=None, min_length=67, max_length=67)
+    # Exact public/private locator DATA only. Original domain consumer owners
+    # separately resolve current authority; accepting a string grants nothing.
+    artifact_handle: str | None = Field(default=None, min_length=43, max_length=67)
 
     @field_validator("artifact_handle")
     @classmethod
@@ -415,7 +420,7 @@ class TeachingArtifactCandidateScope(_Strict):
 
 
 class TeachingArtifactCandidate(_Strict):
-    handle: str = Field(min_length=67, max_length=67)
+    handle: str = Field(min_length=43, max_length=67)
     kind: Literal["code", "sql", "demo", "knowledge_check", "model_review"]
     purpose: Literal[
         "exercise",

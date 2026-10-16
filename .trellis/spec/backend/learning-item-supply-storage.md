@@ -81,3 +81,27 @@ Worker one focused test passed; checker fixed reset hook and reran only that aff
 
 ### 7. Wrong vs correct
 Wrong: empty table or caller complete=True grants unseen/ready. Correct: actual birth/origin hooks and durable watermark prove only tracked history; full pack still needs real course/family/current-publication authority.
+
+
+## 2026-10-11 native consumer / normal readmission classification
+
+### 1. Scope / Trigger
+Explicitly classify staged521 private consumer sidecars and staged522 shared normal-revision audit. Neither classification nor SQL comments grant admission/delivery. Selected installation/live acceptance remain Main gates.
+
+### 2. Signatures
+`P7_NATIVE_CONSUMER_TABLES=(tutor_item_supply_native_artifact_bindings,tutor_item_supply_native_consumer_receipts)` enters `PRIVATE_TABLES`; `tutor_item_supply_shared_normal_revision_readmissions` enters `P7_SHARED_PIPELINE_TABLES`/`SHARED_TABLES`. `export_private_supply(conn,user_id)` uses `artifact_id AS id` for bindings and NULL scope for both consumer tables.
+
+### 3. Contracts
+Preserve historical P2/P3/P4/P6 tuple slices. Native receipts contain exact learner/epoch/mapping/delivery linkage and are never shared content; export only opaque identity/scope/created_at, not payload/hash/answers/source/lease. Cutover derives exhaustive classification from the original tuple inventory. Original authorized epoch/reset hooks must delete binding then consumer receipts before502 deliveries/mappings; immutable denial is not bypassed by session GUC. Shared readmission audit remains outside learner purge/export and does not discharge historical findings.
+
+### 4. Validation & Error Matrix
+Unclassified new table => no final acceptance; selecting nonexistent `id` or `scope_id` => reject/fix schema-specific safe projection; ordinary update/delete => immutable denial; wrong epoch/current capability => native owner deny. Comment-only classification is insufficient.
+
+### 5. Good / Base / Bad Cases
+Good: explicit private sidecar identity-only export and original permit-owned epoch hook. Base: historical slices and old curated/current private families unchanged. Bad: putting public item-linked learner receipts into shared audit, exporting receipt JSON, or deleting502 parents before native consumers.
+
+### 6. Tests Required
+Narrow Ruff/Mypy and pure tuple identity/slice assertions passed this increment; Main selected DDL and original safe export/epoch rollback checks remain required once521/522 are independently checked. No new test files or old full suite replay authorized here.
+
+### 7. Wrong vs Correct
+Wrong: SQL COMMENT says shared/private, so runtime inventory is assumed complete. Correct: original runtime tuple inventories and per-table safe projection reflect new tables, and Main verifies SQL purge/immutable ordering and actual export after selected installation.

@@ -40,6 +40,33 @@ P7_FINITE_COURSE_MAPPING_TABLES: tuple[str, ...] = (
     "tutor_item_supply_finite_course_mappings",
 )
 
+# New private original-consumer receipts/bindings contain learner linkage, not
+# public content. Child-to-parent SQL epoch hooks purge these before502 parents.
+P7_NATIVE_CONSUMER_TABLES: tuple[str, ...] = (
+    "tutor_item_supply_native_artifact_bindings",
+    "tutor_item_supply_native_consumer_receipts",
+)
+
+# PRIVATE native authority contains learner linkage and must never join SHARED
+# export/search. Physical child-to-parent deletion is owned by 524's epoch hook.
+P7_PRIVATE_NATIVE_TABLES: tuple[str, ...] = (
+    "tutor_item_supply_private_native_artifact_bindings",
+    "tutor_item_supply_private_native_consumer_receipts",
+    "tutor_item_supply_private_native_assessment_reservations",
+    "tutor_item_supply_private_native_eligibility",
+    "tutor_item_supply_private_native_exposure_snapshots",
+    "tutor_item_supply_private_native_exposure_origins",
+    "tutor_item_supply_private_native_publications",
+    "tutor_item_supply_private_native_quality_evidence",
+)
+PRIVATE_NATIVE_UNSCOPED_TABLES: tuple[str, ...] = (
+    "tutor_item_supply_private_native_exposure_snapshots",
+    "tutor_item_supply_private_native_exposure_origins",
+)
+P7_PERSISTENT_PACK_PRIVATE_TABLES: tuple[str, ...] = (
+    "tutor_item_supply_private_persistent_pack_journal",
+)
+
 P7_SHARED_PIPELINE_TABLES: tuple[str, ...] = (
     "tutor_item_supply_shared_generation_policy_bindings",
     "tutor_item_supply_shared_generation_artifacts",
@@ -56,6 +83,7 @@ P7_SHARED_PIPELINE_TABLES: tuple[str, ...] = (
     "tutor_item_supply_shared_revision_recheck_receipts",
     "tutor_item_supply_shared_controlled_counterexample_preparations",
     "tutor_item_supply_shared_controlled_counterexample_receipts",
+    "tutor_item_supply_shared_normal_revision_readmissions",
 )
 
 SHARED_TABLES: tuple[str, ...] = (
@@ -85,6 +113,9 @@ SHARED_TABLES: tuple[str, ...] = (
     "tutor_item_supply_profile_events",
     "tutor_item_supply_runtime_global_usage_facts",
     *P7_SHARED_PIPELINE_TABLES,
+    "tutor_item_supply_shared_persistent_pack_journal",
+    # Anonymous limit mode only; survives PRIVATE purge with global usage.
+    "tutor_item_supply_development_private_global_limit_modes",
 )
 PRIVATE_TABLES: tuple[str, ...] = (
     "tutor_item_supply_private_subscriptions",
@@ -127,6 +158,11 @@ PRIVATE_TABLES: tuple[str, ...] = (
     *P7_NATIVE_TYPE_EVIDENCE_TABLES,
     *P7_NATIVE_EXPOSURE_TABLES,
     *P7_FINITE_COURSE_MAPPING_TABLES,
+    *P7_NATIVE_CONSUMER_TABLES,
+    *P7_PRIVATE_NATIVE_TABLES,
+    *P7_PERSISTENT_PACK_PRIVATE_TABLES,
+    "tutor_item_supply_private_development_model_accounting_jobs",
+    "tutor_item_supply_private_development_model_accounting_batches",
 )
 EPOCH_TABLE = "tutor_item_supply_user_epochs"
 

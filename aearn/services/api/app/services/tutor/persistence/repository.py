@@ -9,6 +9,9 @@ from app.core.config import Settings
 from ._namespace import *
 
 if TYPE_CHECKING:
+    from app.services.learning.teaching_artifacts import NativeTeachingPracticeDeliveryContext
+    from app.services.learning.item_supply.private_enhancement_contracts import PrivateTeachingDeliveryContext
+    from app.services.learning.item_supply.native_fallback_delivery import NativeTeachingWholeBaseFallbackContext
     from .adapters import PostgresTutorRunStore
 from .conversation import ConversationPersistenceMixin
 from .interaction import InteractionPersistenceMixin
@@ -47,6 +50,9 @@ class PostgresTutorRepository(
         self._projector = projector or TutorSafeProjection()
         self._failpoint = failpoint
         self._effect_handlers = dict(effect_handlers or {})
+        # Explicit per-run in-process injection; never restored from persisted DATA.
+        self._native_teaching_practice_deliveries: dict[str, NativeTeachingPracticeDeliveryContext | PrivateTeachingDeliveryContext] = {}
+        self._native_teaching_fallback_deliveries: dict[str, NativeTeachingWholeBaseFallbackContext] = {}
         # This value is server configuration, never exposed in API payloads or logs.
         self._cursor_signing_key = hashlib.sha256(
             self._settings.tutor_cursor_signing_key.encode("utf-8")

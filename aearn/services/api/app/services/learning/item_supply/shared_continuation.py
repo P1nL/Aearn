@@ -159,6 +159,15 @@ class SharedCandidateContinuationOwner:
         self.artifacts.require_source(authority)
 
     def _original(self, artifact_id: UUID, authority: RagSourceAuthority) -> dict[str, Any]:
+        row = self._original_row(artifact_id)
+        request = GenerationRequestV2.model_validate_json(json.dumps(row["request_json"]))
+        receipt = GenerationReceiptV2.model_validate_json(json.dumps(row["receipt_json"]))
+        for material, expected in zip(request.materials, receipt.sources, strict=True):
+            authority.assert_current(material, expected)
+        return row
+
+    def _original_row(self, artifact_id: UUID) -> dict[str, Any]:
+        """Historical DATA only; callers must separately establish current source permission."""
         row = self.conn.execute(
             "SELECT a.*,r.canonical_key,b.snapshot_json AS coverage_json,o.provider_key,"
             "EXISTS(SELECT 1 FROM tutor_item_supply_shared_checkpoints cp WHERE cp.job_id=a.job_id "
@@ -173,10 +182,6 @@ class SharedCandidateContinuationOwner:
         ).fetchone()
         if row is None:
             raise PipelineRepositoryError("SHARED_CONTINUATION_ORIGINAL_UNAVAILABLE")
-        request = GenerationRequestV2.model_validate_json(json.dumps(row["request_json"]))
-        receipt = GenerationReceiptV2.model_validate_json(json.dumps(row["receipt_json"]))
-        for material, expected in zip(request.materials, receipt.sources, strict=True):
-            authority.assert_current(material, expected)
         return row
 
     def adopt(self, *, artifact_id: UUID, spec: FiniteCandidateSpecV1, operation_key: str,
@@ -241,6 +246,47 @@ class SharedCandidateContinuationOwner:
                 return ResolvedSharedCandidateContinuation(binding, lease, original, source, request, inputs)
         except _NoContinuationLease:
             return None
+
+    def adopt_persistent_phase(self, *, phase: Any, artifact_id: UUID,
+            spec: FiniteCandidateSpecV1, source_authority: RagSourceAuthority) -> ResolvedSharedCandidateContinuation:
+        """New concrete phase's already-issued job adopts immutable author DATA.
+
+        No enqueue/claim, original-job renewal, generation checkpoint or paid
+        permission is fabricated here. The original491 receiver remains final.
+        """
+        from app.services.learning.item_supply.persistent_pack import PersistentPackTaskOwner
+        from app.services.learning.item_supply.persistent_pack_contracts import IssuedPackPhase
+        if (type(self) is not SharedCandidateContinuationOwner or type(phase) is not IssuedPackPhase
+                or type(phase.owner) is not PersistentPackTaskOwner or phase.owner.conn is not self.conn
+                or phase.version is None or phase.version.artifact_id != artifact_id
+                or phase.version.specification != spec):
+            raise PipelineRepositoryError("PERSISTENT_ORIGINAL_CONTINUATION_PHASE_REQUIRED")
+        self._require(source_authority)
+        # Controlled ancestry is checked BEFORE issuing any normal permission.
+        held=self.conn.execute("SELECT item_supply_internal.controlled_counterexample_held(job_id) AS held "
+            "FROM tutor_item_supply_shared_generation_artifacts WHERE id=%s",(artifact_id,)).fetchone()
+        if held is None or held["held"] is not False:
+            raise PipelineRepositoryError("PERSISTENT_CONTROLLED_ANCESTRY_DENIED")
+        phase.owner.require_phase(phase,kind="candidate")
+        original=self._original(artifact_id,source_authority)
+        lease=phase.record.lease
+        meta=self.artifacts.context(lease,now=server_clock(self.conn,datetime.now(UTC)))
+        if (UUID(str(meta["root_id"]))!=phase.record.root_id or UUID(str(original["root_id"]))!=phase.record.root_id
+                or meta["coverage"]!=spec.coverage_blueprint):
+            raise PipelineRepositoryError("PERSISTENT_CONTINUATION_CANONICAL_ROOT_CHANGED")
+        operation="persistent."+phase.record.phase_id.hex
+        binding,source,request,_,inputs=bind_shared_candidate_continuation(
+            artifact=original,spec=spec,lease=lease,operation_key=operation)
+        row=self.conn.execute("INSERT INTO tutor_item_supply_shared_candidate_continuations "
+            "(job_id,root_id,generation_artifact_id,original_job_id,original_lease_generation,item_id,version_id,"
+            "source_hash,content_hash,operation_key,binding_json) VALUES("+",".join(["%s"]*11)+") "
+            "ON CONFLICT(job_id) DO NOTHING RETURNING binding_hash",
+            (lease.job_id,phase.record.root_id,artifact_id,binding.original_job_id,binding.original_lease_generation,
+             binding.item_id,binding.version_id,binding.source_hash,binding.content_hash,operation,
+             Jsonb(binding.model_dump(mode="json")))).fetchone()
+        if row is None or row["binding_hash"]!=binding.binding_hash:
+            raise PipelineRepositoryError("PERSISTENT_CONTINUATION_BINDING_CONFLICT")
+        return ResolvedSharedCandidateContinuation(binding,lease,original,source,request,inputs)
 
     def resolve(self, *, lease: JobLeaseV1, artifact_id: UUID, spec: FiniteCandidateSpecV1,
                 source_authority: RagSourceAuthority) -> ResolvedSharedCandidateContinuation:

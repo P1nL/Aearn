@@ -277,8 +277,8 @@ class TutorArtifactKnowledgeCheckPresentationV1(_StrictArtifactModel):
     assistance_kind: Literal["independent", "hinted", "direct_answer", "remediated"] | None = None
     evaluation_markdown: str = Field(default="", max_length=4_000)
     response_receipt_id: str | None = Field(default=None, min_length=1, max_length=160)
-    remediation_handle: str | None = Field(default=None, min_length=67, max_length=67)
-    transfer_handle: str | None = Field(default=None, min_length=67, max_length=67)
+    remediation_handle: str | None = Field(default=None, min_length=43, max_length=67)
+    transfer_handle: str | None = Field(default=None, min_length=43, max_length=67)
 
     @model_validator(mode="after")
     def validate_response_shape(self) -> "TutorArtifactKnowledgeCheckPresentationV1":
@@ -317,7 +317,9 @@ class TutorArtifactKnowledgeCheckPresentationV1(_StrictArtifactModel):
         if not self.answer_locked and any(terminal_fields):
             raise ValueError("active artifact knowledge check cannot expose result fields")
         for handle in (self.remediation_handle, self.transfer_handle):
-            if handle is not None and not re.fullmatch(r"li:[0-9a-f]{64}", handle):
+            if handle is not None and not re.fullmatch(
+                r"(?:li:[0-9a-f]{64}|lip:v2:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", handle
+            ):
                 raise ValueError("artifact successor handle is invalid")
         if self.outcome == "correct" and (self.remediation_handle or self.transfer_handle):
             raise ValueError("correct knowledge check cannot expose a successor")

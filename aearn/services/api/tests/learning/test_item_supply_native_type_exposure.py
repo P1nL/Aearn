@@ -37,6 +37,15 @@ class TypeConnection(OfflineExposureConnection):
         row, rows = None, []
         if 'transaction_isolation' in sql:
             row = {'isolation': self.isolation}
+        elif sql.startswith('SELECT to_jsonb(i) AS inbox'):
+            for raw in self.raw:
+                stored = self.events.get(raw['id'])
+                event = None if stored is None else {**stored,
+                    'proof_id': stored['binding_json']['proof_id'], 'version_id': str(raw['version_id'])}
+                rows.append({'inbox': json.loads(json.dumps(raw, default=str)),
+                    'event': json.loads(json.dumps(event, default=str))})
+        elif sql.startswith('SELECT to_jsonb(b) AS birth'):
+            rows = [{'birth': {'id': str(self.birth)}}] if self.birth else []
         elif 'native_exposure_lock(' in sql:
             if params[1] != self.epoch:
                 raise SupplyStorageError('supply_epoch_stale')
@@ -102,7 +111,9 @@ def setup(monkeypatch):
 
     def resolve_content(version, *, current):
         calls.append((version, current))
-        return SimpleNamespace(content=content[version])
+        binding = bindings[version][0]
+        return SimpleNamespace(content=content[version], publication=SimpleNamespace(
+            proof_id=binding.proof_id, proof_hash=binding.proof_hash))
 
     def resolve_pack(**kw):
         from app.services.learning.item_supply.pack_contracts import CompleteExposureV2
@@ -140,7 +151,7 @@ def expose(s, version, kind='shown'):
                           version_id=version, kind=kind))
 
 
-def test_same_family_221_actual_collector_and_current_delivery_idempotency(setup):
+def test_same_family_221_actual_collector_and_current_delivery_idempotency(setup, monkeypatch):
     s = setup
     first = reserve(s)
     assert reserve(s) == first
@@ -150,6 +161,50 @@ def test_same_family_221_actual_collector_and_current_delivery_idempotency(setup
     assert s.owner.prepare_practice_delivery(reservation_key='test.reserve', version_id=practice.version_id, delivery_key='test.deliver') == did
     assert len({c.member.family_id for c in s.data.candidates}) == 1
     assert all('native_exposure_reservations' not in q and 'native_exposure_deliveries' not in q for q in s.conn.sql)
+    # Exact scoped DATA avoids nested snapshot/resolve requiring the same whole
+    # pack repeatedly in one effect. The original _pack require still executes.
+    from app.services.learning.item_supply.native_type_evidence import _CurrentPackData
+    from app.services.learning.item_supply.native_supply_service import NativeSupplyService
+    from app.services.learning.item_supply.native_supply_service_contracts import NativeSupplyDemandRef
+    observation = s.owner.snapshot_v2()
+    cap = s.issuer.resolve_pack(mapping_receipt_id=s.mapping, candidate_version_ids=s.candidates,
+        exposure_snapshot_id=observation.snapshot_id, relation_receipt_ids=s.relations)
+    data = with_relationships(s.data.model_copy(update={'exposure': observation.exposure}))
+    state = _CurrentPackData(1, s.mapping, tuple(sorted(s.candidates, key=str)), s.relations, s.owner, None,
+        mapping=SimpleNamespace(receipt_id=s.mapping, pack_request=data.request),
+        observation=observation, inputs=data, capability=cap)
+    s.issuer._pack_scope = state
+    s.issuer.current_source_binding = None
+    monkeypatch.setattr(s.issuer, '_guard', lambda: (s.conn.now, 1))
+    required = []
+    original_require = s.issuer.require_pack
+    def require_once(value):
+        required.append(value)
+        return original_require(value)
+    def no_late_rebuild(*a, **kw):
+        raise AssertionError('atomic caller must use exact scope DATA')
+    monkeypatch.setattr(s.issuer, 'require_pack', require_once)
+    monkeypatch.setattr(s.issuer, 'resolve_pack', no_late_rebuild)
+    monkeypatch.setattr(s.issuer, '_inputs', no_late_rebuild)
+    monkeypatch.setattr(s.owner, 'snapshot_v2', no_late_rebuild)
+    assert reserve(s) == first
+    assert required == [cap]
+    # A NEW demand's first reservation must retain original canonical ordering
+    # and exact equality, even if the incoming locator tuple has slot order.
+    service = object.__new__(NativeSupplyService)
+    service.conn, service.type_owner, service.exposure_owner = s.conn, s.issuer, s.owner
+    service.mapping_id, service.user_id, service.epoch = s.mapping, s.conn.user, 1
+    service.persistent_owner, service._handoff_stack, service._requests = None, object(), {}
+    monkeypatch.setattr(service, '_guard', lambda: None)
+    monkeypatch.setattr(service, '_mapping', no_late_rebuild)
+    monkeypatch.setattr(service, '_candidates', no_late_rebuild)
+    demand = NativeSupplyDemandRef(uuid4(), s.mapping, tuple(reversed(state.versions)), s.relations)
+    result = service._attempt(demand, reserve=True)
+    assert result.ready is not None
+    assert result.ready.demand.candidate_version_ids == state.versions
+    assert s.conn.v2_reservations[result.ready.reservation_key]['request_json']['candidate_version_ids'] == [
+        str(v) for v in state.versions]
+    assert required == [cap, cap, cap]  # one reserve fence + one final handoff fence
 
 
 def test_empty_or_unknown_history_is_never_assumed(setup):
@@ -173,6 +228,27 @@ def test_historical_retired_content_uses_current_false_and_immutable_manifest(se
     manifest = dict(original_watermark_id=str(observation.original_watermark_id), original_receipt_hash=original,
                     records=[r.model_dump(mode='json') for r in observation.exposure.records])
     assert observation.exposure.completeness_receipt_hash == canonical_hash(manifest)
+    # Decode all historical content before the original collector issues its
+    # real clock/120s window; an expensive front must not consume that window.
+    original_resolve = s.issuer.resolve_content
+    def slow_historical(version, *, current):
+        result = original_resolve(version, current=current)
+        s.conn.now += timedelta(seconds=179)
+        return result
+    s.issuer.resolve_content = slow_historical
+    fresh = s.owner.snapshot_v2()
+    assert fresh.exposure.observed_at == NOW + timedelta(seconds=179)
+    assert fresh.exposure.valid_until - fresh.exposure.observed_at == timedelta(seconds=120)
+    # Same count/version is insufficient: exact proof/binding and metadata rows
+    # participate in the locked tail comparison before any snapshot issuance.
+    history = s.owner._prepare_history()
+    before = len(s.conn.snapshots)
+    event = s.conn.events[s.conn.raw[0]['id']]
+    event['binding_json']['proof_hash'] = 'c' * 64
+    event['binding_hash'] = canonical_hash(event['binding_json'])
+    with pytest.raises(NativeTypeExposurePending, match='history_changed'):
+        s.owner._snapshot_from_history(history)
+    assert len(s.conn.snapshots) == before
     assert observation.exposure.watermark == 1
 
 
@@ -314,7 +390,7 @@ def test_post_capability_lock_wait_uses_fresh_clock_and_no_late_insert(setup, mo
 
     def delayed(cap):
         result = original_require(cap)
-        s.conn.now = NOW + timedelta(seconds=31)
+        s.conn.now = NOW + timedelta(seconds=121)
         return result
 
     monkeypatch.setattr(s.issuer, 'require_pack', delayed)
@@ -448,8 +524,8 @@ def test_final_sql_reconstruction_wait_gets_a_new_clock_before_effect(setup, mon
         result = execute(text, params)
         if 'type_exposure_current(' in text:
             # The preceding Python _lock clock was valid. This last SQL owner
-            # reconstruction then crosses the original 30-second capability TTL.
-            s.conn.now = NOW + timedelta(seconds=31)
+            # reconstruction then crosses the newly issued 120-second capability TTL.
+            s.conn.now = NOW + timedelta(seconds=121)
         return result
 
     monkeypatch.setattr(s.conn, 'execute', delayed)

@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -63,7 +63,7 @@ from app.services.learning.item_supply.review_observability import (
 from app.services.learning.item_supply.review_deliberation import prepare_review_deliberation
 from app.services.learning.item_supply.review_deliberation_contracts import ReviewDeliberationPlanV1
 
-Scorer = SandboxBlindAnswerScorer | FiniteStaticBlindScorer
+Scorer: TypeAlias = SandboxBlindAnswerScorer | FiniteStaticBlindScorer
 
 if TYPE_CHECKING:
     from app.services.learning.item_supply.native_review_investigation import (
@@ -95,6 +95,7 @@ class PreparedSharedReview:
     blind_input_hash: str | None = None
     blind_envelope_hash: str | None = None
     blind_configuration_hash: str | None = None
+    persistent_committed_frame: dict[str,Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,7 @@ class SharedReviewPipeline:
         self._operation_deadlines: dict[UUID, datetime] = {}
         self._private_blind_audit_sink = private_blind_audit_sink
         self._private_blind_audits: dict[UUID,PrivateBlindAudit] = {}
+        self._committed_frames: dict[UUID,tuple[PreparedSharedReview,SharedReviewResult,Any,str]] = {}
 
     def private_blind_audit_status(self, p: PreparedSharedReview) -> dict[str,object] | None:
         """Private acknowledgement/status DATA only; no answer, expected option or authority."""
@@ -171,6 +173,145 @@ class SharedReviewPipeline:
             self._issued(p)
         audit = self._private_blind_audits.get(p.reservation_id)
         return None if audit is None else audit.status()
+
+    def reissue_committed_phase(self, *, phase: Any, review_receipt_id: UUID,
+            source_authority: RagSourceAuthority) -> tuple[PreparedSharedReview, SharedReviewResult]:
+        """Original-issued read-only finding frame, NOT old IO/admission authority.
+
+        Immutable review DATA remains byte-identical; the new execution lease
+        comes ONLY from the concrete persistent phase. No seven-port rerun.
+        """
+        from app.services.learning.item_supply.persistent_pack import PersistentPackTaskOwner
+        from app.services.learning.item_supply.persistent_pack_contracts import IssuedPackPhase
+        from app.services.learning.item_supply.diagnostic_policy import parse_bundle
+        if (type(self) is not SharedReviewPipeline or type(phase) is not IssuedPackPhase
+                or type(phase.owner) is not PersistentPackTaskOwner or phase.owner.conn is not self.conn
+                or phase.version is None or phase.version.artifact_id is None
+                or type(self.continuation_owner) is not SharedCandidateContinuationOwner):
+            raise PipelineRepositoryError("COMMITTED_REVIEW_CONCRETE_PERSISTENT_OWNER_REQUIRED")
+        phase.owner.require_phase(phase,kind="candidate")
+        artifact_id=phase.version.artifact_id
+        held=self.conn.execute("SELECT item_supply_internal.controlled_counterexample_held(job_id) AS held "
+            "FROM tutor_item_supply_shared_generation_artifacts WHERE id=%s",(artifact_id,)).fetchone()
+        if held is None or held["held"] is not False:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_CONTROLLED_ANCESTRY_DENIED")
+        continuation=self.continuation_owner
+        assert continuation is not None
+        adopted=continuation.resolve(lease=phase.record.lease,artifact_id=artifact_id,
+            spec=phase.version.specification,source_authority=source_authority)
+        row=self.conn.execute("SELECT *,xmin::text::bigint=(txid_current() %% 4294967296) AS same_transaction "
+            "FROM tutor_item_supply_shared_pipeline_receipts WHERE id=%s AND generation_artifact_id=%s "
+            "AND artifact_kind='review_bundle' AND mode='live' FOR SHARE",(review_receipt_id,artifact_id)).fetchone()
+        if row is None or row["same_transaction"]:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_ORIGINAL_RECEIPT_REQUIRED")
+        bundle=parse_bundle(row["payload_json"])
+        if row["receipt_hash"]!=bundle.bundle_hash:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_HASH_MISMATCH")
+        blind_rows=self.conn.execute("SELECT * FROM tutor_item_supply_shared_pipeline_receipts "
+            "WHERE job_id=%s AND lease_generation=%s AND generation_artifact_id=%s AND artifact_kind='blind_solve' "
+            "AND receipt_hash=%s AND mode='live' FOR SHARE",(row["job_id"],row["lease_generation"],artifact_id,
+                bundle.blind_solve.receipt_hash)).fetchall()
+        validations=self.conn.execute("SELECT * FROM tutor_item_supply_shared_pipeline_receipts "
+            "WHERE job_id=%s AND lease_generation=%s AND generation_artifact_id=%s AND artifact_kind='validation' "
+            "AND mode='live' FOR SHARE",(row["job_id"],row["lease_generation"],artifact_id)).fetchall()
+        if len(blind_rows)!=1 or len(validations)!=1:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_EXACT_BLIND_VALIDATION_REQUIRED")
+        blind=BlindSolveReceiptV2.model_validate_json(json.dumps(blind_rows[0]["payload_json"]))
+        validation=CandidateValidationV2.model_validate_json(json.dumps(validations[0]["payload_json"]))
+        source,request,spec=adopted.source,adopted.original_request,phase.version.specification
+        if spec.target_id!="python-kc-binding-v1":
+            raise PipelineRepositoryError("COMMITTED_EXECUTION_REVIEW_FRAME_UNWIRED")
+        inputs=prepare_finite_candidate_validation(source,spec=spec,materials=request.materials)
+        if (inputs.static_facts is None or validation!=inputs.static_facts.validation
+                or validations[0]["receipt_hash"]!=validation.evidence_hash or blind!=bundle.blind_solve
+                or blind_rows[0]["receipt_hash"]!=blind.receipt_hash
+                or bundle.binding.source_hash!=source.source_hash or bundle.binding.content_hash!=source.content_hash
+                or bundle.binding.runtime_key!=(source.blueprint.runtime_profile_id or "static-exact-v1")):
+            raise PipelineRepositoryError("COMMITTED_REVIEW_EXACT_SOURCE_VALIDATION_REQUIRED")
+        reservation_id=UUID(row["artifact_key"].removeprefix("review_bundle."))
+        if blind_rows[0]["artifact_key"]!="blind_solve."+reservation_id.hex:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_EXACT_RESERVATION_KEY_REQUIRED")
+        settlement=self.conn.execute("SELECT * FROM tutor_item_supply_shared_runtime_settlements "
+            "WHERE reservation_id=%s AND settlement_key=%s FOR SHARE",(reservation_id,"review."+artifact_id.hex)).fetchone()
+        reservation=self.conn.execute("SELECT * FROM tutor_item_supply_shared_reservations WHERE id=%s "
+            "AND root_id=%s AND job_id=%s AND lease_generation=%s FOR SHARE",
+            (reservation_id,phase.record.root_id,row["job_id"],row["lease_generation"])).fetchone()
+        if settlement is None or settlement["usage_state"]!="unknown" or reservation is None:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_ORIGINAL_SETTLEMENT_REQUIRED")
+        old_protocol=report_protocol(bundle.reports[0])
+        with finite_review_context(source,spec=spec,materials=request.materials):
+            for report in bundle.reports:
+                if report_protocol(report)!=old_protocol:
+                    raise PipelineRepositoryError("COMMITTED_REVIEW_PROTOCOL_MISMATCH")
+                verify_review_report(report,make_review_request(source,binding=bundle.binding,
+                    validation_receipt=validation,role=report.role,protocol=old_protocol))
+        identities=(blind.run.provider_identity,*(r.run.provider_identity for r in bundle.reports))
+        current_key=self.artifacts.context(phase.record.lease,now=server_clock(self.conn,datetime.now(UTC)))["key"]
+        ports: list[JsonBlindSolverV2 | JsonReviewerV2]=[]
+        port: JsonBlindSolverV2 | JsonReviewerV2
+        from app.services.learning.item_supply.blind_protocol import blind_protocol_for_prompt_version
+        blind_protocol=blind_protocol_for_prompt_version(blind.run.prompt_version)
+        for index,identity in enumerate(identities):
+            client=BoundedOpenAIReviewClient(self.settings,profile=phase.record.lease.profile)
+            if (client.model!=identity.model or client.configured_provider!=identity.provider
+                    or self._models.get((client.configured_provider,current_key.model_version))!=client.model):
+                raise PipelineRepositoryError("COMMITTED_REVIEW_CURRENT_MODEL_BINDING_REQUIRED")
+            if index==0:
+                port=JsonBlindSolverV2(client,identity=identity,profile_hash=phase.record.lease.profile.profile_hash,
+                    timeout_seconds=100,max_output_tokens=61440,max_input_bytes=262144,blind_protocol=blind_protocol)
+            else:
+                port=JsonReviewerV2(client,identity=identity,role=bundle.reports[index-1].role,
+                    profile_hash=phase.record.lease.profile.profile_hash,timeout_seconds=100,max_output_tokens=61440,
+                    max_input_bytes=262144,review_protocol=old_protocol)
+            ports.append(port)
+        solver=ports[0]
+        if not isinstance(solver,JsonBlindSolverV2) or any(not isinstance(p,JsonReviewerV2) for p in ports[1:]):
+            raise PipelineRepositoryError("COMMITTED_REVIEW_ORIGINAL_TYPED_PORTS_REQUIRED")
+        reviewers=tuple(p for p in ports[1:] if isinstance(p,JsonReviewerV2))
+        scorer=FiniteStaticBlindScorer(binding=bundle.binding,spec=spec,materials=request.materials)
+        ambiguity_plan=build_finite_ambiguity_plan(source,spec=spec,inputs=inputs)
+        ambiguity_owner=FiniteTaskAmbiguityOwner(None,parent_deadline_at=phase.record.valid_until)
+        # Actual zero-IO deterministic interpretation, not restored runner seals.
+        ambiguity=ambiguity_owner.run(source,ambiguity_plan,spec=spec,inputs=inputs,run_id=uuid4())
+        frame={"schema_version":"persistent_committed_review_frame_v1","phase_id":str(phase.record.phase_id),
+            "review_receipt_id":str(review_receipt_id),"blind_receipt_id":str(blind_rows[0]["id"]),
+            "validation_receipt_id":str(validations[0]["id"]),"review_hash":bundle.bundle_hash,
+            "blind_hash":blind.receipt_hash,"validation_hash":validation.evidence_hash,
+            "continuation_binding_hash":adopted.binding.binding_hash}
+        # The frame is read-only. Old resource amounts are DATA, never a fresh allowance.
+        p=PreparedSharedReview(phase.record.lease,artifact_id,adopted.original_artifact["artifact_hash"],
+            validations[0]["id"],spec,source,request,validation,bundle.binding,bundle.author_identity,
+            reservation_id,identities,ResourceAmounts(),ResourceAmounts(),inputs,ambiguity_plan,ambiguity.run_id,
+            old_protocol,blind_protocol,persistent_committed_frame=frame)
+        result=SharedReviewResult(blind,bundle,"committed_review_data_only",ambiguity)
+        self._prepared[reservation_id]=(p,self._seal(p),source_authority,solver,reviewers,scorer,None,ambiguity_owner)
+        self._committed_frames[reservation_id]=(p,result,phase,canonical_hash(frame))
+        self.require_committed_phase(p,result,phase=phase)
+        return p,result
+
+    def require_committed_phase(self, p: PreparedSharedReview, result: SharedReviewResult, *, phase: Any) -> dict[str,Any]:
+        entry=self._committed_frames.get(p.reservation_id)
+        issued=self._prepared.get(p.reservation_id)
+        if (entry is None or entry[0] is not p or entry[1] is not result or entry[2] is not phase
+                or p.persistent_committed_frame is None or entry[3]!=canonical_hash(p.persistent_committed_frame)
+                or issued is None or issued[0] is not p
+                or issued[1]!=self._seal(p)):
+            raise PipelineRepositoryError("COMMITTED_REVIEW_NEW_ISSUER_SEAL_REQUIRED")
+        phase.owner.require_phase(phase,kind="candidate")
+        authority=self._prepared[p.reservation_id][2]
+        continuation=self.continuation_owner
+        if type(continuation) is not SharedCandidateContinuationOwner:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_CONCRETE_CONTINUATION_REQUIRED")
+        assert continuation is not None
+        continuation.resolve(lease=phase.record.lease,artifact_id=p.artifact_id,spec=p.spec,source_authority=authority)
+        for kind,id_field,hash_field in (("review_bundle","review_receipt_id","review_hash"),
+                ("blind_solve","blind_receipt_id","blind_hash"),("validation","validation_receipt_id","validation_hash")):
+            row=self.conn.execute("SELECT * FROM tutor_item_supply_shared_pipeline_receipts WHERE id=%s "
+                "AND artifact_kind=%s AND generation_artifact_id=%s AND mode='live' FOR SHARE",
+                (UUID(p.persistent_committed_frame[id_field]),kind,p.artifact_id)).fetchone()
+            if row is None or row["receipt_hash"]!=p.persistent_committed_frame[hash_field]:
+                raise PipelineRepositoryError("COMMITTED_REVIEW_CURRENT_DATA_CHANGED")
+        return self.artifacts.context(phase.record.lease,now=server_clock(self.conn,datetime.now(UTC)))
 
     @property
     def blind_protocol(self) -> BlindProtocol | None:
@@ -189,7 +330,7 @@ class SharedReviewPipeline:
 
     @staticmethod
     def _seal(p: PreparedSharedReview) -> str:
-        payload = {"lease": p.lease.model_dump(mode="json"), "artifact_id": str(p.artifact_id),
+        payload: dict[str, Any] = {"lease": p.lease.model_dump(mode="json"), "artifact_id": str(p.artifact_id),
             "artifact_hash": p.artifact_hash, "validation_receipt_id": str(p.validation_receipt_id),
             "spec": p.spec.model_dump(mode="json"), "source": p.source.model_dump(mode="json"),
             "request": p.request.model_dump(mode="json"), "validation": p.validation.model_dump(mode="json"),
@@ -205,6 +346,8 @@ class SharedReviewPipeline:
             payload["blind_input_hash"] = p.blind_input_hash
             payload["blind_envelope_hash"] = p.blind_envelope_hash
             payload["blind_configuration_hash"] = p.blind_configuration_hash
+        if p.persistent_committed_frame is not None:
+            payload["persistent_committed_frame"]=p.persistent_committed_frame
         return canonical_hash(payload)
 
     @staticmethod
@@ -225,6 +368,12 @@ class SharedReviewPipeline:
         entry = self._prepared.get(p.reservation_id)
         if entry is None or entry[0] is not p or entry[1] != self._seal(p):
             raise PipelineRepositoryError("SHARED_REVIEW_PREPARED_UNAVAILABLE")
+        if p.persistent_committed_frame is not None:
+            context=self._committed_frames.get(p.reservation_id)
+            if context is None:
+                raise PipelineRepositoryError("COMMITTED_REVIEW_NEW_ISSUER_SEAL_REQUIRED")
+            self.require_committed_phase(p,context[1],phase=context[2])
+            return entry[2],entry[3],entry[4],entry[5]
         if ((self.blind_protocol is not None and p.blind_protocol != self.blind_protocol)
                 or entry[3].blind_protocol != p.blind_protocol
                 or (p.blind_protocol != LEGACY_BLIND_PROTOCOL
@@ -414,6 +563,14 @@ class SharedReviewPipeline:
         return p
 
     def _fence(self, p: PreparedSharedReview, *, before_io: bool = False) -> None:
+        if p.persistent_committed_frame is not None:
+            if before_io:
+                raise PipelineRepositoryError("COMMITTED_REVIEW_DATA_NOT_HTTP_AUTHORITY")
+            context=self._committed_frames.get(p.reservation_id)
+            if context is None:
+                raise PipelineRepositoryError("COMMITTED_REVIEW_NEW_ISSUER_SEAL_REQUIRED")
+            self.require_committed_phase(p,context[1],phase=context[2])
+            return
         authority, solver, reviewers, scorer = self._issued(p)
         deadline = self._operation_deadlines.get(p.reservation_id)
         if deadline is not None and server_clock(self.conn, datetime.now(UTC)) >= deadline:
@@ -447,6 +604,8 @@ class SharedReviewPipeline:
             raise PipelineRepositoryError("SHARED_REVIEW_RESERVATION_MISMATCH")
 
     def run_review(self, p: PreparedSharedReview) -> SharedReviewResult:
+        if p.persistent_committed_frame is not None:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_DATA_NOT_HTTP_AUTHORITY")
         _, solver, reviewers, scorer = self._issued(p)
         if self.conn.info.transaction_status != TransactionStatus.IDLE:
             raise PipelineRepositoryError("PROVIDER_IO_REQUIRES_IDLE_TRANSACTION")
@@ -524,12 +683,20 @@ class SharedReviewPipeline:
 
     def _result(self, p: PreparedSharedReview, result: SharedReviewResult) -> Scorer:
         _, _, _, scorer = self._issued(p)
+        if p.persistent_committed_frame is not None:
+            context=self._committed_frames.get(p.reservation_id)
+            if context is None:
+                raise PipelineRepositoryError("COMMITTED_REVIEW_NEW_ISSUER_SEAL_REQUIRED")
+            self.require_committed_phase(p,result,phase=context[2])
+            return scorer
         stored = self._results.get(p.reservation_id)
         if stored is None or stored[0] is not result or stored[1] != self._result_hash(result):
             raise PipelineRepositoryError("SHARED_REVIEW_RESULT_UNAVAILABLE")
         return scorer
 
     def settle_review(self, p: PreparedSharedReview, result: SharedReviewResult) -> None:
+        if p.persistent_committed_frame is not None:
+            raise PipelineRepositoryError("COMMITTED_REVIEW_DATA_NOT_SETTLEMENT_AUTHORITY")
         self.artifacts.require_owner()
         self._result(p, result)
         # Seven provider ports do not attest aggregate per-attempt usage. Never
@@ -629,6 +796,8 @@ class SharedReviewPipeline:
         The final facts owner must retain this pipeline and the SAME actual
         runner, and invoke this method again when verifying, not trust saved JSON.
         """
+        if p.persistent_committed_frame is not None:
+            raise PipelineRepositoryError("COMMITTED_PARENT_DATA_NOT_FRESH_ADMISSION_EVIDENCE")
         self.artifacts.require_owner()
         scorer = self._result(p, result)
         self._fence(p)
@@ -671,6 +840,8 @@ class SharedReviewPipeline:
                                             blind_terminals, ambiguity_terminals, usage)
 
     def commit_review(self, p: PreparedSharedReview, result: SharedReviewResult) -> SharedReviewStageResult:
+        if p.persistent_committed_frame is not None:
+            raise PipelineRepositoryError("COMMITTED_PARENT_DATA_CANNOT_REWRITE_REVIEW")
         self.artifacts.require_owner()
         scorer = self._result(p, result)
         self._fence(p)

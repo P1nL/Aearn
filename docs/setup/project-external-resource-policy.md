@@ -60,3 +60,6 @@ spend/reserved/unknown登记为null表示未对账，不是已消费0元；remai
 用户进一步要求“去掉所有阻塞当前和以后模型调用的规则”，并授权回传主代理。对已配置、已授权模型的本任务开发/验收批次，累计请求数/token/历史费用及旧资源窗剩余容量或期限不再充当硬封顶；新批次采用原owner签发的显式development accounting-only scope与独立当前期限，旧历史继续只追加核算，UNKNOWN不为零。不能仅研究脚本标记unlimited而真实预留仍拒绝，也不能用巨大数字冒充无限。
 
 原单批次有界规模、用户叫停、有效密钥/真实供应商限制、来源与隐私授权、原owner/租约、结果和证据校验、一次性防重复消费及生产/公开发布门禁独立保留。不限累计调用不是自动无界重试或审查自动通过；普通生产/私有预算不全局关闭。旧SQL/资源窗/用量/失败/once/UNKNOWN不改写，数据库变更新增显式版本。此政策记录本身不触发模型调用。
+
+## 2026-10-16 P7 PRIVATE新作者调用次数确认
+用户对P7分阶段统一收口回复“执行”，并针对新PRIVATE作者的额外次数限制明确回复“无限制”。该任务后续新PRIVATE作者不再受此前额外一次/剩余0的人为上限，仍按原owner发新的有界阶段、来源/质量/独立结算与once门禁执行；不恢复旧已消费one-shot、旧cap或改写旧失败/UNKNOWN。具体授权见`.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/p7-unified-completion-authorization-20261016.md`及核算登记的`p7_private_author_authorization_20261016`。这不是自动充值/新增付费服务、无界HTTP重试、Git或公开发布许可。

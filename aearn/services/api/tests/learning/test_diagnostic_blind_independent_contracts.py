@@ -498,3 +498,32 @@ def test_each_single_blocking_role_overrides_five_approvals(role_index: int) -> 
     result = evaluate(s, review(s, p))
     assert result.disposition == "quarantine" and "material_review_failure" in result.safe_reasons
     assert diagnostic_warnings(result) == ("blind_solution_incorrect",)
+
+
+@pytest.mark.parametrize("mutation", ("none", "input_hash", "unknown_prompt"))
+def test_v3_admission_authenticates_registered_single_choice_blind_protocol(mutation: str) -> None:
+    from app.services.learning.item_bank.contracts import LearningItemKnowledgeCheckContentV1
+    from app.services.learning.item_supply.blind_protocol import SINGLE_CHOICE_BLIND_PROTOCOL
+
+    s, p = subject(kind="static"), ports()
+    content = s.source.public.content
+    assert isinstance(content, LearningItemKnowledgeCheckContentV1)
+    p.clients[0].content = {"answer": content.options[0].option_id}
+    solver = JsonBlindSolverV2(p.clients[0], identity=ProviderIdentityV2(identity="first-solver",
+        provider="unit-provider", model="independent-unit-model"), profile_hash=PROFILE_HASH,
+        timeout_seconds=10, max_output_tokens=512, blind_protocol=SINGLE_CHOICE_BLIND_PROTOCOL)
+    blind = blind_solve_candidate(s.source, binding=s.binding, author_identity="author",
+        solver=solver, scorer=UnitScorer(), blind_protocol=SINGLE_CHOICE_BLIND_PROTOCOL)
+    bundle = review_candidate_for_policy(s.source, binding=s.binding, validation_receipt=s.validation,
+        author_identity="author", blind_solve_receipt=blind, reviewers=p.reviewers, policy=s.policy,
+        blind_protocol=SINGLE_CHOICE_BLIND_PROTOCOL)
+    if mutation != "none":
+        update = {"input_hash": "0" * 64} if mutation == "input_hash" else {"prompt_version": "unknown-blind-version"}
+        changed = blind.model_copy(update={"run": blind.run.model_copy(update=update)})
+        bundle = bundle.model_copy(update={"blind_solve": changed})
+    result = evaluate(s, bundle)
+    if mutation == "none":
+        assert result.disposition == "eligible_internal"
+    else:
+        assert result.disposition == "quarantine"
+        assert result.safe_reasons == ("invalid_or_stale_evidence",)

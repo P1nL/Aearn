@@ -1,5 +1,6 @@
 """Private native exposure observations, never family-independence/ready grants."""
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal
 from uuid import UUID
 
@@ -10,6 +11,8 @@ from app.services.learning.item_supply.pack_contracts import CompleteExposureV1
 from app.services.learning.item_supply.storage_contracts import StorageContract
 
 COLLECTOR_VERSION = "native-exposure-v1"
+# New current-pack observations only; upstream bounds and issued DATA never renew.
+CURRENT_PACK_TTL = timedelta(seconds=120)
 
 # All are learner-private. Main must delete in THIS order, after the epoch fence
 # and reset permit, before existing private scopes and before the users row.

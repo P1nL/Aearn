@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
@@ -973,6 +973,54 @@ class ItemSupplyRuntimeRepository:
             verified_original_counts=counts,original_deadline=original_deadline.isoformat(),new_parent_deadline=lease.parent_deadline.isoformat(),
             old_deadline_modified=False,new_unfunded_profile_parent_ms=3600000,
             account_billing_zero_asserted=False,json_capability_restored=False,new_budget_window_created=False)
+
+    def retire_persistent_unstarted_phase(self, *, owner: Any, phase_id: UUID) -> bool:
+        """Only an expired, exact journal-owned, never dispatched operational job.
+
+        Reads committed metadata, not a JobLease reconstructed from JSON. No
+        budget/settlement/checkpoint/source/proof/deadline row is rewritten.
+        """
+        from app.services.learning.item_supply.persistent_pack import PersistentPackTaskOwner
+        if (type(self) is not ItemSupplyRuntimeRepository or type(owner) is not PersistentPackTaskOwner
+                or owner.runtime is not self or owner.conn is not self.conn):
+            raise SupplyRuntimeError("PERSISTENT_ORIGINAL_RUNTIME_OWNER_REQUIRED")
+        owner._guard()
+        row=self.conn.execute("SELECT p.*,c.id AS control_id,c.state,c.state_version,c.lease_generation,c.lease_owner,"
+            "c.lease_expires_at,c.parent_deadline FROM tutor_item_supply_shared_persistent_pack_journal p "
+            "JOIN tutor_item_supply_shared_job_controls c ON c.job_id=p.job_id "
+            "WHERE p.phase_id=%s AND p.record_kind='phase' FOR UPDATE OF c FOR SHARE OF p",(phase_id,)).fetchone()
+        if row is None:
+            raise SupplyRuntimeError("PERSISTENT_ORIGINAL_PHASE_REQUIRED")
+        p=row["payload_json"]
+        attachment=self.conn.execute("SELECT t.payload_json FROM tutor_item_supply_private_persistent_pack_journal a "
+            "JOIN tutor_item_supply_private_persistent_pack_journal t ON t.id=a.pack_task_id AND t.record_kind='task' "
+            "WHERE a.record_kind='phase' AND a.user_id=%s AND a.epoch=%s AND a.payload_json->>'phase_id'=%s "
+            "AND a.payload_json->>'public_task_id'=%s FOR SHARE OF a,t",
+            (owner.user_id,owner.epoch,str(phase_id),str(row["public_task_id"]))).fetchone()
+        if attachment is None:
+            raise SupplyRuntimeError("PERSISTENT_OWN_CURRENT_ATTACHMENT_REQUIRED")
+        from app.services.learning.item_supply.persistent_pack_contracts import PersistentPackTaskRecord
+        owner._task(PersistentPackTaskRecord.model_validate_json(json.dumps(attachment["payload_json"])).ref)
+        if self.conn.execute("SELECT id FROM tutor_item_supply_shared_persistent_pack_journal WHERE phase_id=%s "
+                "AND record_kind IN('dispatch_started','stage_started') LIMIT 1",(phase_id,)).fetchone() is not None:
+            raise SupplyRuntimeError("PERSISTENT_STARTED_PHASE_CANNOT_RETIRE")
+        held=self.conn.execute("SELECT item_supply_internal.controlled_counterexample_held(%s) AS held",(row["job_id"],)).fetchone()
+        if held is None or held["held"] is not False:
+            raise SupplyRuntimeError("PERSISTENT_CONTROLLED_ANCESTRY_DENIED")
+        expected=p["lease"]
+        if (row["lease_owner"]!=expected["lease_owner"] or row["lease_generation"]!=expected["generation"]
+                or str(row["job_id"])!=expected["job_id"] or str(row["root_id"])!=p["root_id"]):
+            raise SupplyRuntimeError("PERSISTENT_PHASE_CONTROL_IDENTITY_CHANGED")
+        now=server_clock(self.conn,datetime.now(UTC))
+        if row["state"]!="leased" or row["lease_expires_at"]>now:
+            return False
+        if self.conn.execute("SELECT id FROM tutor_item_supply_private_subscriptions WHERE shared_job_id=%s AND state='active' LIMIT 1",
+                (row["job_id"],)).fetchone() is not None:
+            raise SupplyRuntimeError("SHARED_CONSUMERS_ACTIVE")
+        self.conn.execute("UPDATE tutor_item_supply_shared_job_controls SET state='blocked',breaker_open=true,"
+            "state_version=state_version+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=%s "
+            "WHERE id=%s AND state_version=%s",(now,row["control_id"],row["state_version"]))
+        return True
 
     def cancel(self, lease: JobLeaseV1, *, now: datetime) -> None:
         self._control(lease, now=now)

@@ -1,5 +1,172 @@
 # Learning Item Supply P4/P5 Internal Pipeline
 
+## Original relation caller current-source continuation (2026-10-14, static PASS; actual pending)
+
+### 1. Trigger
+Original assessment-1 historical material is denied by the original relation phase authority with SourceEvidenceDenied/source_unavailable at the current clock. All-five bank/source-current acceptance does not automatically update relation phase materials.
+
+### 2. Producer
+PersistentPublicPipeline.prepare_relation selects NEW PUBLIC materials only from the explicitly installed original IssuedCurrentPackSourceBinding. require_relation checks the exact task, original type owner/connection/actor/epoch and selected five. Original root/job/517 batch/profile/lease and four role clients remain independent.
+
+### 3. Data / ABI
+PreparedCurrentSourceNativeRelationBatch has two required internal fields: current_source_binding and current_source_binding_hash. The registered identity fingerprint is not a fresh source or provider grant. The original Prepared/wire remains unchanged. Historical PUB/source/content/spec/facts hashes remain unchanged; binding context does not enter SHARED records or the model prompt.
+
+### 4. Receivers / Fresh Fences
+Original relation prepare and run/persist full fences get exact-proof NEW materials and original current receipts, then execute original authority authorize/assert_current. Only exact selected5 use this branch; None and outside-selected5 comparisons retain strict legacy assertions. Seal/fence reject cap copies, swaps, changed hashes, wrong owner/connection/task/epoch and expired/revoked current authority.
+
+### 5. Same-call Deduplication
+_current_with_mapping retains the first original mapping result for the same fresh fence and complete equality checks; old _current still returns its original triple and public require returns mapping. _require_current passes the just-verified selection locally to origin, avoiding a second scan only within the same invocation. Every origin call, including existing-origin calls, still runs fresh verification and SQL549 current. No cross-TOP/TTL authorization cache; no bank-lock or stage fence removed.
+
+### 6. Verification / Actual Boundary
+Scoped Ruff/Mypy and four direct relation regressions passed; the two duplicate eliminations passed three direct source regressions. Independent report research/p7-current-relation-source-check-20261014.md PASS. Main original old-material denial is actual evidence; a 25-minute canceled rollback and a later exit1 without final result are NOT acceptance. Final-code original prepare rollback remains pending in .runtime/p7-current-receivers-20261014/relation-prepare-20261014T033140822198Z. No project provider/HTTP calls have been dispatched in this resume; ready, PRIVATE, delivery and P7 remain false/unaccepted.
+
+### 7. Wrong vs Correct
+Wrong: amend historical PUB, apply new source to arbitrary comparisons, skip current fences, or replay canceled/UNKNOWN stages. Correct: separately bind the fresh source capability to the original issuer-sealed Prepared, keep all original execution controls, and obtain actual original prepare/run/consumer acceptance.
+
+
+## Explicit whole-pack current source binding (2026-10-14, SQL549 installed)
+
+### 1. Scope / Trigger
+Use only an explicitly issued same-task current binding to continue the original five selected PUBLIC versions after their historical source authorization expires. Historical publication remains immutable DATA; ordinary queries without the capability retain strict current-source denial. This is neither republishing nor admission/review/provider/delivery permission.
+
+### 2. Producer / Original Authority
+`core.issue_current_source_binding(task, source_data_id=...)` returns an exact process capability, not a serialized DTO. Main must explicitly call `core.type_owner.attach_current_source_binding(cap)`. Issuer, original type owner, connection, actor, epoch, task, mapping, selected five and original PUBLIC proof hashes are checked. Old PUBLIC proofs are verified at their actual published_at; fresh C and PRIVATE provenance use the current clock. Compare source materials and request semantics, while checking each signed policy/generation/source-budget/root/delegation/expiry separately; renewed source access is not renewed model accounting.
+
+### 3. Schema / Receiver
+549_learning_item_current_pack_source_origin_v1.sql uses the existing PRIVATE persistent-pack journal for an explicit current-source origin. No SHARED transfer or new table; DATA IDs cannot mint a capability. Original native consumer create/consume and PRIVATE base source fences recognize only the exact current origin branch; foreign actor, wrong epoch, expired/revoked provenance, other task/mapping/version or stale original proof deny. Default legacy branch remains strict.
+
+### 4. Lifecycle / Locks
+NativeType resolve_mapping/resolve_content/source_deadline and the bank query validate the explicitly attached original capability; source-to-bank fences recheck under original locks. Fresh origin DATA are produced through the issuer for the current transaction and never restored from evidence files. Provider job/root/profile/once, relation evidence, exposure, learner reservation, PRIVATE eligibility and teaching delivery remain independent authorities.
+
+### 5. Failure / Immutable History
+Do not amend historical publication/source_refs, old admission deadline, UNKNOWN results, consumed stages or installed SQL<=549. Later SQL fixes require a new fragment. No548 was necessary; 531 remains disabled. Source-current failure does not permit replacing a selected version or repeating author/review/admission.
+
+### 6. Actual Acceptance
+Main source-rehearsal-20261014T020236843430Z: original mapping and all five NativeType plus SQL source receivers accepted in rollback; PUBLIC still preparing/relation_required. source-negative-20261014T021800025454Z: foreign actor/wrong epoch/expired origin denied by original SQL. install549-20261014T022354186834Z: selected549 committed, frozen SHA a283f28331cc9c1d048ee9a1ae8066ff71ea5e9fd65124f80800a8b6f39f94f2, manifest registered; old history and ledger preserved. These checks used zero provider/HTTP. Full relation, ready, PRIVATE and original Artifact consumption are NOT yet accepted; P7 is false.
+
+### 7. Wrong vs Correct
+Wrong: replace old proof source refs with new signed IDs, trust an origin row alone, or count five current publications as ready. Correct: keep historical proof immutable, require freshly issued original process binding with original SQL source fences, then complete the original relation and consumer gates independently.
+
+
+## Committed547 publication history read (2026-10-14, actual current PASS)
+
+### 1. Scope / Trigger
+The original NativeType reader previously equated admission and historical validation job/profile, rejecting the legitimately separate547 action. Only the exact committed547 child receives this explicit DATA origin branch; it is not fresh author/review/admission permission.
+
+### 2. Signatures
+NativeTypeEvidenceOwner.resolve_content(version_id,current=True) retains its signature and ordinary current bank query. native_committed_admission_history.read_committed_admission_row(conn,version_id) and verify_committed_admission_history(...) project and authenticate the exact immutable action/normal/facts/quality/preparation/producer/review/publication records; no fake core or restored registries.
+
+### 3. Contracts
+Historical old leases/profiles remain issuance-time DATA, with exact committed-xmin/hash/score/seven independent runs/policy/controlled checks. Default legacy reconstruction is unchanged. Current source/materialization/event/runtime/health is still independently resolved by original NativePublishedItemQuery.query_exact; a historical row or successful quality receipt does not grant current source access.
+
+### 4. Validation & Error Matrix
+Tampered action/receipt/hash/binding/score, uncommitted history, controlled ancestry, early stage or cutoff -> deny. PostgreSQL created_at DEFAULT now() represents TOP start and may precede lease binding: require audit preparation.created_at <= stage.created_at AND lease.profile.bound_at <= stage.created_at < original ceiling. Do not require audit TOP start itself to be after bind, and never move old timestamps or use current time to renew them.
+
+### 5. Good / Base / Bad Cases
+Good: exact547 immutable quality/action -> valid historical origin -> original current bank source read. Base: old same-job/adoption origin and source denial remain. Bad: remove all job checks, hydrate old capability, or reinterpret native_original_facts_invalid as source expiry without precise exception observation.
+
+### 6. Tests and Actual Evidence
+Scoped Ruff/Mypy and three focused committed547 cases passed. Real preparation00:26:30 precedes bind00:26:48, but validation00:28:06/blind+review00:31:48/recheck00:32:12 precede the01:26:48 ceiling. Main exact diagnostic located this audit/issuance distinction; original child current rollback then passed at .runtime/p7-current-receivers-20261014/probe-20261014T012034658233Z/result-private.json: bank_current/native_current true,547 six finalization counts1, schema/ledger restored, provider/HTTP0. Independent history check PASS. No548 SQL was needed. Four older versions/source mapping still stale; source549 and whole P7 remain separate.
+
+### 7. Wrong vs Correct
+Wrong: demand PostgreSQL TOP-start audit stamp occur after a lease issued later in that TOP. Correct: preserve audit ordering while authenticating each actual stage within its original lease/preparation bounds.
+
+
+## Committed quality admission-only continuation (547, 2026-10-14)
+
+### 1. Scope / Trigger
+Only the exact committed finite KC child and original validation/blind/six-role/recheck records under the existing persistent task may enter this unfunded continuation. No author, investigation or paid review replay; historical UNKNOWN is immutable.
+
+### 2. Signatures
+`prepare_committed_child_admission(task, artifact_id, lineage_id, recheck_receipt_id, validation_receipt_id, blind_receipt_id, review_receipt_id, source_successor, transaction)` requires an original TOP transaction. `run_committed_child_admission(frame)` requires the original committed process frame and an IDLE connection. The fixed once identity is not restored from files or journal JSON.
+
+### 3. Contracts
+Read-only original quality verification preserves historical producer/review profile, timestamps, actual output hashes and UNKNOWN settlement. A separate current 15-minute admission control uses the same canonical root, current source/mapping/epoch and all controlled fences. No provider reservation is allowed. For the supported static single-choice type, uniquely match the committed solution hash in the legal output set and verify the complete original score; issue a genuine new local ambiguity observation, never restore old scorer or Prepared registries. Full original admission policy, normal v3, facts, committed evaluation, original import/publication and same-slot qualified remain mandatory.
+
+### 4. Validation and Error Matrix
+Wrong task/slot/receipt/spec/hash, uncommitted historical quality, duplicate once, changed frame, stale current source/control, controlled ancestry or unknown blind protocol -> deny. V2 admission remains legacy-only; V3 uses only registered blind protocol and exact reconstructed public input hash/prompt. Scope/version tags or passed flags do not confer permission.
+
+### 5. Good / Base / Bad Cases
+Good: exact paid quality DATA -> fresh unfunded original admission -> full policy -> original internal publication. Base: legacy path/hashes/once/controlled denial preserved. Bad: recharge/re-review, update old deadlines, set eligible manually, change old UNKNOWN, or infer full pack readiness from one child.
+
+### 6. Tests and Actual Evidence
+Main real PG prepare/full evaluation/duplicate/replay/rollback passed with HTTP0 and unchanged ledger, then installed exact547 SHA3bc3ec3e0c547a3249dfa25816c50824f9c100c706332ef2411de33c5bb5c7cc. Independent check §11 passed. Caller Ruff/Mypy, three focused original single-choice cases and two existing V2 golden/cross-policy cases passed. One separate old facts fixture failed before the caller because its controlled_schema stub lacks p; no full-suite PASS is claimed. Formal original admission-only finalization subsequently qualified the exact child: normal/facts/evaluation/import/native internal-publication/same-slot qualified each1, published version8ba4ca51-e8f4-540a-b52a-eaec8a0a6764. Commit/readback evidence: .runtime/p7-committed-admission-20261014/commit-20261013T183819697920Z/result-private.json and committed-finalization-private.json. Provider/HTTP0, ledger158 events unchanged, old phase UNKNOWN and immutable producer/review/settlement preserved. This does not discharge four historical unsupported disputes or complete whole P7; remaining current pack/private/consumer acceptance is independent. Subsequent original readback actually denies ordinary task mapping as source_or_claim_stale and NativeTypeEvidenceOwner content as native_exact_original_publication_required: its legacy validation/facts same-job/profile JOIN and decoder do not yet accept547 historical quality separation. The revision-only source bridge is not whole-pack authority; neither relax the JOIN globally nor renew old dates. The next bounded design is recorded in research/p7-post-publication-current-receivers-plan-20261014.md, not implemented or accepted.
+
+### 7. Wrong vs Correct
+Wrong: treat an expired historical review lease as current capability or pass legacy blind bytes to the registered V3 checker. Correct: preserve historical DATA, issue a separately bounded original admission-only frame and reconstruct the exact original registered blind request.
+
+## Fresh recheck of a committed revision child (546, 2026-10-14)
+
+### 1. Scope / Trigger
+The exact committed normal child can outlive its author preparation. Reuse its database output/artifact/checkpoint/lineage as historical DATA and issue a new bounded review operation on the same task, slot, revision and canonical root. No author or investigation rerun; no expired Prepared hydration.
+
+### 2. Signatures
+PersistentPackTaskOwner.prepare_committed_child_recheck(task_ref, *, preparation_id, artifact_id, lineage_id, source_successor, transaction) returns IssuedCommittedChildRecheck. Its phase, recheck_owner and recheck are process-local original-owner capabilities. After the caller commits preparation, core.run_phase(frame.phase) requires an IDLE connection. The new native_shared_revision_recheck_preparation_v2 / receipt_v2 and normal_revision_readmission_v2 payloads explicitly carry the committed_child binding. Legacy v1 paths remain unchanged.
+
+### 3. Contracts
+The original source-successor owner validates current source/mapping/epoch. The committed-child issuer validates exact durable output, known settlement, unchanged producer artifact/checkpoint, lineage and parent. Original 517/persistent phase supplies a new finite operation; 491 adoption retains the immutable producer. Register exact pre-validation child version DATA before adoption, then original validation; never fabricate a validation or generating checkpoint. Normal v2 separately verifies historical generation-policy/request/producer profile and current operation review/profile. Retain full ancestor run exclusion, independent blind plus six roles, one HTTP attempt per original port, controlled denial for producer and operation, fixed operation once/UNKNOWN rules, original full facts/import/publication and same-slot qualified recording. Historical disputes remain unsupported/unresolved rather than discharged.
+
+### 4. Validation and Error Matrix
+Wrong task/root/child/lineage/source or changed committed history -> deny. Missing source-only fresh capability or copied frame -> deny. Existing recheck/receipt or spent operation -> COMMITTED_CHILD_RECHECK_ONCE_OR_UNKNOWN_NO_REPLAY or the original phase rejection. Expired producer is DATA only, not permission; current operation/source expiry still denies. Controlled producer ancestry cannot escape through a parentless operation job. Original legacy frame rejection remains intact.
+
+### 5. Good / Base / Bad Cases
+Good: exact committed child -> fresh same-root phase -> exact version DATA -> 491 adoption -> full independent new quality evidence. Base: live-frame v1 and ordinary journal/generation-policy gates are unchanged. Bad: renew old preparation, restore author registries, overwrite generation policy with a fresh profile, claim new six-role approval discharged an old finding, or create another operation to evade UNKNOWN.
+
+### 6. Tests and Actual Evidence
+Seven directly changed Python modules passed compileall, scoped Ruff/Mypy and three focused frame/legacy rejection checks. Independent review closed the producer-policy/profile and journal/adoption/validation-cycle findings. Main PostgreSQL compile/replay and populated original prepare, validation prepare and duplicate denial passed inside a full rollback; producer and old history/schema/ledger remained unchanged. Selected546 was then installed without provider calls. Evidence lives under .runtime/p7-post-revision-20261013/, with the populated rehearsal at rehearsal-20261013T161534467083Z/result-private.json and selected install at install-20261013T162427443986Z/result-private.json. Actual execution subsequently committed machine_verified validation, a passed independent blind, six approved roles and the v2 recheck receipt. Seven completed provider runs report input152679/output28078; original aggregate runtime usage remains UNKNOWN and money null. The enclosing phase ended outcome_unknown before normal readmission/facts (both0); no publication or full P7. Do not replay review. The original exception was not retained by the operator, so the precise failure is not established. The operator counted httpx only while the review client uses urllib: preserve the raw result, treat its0 as httpx observations only, and use post-review-status-private.json plus the committed readback rather than claiming0 HTTP. No author/investigation/review replay occurred.
+
+### 7. Wrong vs Correct
+Wrong: merely remove the old deadline condition from510/522. Correct: explicitly distinguish immutable producer authority from the fresh bounded operation, bind both through the original receivers, and retain all old v1/once/history fences.
+
+
+## Source-reference-only author context correction (545, 2026-10-13)
+
+### 1. Scope / Trigger
+The validated source-successor branch may replace document/chunk citations while retaining the same immutable parent, target, coverage and registered-family revision. It cannot renew a historical publication or alter question semantics.
+
+### 2. Signatures
+`NativeRevisionContextV1.schema_version` additionally accepts explicit `native_revision_author_context_v3`. Only the original owner with a verified source successor selects it. `check_request` requires exact original-factory references from current request materials. v1/v2 serialization and rules remain unchanged.
+
+### 3. Contracts
+Rebuild expected source_references via the original finite factory, normalize only that field in the parent comparison baseline, then retain all coverage/core/profile and existing family key/version checks. Never mutate the historical parent/request. Historical clone and occupied-slot facts use current=False only after genuine RevisionOnlyContext/source-cap validation; static mapping/clause/artifact/root/task identity and current exposure remain required. This produces no candidate consumption eligibility.
+
+### 4. Validation and Error Matrix
+Unregistered source bridge, mismatched references or any other core change -> deny. Ordinary investigations still demand current publication consumption. Native v3 receiver acceptance additionally requires the exact registered source-successor matcher; a context version tag alone is not authority.
+
+### 5. Good / Base / Bad Cases
+Good: same supported excerpts with new signed source coordinates. Base: all v1/v2/current consumption/once behavior remains. Bad: strip references from every comparison, mark old publications current, or accept v3 from an unbound DTO.
+
+### 6. Tests and Actual Evidence
+Three source-reference regression cases and scoped Ruff/Mypy passed; the preceding historical-data fix has four focused cases. Independent review checked the final actual current receiver bodies. Full original revision preparation and author setup, exact duplicate denial,545 replay and complete rollback passed with HTTP forbidden and ledger unchanged. Selected545 installation then reused that same before/DDL snapshot; only three old function bodies changed, with all old metadata/rows preserved. A single original author then committed durable output and known usage settlement; a separate process recovered through541 and committed artifact/checkpoint plus lineage, with exact request/source/receipt readback, no HTTP and empty author registries. Evidence: `.runtime/p7-source-mapping-successor-20261013/revision-persist-20261013T142128544206Z/result-private.json`. This passes revision generation/persistence, not review, admission, publication or full P7; the old three UNKNOWNs remain unchanged.
+
+### 7. Wrong vs Correct
+Wrong: compare every child citation to the expired parent coordinates, or broadly ignore all source fields. Correct: accept only the exact original-factory citations authorized by the explicit current source bridge and keep the rest of the contract exact.
+
+
+## Explicit source/mapping continuity for revision (543, 2026-10-13)
+
+### 1. Scope / Trigger
+Only the existing approved task/root/parent/committed investigation and unused542 successor after its old source expires. Historical mapping and investigation remain DATA; this is not global mapping renewal, a new investigation, admission or publication.
+
+### 2. Signatures
+`AssessmentReceiptRepository.prepare_confirmed_successor(capture_id, document_handle, mapping_receipt_id)` permits the fixed confirmed scope through original SQL permission and original oracle/sign/persist. PRIVATE oracle must use `prepared.actual_d.oracle_run_id`; PUBLIC/PRIVATE document handles are distinct. `core.compose_source_mapping_successor(task, public_claim_id, course_claim_id)` invokes original material factories; `core.resolve_source_mapping_successor(task, record_id)` revalidates the persisted PRIVATE journal and issues a new source-only cap. Pass it explicitly to `core.prepare_successor_committed_revision(task, transaction=TOP, source_successor=cap)`.
+
+### 3. Contracts
+The new PRIVATE `source_mapping_successor` record binds old task/mapping/parent/investigation identity to actual current signed PUBLIC and confirmed PRIVATE proof, active C carrier, current epoch/plan/runtime/profile and exact supported excerpts/target semantics. Its bound is the minimum of current proofs/source permissions. Whole-page HTML may change, but supported span unit/hash/length and finite target/demand/goal semantics must agree. No timestamp/ID mutation, latest-wins or PUBLIC-for-PRIVATE substitution. An old mapping ID alone still does not grant current use. Resolve reissues only a source-cap after all current checks, never old author/investigation sender registry entries.
+
+### 4. Validation and Error Matrix
+Wrong owner/cap/journal, changed supported content/goal, wrong mapping/epoch, expired source or inactive C -> deny. Unchanged542 duplicate -> `SUCCESSOR_COMMITTED_REVISION_ONCE_CONSUMED`. Original source and generation budgets/lease/once fences remain independent. New-generation settled-only or missing durable output stops without a second author. Cross-process541 persistence consumes only committed DB output and current original source authority.
+
+### 5. Good / Base / Bad Cases
+Good: new actual source capture, original PUBLIC/PRIVATE oracle signatures, C activation/private provenance, explicit source journal, same-root one-shot revision and durable output/artifact/checkpoint/lineage. Base: ordinary original source/mapping and `_original` continuation remain current-fenced. Bad: hydrate old `_prepared`/`_runs`, treat old UNKNOWN as no dispatch, import a local old generated answer, or use schema installation as revision completion.
+
+### 6. Tests and Actual Evidence
+Final10-product Ruff/Mypy and4 focused tests passed. Independent review validated4 new functions,3 exact old function-body replacements,1 PRIVATE journal CHECK expansion and1 insert trigger; no new table/index or PUBLIC grants. Main actual compile/replay and original new PUBLIC/confirmed PRIVATE preparation were fully rolled back; selective543 then installed with old rows/metadata preserved. Two actual original source oracles, signatures, fresh PUBLIC C activation and current PRIVATE provenance subsequently passed. Full final revision TOP/no-HTTP rehearsal and actual author/persistence outcome are tracked separately and are not implied by these checks.
+
+### 7. Wrong vs Correct
+Wrong: change the frozen investigation source_deadlines or old mapping receipt to new values. Correct: keep them immutable and require the explicit original-owner source successor relation for the new bounded execution.
+
+
 Explicit finite public spec V3 and its version-aware native consumers are described
 in [type evidence and flexible specs](./learning-item-supply-type-evidence.md).
 Legacy strict checks below remain the default; do not remove them globally.
@@ -853,3 +1020,202 @@ This execution used actual chain plus independent bounded static check, no old s
 
 ### 7. Wrong vs Correct
 Wrong: `child_six_approved => blockers_discharged=True`. Correct: keep all4 original disputes unsupported until clause-specific original issuer proof is accepted; preserve509/511 ancestry hold and leave production release independent. Wrong: repeat old key1 author reservation because dispatch was0. Correct: explicit new key2 single-use authorization with fresh original owners and immutable old attempt.
+
+
+## 2026-10-11 normal_revision_readmission_v1 (new policy, not historical discharge)
+
+### 1. Scope / Trigger
+Latest human approved normal noncontrolled substantive revisions to be independently re-admitted, deferring historical finding semantic adapters. This version supersedes the old normal-child unconditional hold ONLY through the explicit new authority; old historical510 assertions remain false/unsupported. Controlled any ancestry ALWAYS HOLD. SQL522 selected B1d installation verified; positive live normal readmission remains pending current operation.
+
+### 2. Signatures
+`NativeNormalRevisionReadmissionOwner(original_recheck,enabled=False)` implements prepare/verify_context/persist/verify_persisted and exact deployed-schema checking. Original `SharedAdmissionFactsOwner` has opt-in normal readmission seam; original `NativeRevisionOwner.verified_committed_lineage` optional `normal_facts_owner` and `normal_facts` accept only same-connection/process-issued exact child terminal after facts persistence. No caller booleans, callback verifier, normal JSON capability restoration or additional publisher. SQL522 adds immutable shared-confidential `tutor_item_supply_shared_normal_revision_readmissions`; old509 trigger function gains only exact current conditional side-receipt match.
+
+### 3. Contracts
+Committed original substantive509 child/lineage; new actual original validation; completed public-only DiagnosticV3 blind (correctness remains diagnostic); new complete independent six peers with no parent opinions/ancestral run reuse; original source/safety/risk/additional admission requirements all remain. Six booleans are not publication permission. Controlled holds precede normal checks. Side receipt binds exact full facts payload and all receipt hashes/current lease/source/policy; post-facts terminal exception only matches the original concrete facts issuer's sealed exact child, without recursive verify. Parent/other child/legacy terminals deny. Old findings are neither rewritten nor discharged. SQL locks refresh DB clock and finally recheck every deadline/source/policy/control before acceptance.
+
+### 4. Validation & Error Matrix
+Missing/newowner defaultoff => old denial; controlled ancestry => deny first; same content/title/ID/seed-only change => reject substantive lineage; copied/JSON/restored receipt or wrong owner/hash/root/child => reject; incomplete validation/blind/peer/source/risk => original full evaluator deny; expired grant/lease => reject, not renewal; foreign terminal => deny; original exact child facts after new permission => original publisher current verify allowed.
+
+### 5. Good / Base / Bad Cases
+Good: failed normal parent -> genuine investigation -> original author substantive child -> actual new validation/independent blind/six -> new version-specific normal permission -> full original facts/publisher. Base: default no normal owner or controlled experiments stay held. Bad: delete509 denial, declare old findings resolved, accept6approved without full risk, or rehydrate old receipts/profile/once.
+
+### 6. Tests Required
+Independent B authority/post-facts/SQL static PASS; Main selected522 compile/replay/forcedrollback-restoration/install preserved307 old tables/6707 rows and all unrelated functions/old triggers/constraints. Actual controlled-first SQL negative and original same-graph exact deployed-schema preflight passed. Positive normal revision/full native pack/delivery acceptance pending. New normal5 operation freezes89requests/10candidates with per-slot first claim3600s, new parent/stage12000s and original517batch<=7200s; NEW parent priority80/70/60/50/40 plus aging86400 avoids future-parent competition with original child100/60. Exact claim checks unchanged; no old queue/root/window mutation. No full test-suite replay/new test files.
+
+### 7. Wrong vs Correct
+Wrong: put all future same-root parents at100/60 then original revision root-wide claim adopts an older sibling; or bypass terminal checks with a bool. Correct: freeze NEW parents in descending distinct priorities below100 with no age gain within12000, preserve original child claim/identity, and allow only original normal/facts issued exact terminal. The full89 HTTP worst-case is not a promise old publication proofs remain valid; current proof deadlines still gate further IO.
+
+## P7 blocked preparation diagnostic, no replay authority (2026-10-12)
+
+### 1. Scope / trigger
+Main-only disposable investigation-preparation probe; observe an existing original refusal without relaxing it. No P7/full-chain completion follows.
+
+### 2. Signature
+`probe_original_investigation_preparation(owner, task, *, failed_phase_id, main_only_ack) -> dict[str, Any]` remains unchanged; exact concrete owners, IDLE entry and helper-owned TOP force_rollback remain mandatory.
+
+### 3. Response contract
+A BlockedPackPhase still yields `safe_reason=original_fresh_preparation_blocked`; optional `blocked_phase_reason` copies only a literal member of the module's frozen blocker vocabulary. Unknown values, raw text, IDs, non-string values and string subclasses map to `unknown_blocked_reason`. This is private diagnostic DATA, not an API/learner field, source authority, accounting fact or recovery permit.
+
+### 4. Error matrix
+- Same logical operation has outcome_unknown: observe `opaque_phase_outcome_unknown_no_paid_replay`; keep denial even after lease expiry.
+- Unstarted live phase: observe `unstarted_live_phase_wait_original_expiry`; waiting never proves an unrelated UNKNOWN recoverable.
+- Unrecognized blocker: sentinel only; never stringify arbitrary values or leak their content.
+
+### 5. Good / base / bad
+Good: distinguish the original refusal while retaining task/five slots/history. Base: no new frame, stage or capability escapes rollback. Bad: change the operation key, clear UNKNOWN, revive an old lease or report historical HTTP=0 from absent stage records.
+
+### 6. Focused assertions
+Validate closed-code sanitization and unchanged TOP-rollback/no-run/no-provider behavior. A PG helper that subtracts keys from a JSON extraction must execute the populated expression, not merely compile/replay its function definition: `((req->'review_input')-ARRAY[...])`. The unparenthesized extraction-minus form reproduced22P02 on the actual engine. Allowed keys must leave an empty object; an extra key must still be rejected. Installed525/530 remain immutable; expression-level evidence is not whole original preparation acceptance.
+
+### 7. Wrong vs correct
+Wrong: a reproduced SQL bug or a corrected SELECT means the old UNKNOWN may be paid again. Correct: preserve the old phase/usage, separately review any append-only schema fix against the latest installed body, and require an original-issuer prestart proof before considering a new bounded operational frame.
+
+## Registered prestart recovery, not UNKNOWN replay (2026-10-12)
+
+### 1. Scope / trigger
+Only the registered P7 task, failed phase, same root/slot/revision and logical operation may request one fresh frame. General UNKNOWN remains denied. Old phase/result/usage/control rows are never rewritten or renewed. A SQL defect or missing stage rows alone is not proof of no original dispatch eligibility.
+
+### 2. Signature
+Original concrete PersistentPackTaskOwner.prepare_prestart_recovery(task_ref, *, transaction) requires the caller's active TOP psycopg Transaction on the same connection; SAVEPOINT or reconstructed capability is rejected. Normal prepare_next_phase remains unchanged for other UNKNOWN cases.
+
+### 3. Data and authority
+The original issuer checks accepted historical mandatory-helper/caller fingerprints, exact historical failed records, current source/mapping/epoch/hold/lease gates and installed receivers. PRIVATE journal prestart_proof/prestart_binding are internal evidence DATA, not public/API capabilities. The in-process original permission is one-use and cannot be restored from JSON. Existing epoch purge removes both records; existing export keeps only id/scope_id/created_at.
+
+### 4. Boundaries / error matrix
+One same-operation frame.2 only; an existing binding, other failed case, other slot/root/revision, expired proof or wrong source denies. Proof is bounded900s and does not extend original source or phase leases. Failed preparation forces the enclosing TOP transaction to roll back even if a caller catches the error. Native prepare then stage_start/run remain owned by the original candidate/investigation chain; recovery does not itself call a provider.
+
+### 5. Migration contract
+Installed525/530 remain immutable. Append534 fixes only parenthesization of JSON extraction before key subtraction, preserving current body/provenance/ACL. Append535 adds two owner-only receiver functions and one BEFORE INSERT trigger, extending one exact existing record-kind CHECK; no new table, grants, old function replacement or old trigger replacement. PL/pgSQL locals must avoid table-column ambiguity: case_root_id/case_revision_id, not unqualified root_id/revision_id inside table queries.
+
+### 6. Focused acceptance
+Static review/DDL compilation alone is insufficient. Main must execute original recovery plus original investigator preparation in one TOP force_rollback, check one-use/wrong-case rejection and original export/epoch purge, then verify all preexisting rows/schema and ledger restored with no network attempts. Installation follows exact whitelist/replay/rollback preservation. A live operator requires pinned actual acceptance/install evidence for the current SQL/Python/harness, strictly true success fields, session single-executor lock, TOP preparation then IDLE original run_phase, and no automatic retry.
+
+### 7. Wrong vs correct
+Wrong: erase UNKNOWN, claim historical HTTP=0 from absent rows, accept stale/empty pin sets, or resurrect an old prepared graph. Correct: preserve old UNKNOWN/accounting, prove this one original mandatory prestart path, allocate at most one new current bounded frame, append its independent unknown accounting, and stop on any new uncertainty. P7 completion and public release require their separate full acceptance; this recovery does not grant either.
+
+## Exact finite context at investigation envelope boundaries (2026-10-12)
+
+`NativeReviewInvestigationOwner.prepare_persistent`, `_issued`, and `_fence` must locally provide `finite_review_context(original.source, spec=original.spec, materials=original.request.materials)` for every finite descriptor-dependent payload/envelope computation. Do not rely on an ambient caller context: the original `run` enters `_issued` before its later provider context.
+
+- `_issued`: original payload hash and persistent sender envelope hash use the same exact local context; concrete type, issuer/object identity, protocol and seal comparisons remain mandatory.
+- `prepare_persistent`: computing the final sender seal owns its local context. Preparation INSERT and registrations are unchanged.
+- `_fence`: persistent finding and `p.payload()` used as the original SQL assertion argument share the exact context. Source/lease/settings/committed preparation/reservation checks are not removed.
+- Both success and error must restore the previous ContextVar token; an outer unrelated context must not leak into the computation or be lost afterwards.
+
+Focused regression must demonstrate the old missing-context rejection, corrected lexical scope, unchanged wrong-payload/envelope rejection and context restoration. AST-isolated inert-DATA tests establish this scope property only; they are not actual owner/DB/provider/dispatch acceptance.
+
+A context fix is not UNKNOWN recovery authority. Existing phase92f71c9e-94fd-4d7f-8bf9-9a15a920bcee has committed preparation and stage_started, and remains outcome_unknown. Neither stage_started nor a missing receipt establishes HTTP count; consumed535 cannot be reused. Historical SQL/code pin manifests stay unchanged and fail closed after code changes. Any future recovery needs a separately reviewed original-issuer mechanism, not JSON capability restoration, overwritten UNKNOWN, a new operation label or renewed old lease.
+
+## Explicit successor and source-boundary acceptance (542, 2026-10-13)
+
+### 1. Scope / Trigger
+A human-approved new revision attempt after539's irrecoverable storage failure; same task/root/committed investigation, not a replay of the consumed author or a new investigation.
+### 2. Signatures
+PersistentPackTaskOwner.prepare_successor_committed_revision(task, transaction=TOP) returns the original NativeRevisionOwner and PreparedNativeRevision. It uses the fixed .successor.1 operation/stage/child identities and authorization. Existing prepare_fresh_committed_revision keeps its once refusal.
+### 3. Contracts
+Only the original checked successor issuer excludes the exact c859 predecessor from the Python receipt-once lookup.542's registered-parent guard plus selected-receipt (receipt,parent_job) unique index permits only that successor; all other receipts keep one revision. Original current-source/PRIVATE mapping/lease/profile/model/quality gates remain unchanged. No source deadline extension, local result import, investigation rerun or automatic second model call.
+### 4. Validation / Errors
+Repeated successor -> SUCCESSOR_COMMITTED_REVISION_ONCE_CONSUMED. Stale current mapping -> native_mapping_current_required, with source_fence_diagnostics retaining source_or_claim_stale. A preparation failure must roll back the TOP before any author dispatch, without consuming the successor or adding an expense event. Source expiry is not a SQL-authority bypass opportunity.
+### 5. Good / Base / Bad
+Good: original TOP prepare/author setup and one bounded run while all original current-source bounds remain valid;541 durable output precedes original writer/lineage persistence. Base: old539 and other receipts retain their once semantics. Bad: removing receipt uniqueness globally, changing the parent arbitrarily, extending an old retained_until or equating a new claim with the old frozen binding.
+### 6. Required / Actual Checks
+Three changed product files passed scoped Ruff/Mypy; independent delta review passed. Actual SQL compile/replay and original TOP prepare/author setup/duplicate denial/complete rollback passed;542 is installed. The later live preparation failed before provider dispatch because its mapping's source/claim was stale. No real child/lineage completion is claimed for this increment.
+### 7. Wrong vs Correct
+Wrong: successful migration or rollback preparation proves revision success; new source proof can silently replace expired investigation evidence. Correct: require actual durable-output/artifact/checkpoint/lineage commits, and provide a separately verified original-source/mapping successor mechanism when the frozen source bound expires. Current implementation has no such source-renewal bridge; do not retry the expired attempt.
+
+## Original revision generation durability and persistence-only recovery (541, 2026-10-13)
+
+### 1. Scope / Trigger
+Normal PUBLIC persistent revision can lose a paid staged result if a later artifact write fails and its process exits.541 stores issuer-observed output before that write. This does not recover a historical result that was never durably bound; ordinary/controlled non-applicable generation keeps its existing behavior and publication gates.
+
+### 2. Signatures
+SharedGenerationPipeline.settle_generation / NativeRevisionOwner.settle return GenerationSettlementOutcome(durability=not_applicable|durable|settled_only, safe_reason). New methods: prepare_revision_persistence(preparation_id, source_authority=...) -> IssuedRevisionGenerationPersistence; commit_revision_persistence(cap) -> SharedPipelineStageResult; persist_revision_lineage(cap) -> UUID. New table tutor_item_supply_shared_revision_generation_outputs has preparation PK, unique reservation, original root/job/preparation/reservation/settlement FKs, immutable payload/snapshot_hash and server-assigned capture_txid. No existing SQL receiver is replaced.
+
+### 3. Contracts
+The original run records its observed staged result and actual author-input binding. Settlement appends full request/result/receipt, original preparation identity, lease/policy/model binding and returned state in a savepoint; the caller commits the enclosing expense/output transaction. Output-append failure returns settled_only: commit the known/unknown settlement, then stop before artifact writing. Recovery only reads a committed immutable journal, issues a new restricted cap, and rechecks current source, lease/profile/deadline, model/policy, request/content/author-input, original reservation and normal/non-controlled scope. It neither rehydrates original author registries nor dispatches/reserves/settles again. Existing writer/checkpoint and lineage SQL remain authoritative.
+
+### 4. Validation and Error Matrix
+Missing journal -> GENERATION_DURABLE_BINDING_MISSING; same TOP (including savepoint output) -> GENERATION_DURABLE_BINDING_NOT_COMMITTED; changed payload/returned failed state -> GENERATION_DURABLE_BINDING_CHANGED; forged cap or owner -> GENERATION_PERSISTENCE_ISSUER_REQUIRED. The repository requires the exact RevisionGenerationDurability owner type and same connection. Each artifact/checkpoint observation binds cap, server TOP XID, artifact ID/hash; lineage requires a later TOP and a matching reread, so an artifact written inside a savepoint is not mistaken for committed output. Current/expired/source/controlled gates are not waived.
+
+### 5. Good / Base / Bad
+Good: commit settlement+journal; a fresh owner prepares cap and commits artifact+checkpoint; another TOP persists lineage. After an artifact-stage process exit, a new owner may prepare against the existing artifact, commit that read-only TOP, and persist lineage in the next TOP. Base: ordinary non-revision generation remains not_applicable and follows its prior path. Bad: load captured JSON into old registries, fabricate owner.verify, repeat the provider call during persistence, or consume a same-TOP journal/artifact.
+
+### 6. Tests Required and Actual Evidence
+13 offline synthetic tests passed across test_revision_generation_durability.py and the affected test_item_supply_shared_pipeline.py, including journal failure with retained known/unknown usage, fresh issuer roundtrip/idempotence, post-IO source failure, missing/forged authority and nested artifact/lineage transactions. Scoped Ruff and six-product-file Mypy passed. Main's selected541 PG compile/replay/rollback/install passed, including real nested-savepoint DATA insertion and exact missing/wrong-request/uncommitted rejections; old318 tables/8148 rows and ledger were preserved. Evidence: .runtime/p7-generation-durability-20261013/541-schema-2ec17d275c32/result.json. Synthetic seams and SQL DATA guards are not a real-provider cross-process recovery run; that live acceptance has not been performed.
+
+### 7. Wrong vs Correct
+Wrong: a provider-usage hash or local result file proves the full original output; differing subtransaction xmin proves an outer commit. Correct: capture the actual issuer output in the expense transaction, use server TOP capture/observation boundaries, and consume only committed matching DATA through a fresh restricted issuer. Historical c8593cb3-2360-48c0-a7f8-a3a69c930184 has no journal and remains unrecoverable by this path; its known usage and old UNKNOWN histories stay unchanged.
+
+## Revision generation child blueprint guard (540, 2026-10-13)
+
+The generation INSERT guard compares source.blueprint to preparation.payload_json.request.blueprint, not context.parent_source.blueprint. The original preparation receiver remains responsible for legal registered-family adaptation; candidate/root/request equality, substantive change and deadline checks remain mandatory. A known provider settlement is not a durable output-content commitment: if the original process has ended before artifact/checkpoint persistence, captured JSON must not be rehydrated into issuer registries or imported as original author authority.540 corrects only the comparison and adds no recovery capability.
+
+## Fresh execution for a committed investigation (539, 2026-10-13)
+
+### 1. Scope / trigger
+An explicitly approved revision may use the registered committed investigation after its old execution window expires. Old phases, leases, evidence and UNKNOWN remain immutable; this is not a generic retry or historical sender restoration.
+
+### 2. Signature
+PersistentPackTaskOwner.prepare_fresh_committed_revision(task_ref, *, transaction) returns the original NativeRevisionOwner and a new PreparedNativeRevision under one caller-owned TOP transaction. The ordinary phase dispatcher and investigation sender are not called.
+
+### 3. Data / authority
+Original517/P3 issue a new bounded execution job/lease under the SAME canonical root. PRIVATE committed_revision_execution binds the task/user/epoch, exact old phase/receipt hashes, new job/profile/batch, authorization and unchanged source-grant bounds. Its canonical task-plus-receipt key and original UNIQUE(investigation_receipt_id) enforce one use. The new revision child has the new execution job as parent; the old investigation job is historical evidence, never relabelled current.
+
+### 4. Validation / failure
+Three old-normal assertion sites in the revision receiver/family matcher branch only on the server-verified registered fresh execution. Legacy paths still reject expired controls. Current epoch/mapping/source/hold, new parent/child controls, model/profile and final deadlines remain required. Use the real P3 job_key hash rather than a nonexistent stage_key column; resolve raw profile_key through the profile registry using both snapshot hashes. JobLease.profile itself contains hashes/values, not the full profile key.
+
+### 5. Allowed / forbidden
+Allowed: create a fresh original graph, commit preparation/reservation, run one original revision author at IDLE, then settle and commit child/lineage. Forbidden: renew old dates, replay investigation/old run_phase, restore sender registries, create another budget root, or treat the child as reviewed/published. The evidence-only parent still does not authorize the old blind/recheck path.
+
+### 6. Required verification
+Use one successful same-input original TOP schema replay plus fresh prepare/author/fence(false)/duplicate denial with HTTP disabled and complete rollback. Reuse that evidence for selected installation if the current DB still equals its baseline; do not repeat the same rehearsal merely to certify completion. Live uses another fresh graph and the original committed=True/provider fences. Retain actual failures and partial/unknown usage.
+
+### 7. Boundary
+539 adds three internal owner-only functions, one PRIVATE insert trigger and one record-kind CHECK member, changing only the two reviewed receiver bodies while retaining their OID/owner/ACL. No new table/index/public grant, no generic expiry waiver, no automatic second author call or publication.
+
+## Committed investigation, revision-only continuation (537, 2026-10-13)
+
+### 1. Scope / trigger
+A direct human instruction to fix and run revision may consume the exact already-committed investigation as evidence. It does not reopen the parent phase, rerun its investigation or rewrite UNKNOWN. This increment is confined to the registered frame3/receipt, same task/root/artifact; no general recovery scheduler or public entry is added.
+
+### 2. Signatures
+PersistentPackTaskOwner.prepare_committed_revision(task_ref, *, transaction) returns tuple[NativeRevisionOwner, PreparedNativeRevision] under the caller's original TOP transaction. RevisionOnlyContext and CommittedInvestigationEvidence are separate evidence-only issuer types, not IssuedPackPhase/PreparedNativeReviewInvestigation. The subsequent original prepare_author/run/settle/commit_generation/persist_lineage sequence remains the execution path.
+
+### 3. Contracts
+Original issuer identity/seals, exact committed phase journal/preparation/receipt/reservation/UNKNOWN settlement, current task/epoch/mapping/source/controlled-hold and existing lease deadlines must match. No old investigation _prepared/_runs/_sender_seals or ordinary phase _issued entry is restored from JSON. Data identifiers only select evidence. Original UNIQUE(investigation_receipt_id), child enqueue/claim/accounting/reservation and model-attempt bounds remain authoritative. Child lineage does not grant publication/admission or erase parent history.
+
+### 4. Validation / error matrix
+Wrong issuer/receipt/current binding or hash denies; an existing revision preparation denies a second issuance. Expired parent/receipt/source denies without extending timestamps or changing parent. The revision owner revalidates its evidence in _parent/generation_context and authority consumption, including completed=True lineage writes, not merely at the entry point. A new author failure/UNKNOWN stops; there is no automatic second revision/investigation.
+
+### 5. Good / base / bad
+Good: use a fresh original evidence-only issuer, commit a new child preparation/author reservation, invoke the original author once at IDLE, separately settle and commit the child/lineage. Base: existing original in-process investigation path remains unchanged. Bad: repopulate old sender registries, deserialize an IssuedPackPhase, call old run_phase, or attach a new revision stage event to the already-ended UNKNOWN frame.
+
+### 6. Focused evidence
+Before real dispatch require independent source/operator review plus actual original TOP revision prepare/author/fence under forced rollback with HTTP disabled, schema/row restoration and ledger unchanged. A new fresh graph after that acceptance must pass committed=True before provider entry. Keep old three phase/investigation histories and155-event ledger prefix unchanged; record new attempt/partial usage honestly. DATA-only expression controls and static type checks do not substitute for this original path.
+
+### 7. SQL receiver repair
+537 changes only four JSON extraction-minus operands in persistent_registered_family_revision_matches(jsonb), verified old8df23b... -> new9a2376... prosrc. Actual original TOP later exposed scalar-minus allocation/variant_id as42725; append-only538 adds its parentheses, final body21e3c91.... Full target-function scanning must cover BOTH scalar and ARRAY subtraction. That failed TOP fully rolled back; the original window subsequently expired, so no successful business acceptance/live revision is claimed at this checkpoint. Keep installed525/530/536 immutable and preserve receiver OID/owner/ACL/all other metadata. Inspect the whole target function for the same expression defect rather than fixing the first occurrence only. Actual selected install preserved318 tables/rows, other schema/indexes,26 old SQL files and ledger; live revision acceptance remains a separate result.
+
+## Explicit one-attempt release after retained UNKNOWN (536, 2026-10-13)
+
+### 1. Scope / trigger
+A direct human release can authorize one NEW bounded attempt despite retained uncertainty. This is separate from535 prestart proof: old UNKNOWN, stage/preparation/reservation/usage and consumed permission remain immutable.536 registers only the approved frame2 -> frame3 case, not a general UNKNOWN reset or HTTP0 assertion.
+
+### 2. Signatures
+Original internal PersistentPackTaskOwner.prepare_explicit_recovery(task_ref, *, transaction) requires exact concrete issuer, active TOP/same connection and read-committed/origin/Asia-Shanghai snapshot semantics. Receiver assert_persistent_explicit_recovery(p jsonb, successor uuid) checks current PRIVATE identity, registered historical fingerprints, authorization hash and current source/phase fences. There is no public/learner approval parameter.
+
+### 3. Contracts
+PRIVATE journal explicit_recovery_approval binds schema_version, case_key, authorization_sha256, basis=new_attempt_despite_retained_uncertainty, task_ref, failed_phase_id, retained_unknown_phase_ids, logical_stage_key, attempt_key, checked_at and valid_until. Binding records approval_id, failed/successor phase IDs, successor frame hash, logical/attempt keys and TOP txid. The allocation window is900seconds; once bound, the original fresh phase/lease/source deadlines govern the attempt, without extending old leases. Original process-issued permission must cover exactly BOTH retained UNKNOWN frames before one frame3 allocation; errors force the whole TOP rollback. Stored JSON is DATA, not a restored capability.
+
+### 4. Validation and error matrix
+Only the bound investigation attempt may use its fixed .explicit_release_20261012 key. Unbound registered frame3 or case attempt namespace, wrong bound suffix, missing new preparation, wrong receipt chain, extra historical evidence, old permission replay or second binding deny. Other stages keep their original keys. History matching uses operation_key, so new success cannot cancel an old started stage by sharing a business-stage name. Existing source/epoch/hold/fresh517 batch/lease/current ownership checks remain.
+
+### 5. Good / base / bad
+Good: retain both UNKNOWNs and cost uncertainty, issue a fresh original graph and one explicitly bound new attempt. Base: no explicit permission retains old denial. Bad: rewrite prior UNKNOWN, reuse old Prepared/lease/reservation, change a suffix without SQL authority, or claim missing receipt means zero HTTP.
+
+### 6. Focused actual acceptance
+Append-only536 adds4 functions and3 triggers, extends one exact PRIVATE kind CHECK, and replaces only the preparation UNIQUE(review_receipt_id)/its index with a fixed0/1 expression unique index. Ordinary reviews stay single-bucket; only registered review/frame3 can use the second bucket, with actual permit/preparation reception. Keep reservation unique, composite preparation unique/receipt FK, other indexes/guards and old rows. No table/column/public grant or old receiver body change.
+Main must execute original prepare -> _issued -> _fence(committed=False) and rollback stage_start, exact negative receiver messages, isolated TEMP index semantics (not business authority), epoch/export, and complete rows/schema/indexes/ledger restoration under one TOP with HTTP disabled. Actual committed=True fence still runs after real commit before provider IO. Installer requires the actual exact success receipt and current SQL/Python/harness pins, not compile-only PASS; the separate live gate allows one run_phase, no loop/retry.
+
+### 7. Wrong vs correct / SQL regression points
+Wrong: generically count runtime_settlements by a nonexistent job_id. Correct: join settlement.reservation_id to shared_reservations.id and filter reservations.job_id; include known and unknown settlements, never equate zero settlement rows to zero HTTP. Wrong: dereference an unassigned PL/pgSQL record in an AND condition and assume short-circuit evaluation avoids tuple-descriptor planning. Correct: nest the successor-dependent deadline IF inside the branch where phase_row has actually been assigned. Compile/replay alone does not execute these data-dependent branches; retain actual failures and test the original path before live release.

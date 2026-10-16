@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import sys
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -46,6 +46,14 @@ from app.services.learning.item_supply.diagnostic_policy import policy_for_hash
 from app.services.learning.item_supply.validation_adapter import validate_candidate
 from app.services.learning.item_supply.validators.profiles import required_probes
 
+if TYPE_CHECKING:
+    from app.services.learning.item_supply.persistent_pack_committed_admission import IssuedCommittedChildAdmission
+    from app.services.learning.item_supply.committed_admission_quality import CommittedChildQuality
+    from app.services.learning.item_supply.committed_admission_facts import CommittedQualityObservation
+    from app.services.learning.item_supply.native_normal_revision_readmission import (
+        NativeNormalRevisionReadmissionOwner, PreparedNormalRevisionReadmission,
+    )
+
 TABLE = "tutor_item_supply_shared_admission_facts"
 _PROBES = {"correct": "reference", "incorrect": "starter_rejected", "equivalent": "equivalent",
            "known_wrong": "wrong_rejected", "boundary": "boundary", "scorer_counterexample": "scorer_counterexample"}
@@ -64,9 +72,10 @@ class _Originals:
     review_result: SharedReviewResult
     blind_receipt_id: UUID
     review_receipt_id: UUID
+    normal_readmission: PreparedNormalRevisionReadmission | None = None
 
 
-def _target_proof(p: PreparedSharedReview, result: SharedReviewResult,
+def _target_proof(p: PreparedSharedReview | CommittedChildQuality, result: SharedReviewResult | CommittedQualityObservation,
                   machine_hashes: tuple[str, ...]) -> SharedTargetProofV1 | None:
     """Pure composition AFTER concrete owner verification; no authority on its own.
 
@@ -104,12 +113,38 @@ def _target_proof(p: PreparedSharedReview, result: SharedReviewResult,
 
 
 class SharedAdmissionFactsOwner:
-    def __init__(self, conn: Connection[dict[str, Any]], *, validation_pipeline: SharedValidationPipeline,
-                 review_pipeline: SharedReviewPipeline, enabled: bool = False) -> None:
+    def __init__(self, conn: Connection[dict[str, Any]], *, validation_pipeline: SharedValidationPipeline | None = None,
+                 review_pipeline: SharedReviewPipeline | None = None, enabled: bool = False,
+                 normal_readmission_owner: NativeNormalRevisionReadmissionOwner | None = None,
+                 committed_admission: IssuedCommittedChildAdmission | None = None) -> None:
         self.conn, self.enabled = conn, enabled
+        self.normal_readmission_owner: NativeNormalRevisionReadmissionOwner | None = normal_readmission_owner
+        self._committed_admission = committed_admission
+        self._committed_issued: dict[UUID, IssuedSharedAdmissionFactsV1] = {}
+        self._committed_pending: IssuedSharedAdmissionFactsV1 | None = None
+        if committed_admission is not None:
+            from app.services.learning.item_supply.persistent_pack_committed_admission import IssuedCommittedChildAdmission
+            if (type(committed_admission) is not IssuedCommittedChildAdmission or committed_admission.owner.conn is not conn
+                    or validation_pipeline is not None or review_pipeline is not None or normal_readmission_owner is None
+                    or normal_readmission_owner._committed_admission is not committed_admission):
+                raise SharedAdmissionFactsPending("COMMITTED_ADMISSION_FACTS_ORIGINAL_OWNERS_REQUIRED")
+            self.normal_readmission_owner = normal_readmission_owner
+            self.artifacts = SharedPipelineArtifactRepository(conn,enabled=enabled)
+            return
+        if validation_pipeline is None or review_pipeline is None:
+            raise SharedAdmissionFactsPending("SHARED_FACTS_CONCRETE_SAME_CONNECTION_OWNERS_REQUIRED")
         self.validation_pipeline, self.review_pipeline = validation_pipeline, review_pipeline
         self.artifacts = SharedPipelineArtifactRepository(conn, enabled=enabled)
         self._issued: dict[UUID, tuple[IssuedSharedAdmissionFactsV1, _Originals]] = {}
+        self.normal_readmission_owner = normal_readmission_owner
+        self._normal_pending: dict[UUID, tuple[IssuedSharedAdmissionFactsV1, _Originals]] = {}
+        if normal_readmission_owner is not None:
+            from app.services.learning.item_supply.native_normal_revision_readmission import NativeNormalRevisionReadmissionOwner
+            if (type(normal_readmission_owner) is not NativeNormalRevisionReadmissionOwner
+                    or normal_readmission_owner.conn is not conn
+                    or normal_readmission_owner.recheck.validation is not validation_pipeline
+                    or normal_readmission_owner.recheck.review is not review_pipeline):
+                raise SharedAdmissionFactsPending("NORMAL_READMISSION_SAME_ORIGINAL_FACTS_OWNERS_REQUIRED")
 
     def _transaction(self) -> datetime:
         vp, rp = self.validation_pipeline, self.review_pipeline
@@ -124,6 +159,12 @@ class SharedAdmissionFactsOwner:
         # Adoption needs neither new generation nor the legacy V1 review flag.
         if not vp.settings.learning_item_v2_admission_enabled:
             raise SharedAdmissionFactsPending("SHARED_FACTS_V2_ADMISSION_DISABLED")
+        if self.normal_readmission_owner is not None:
+            from app.services.learning.item_supply.native_normal_revision_readmission import NativeNormalRevisionReadmissionOwner
+            normal = self.normal_readmission_owner
+            if (type(normal) is not NativeNormalRevisionReadmissionOwner or normal.conn is not self.conn
+                    or normal.recheck.validation is not vp or normal.recheck.review is not rp):
+                raise SharedAdmissionFactsPending("NORMAL_READMISSION_SAME_ORIGINAL_FACTS_OWNERS_REQUIRED")
         self.artifacts.require_owner()
         return server_clock(self.conn, datetime.now(UTC))
 
@@ -321,8 +362,20 @@ class SharedAdmissionFactsOwner:
                 raise SharedAdmissionFactsPending("SHARED_REVISION_DISCHARGE_OWNER_PENDING")
             descendant = self.conn.execute("SELECT item_supply_internal.native_revision_descendant(%s) AS revision",
                 (a["job_id"],)).fetchone()
-            if descendant is None or descendant["revision"] is not False:
+            if descendant is None:
                 raise SharedAdmissionFactsPending("SHARED_REVISION_DISCHARGE_OWNER_PENDING")
+            if descendant["revision"] is not False:
+                owner, permit = self.normal_readmission_owner, o.normal_readmission
+                if owner is None or permit is None:
+                    raise SharedAdmissionFactsPending("SHARED_REVISION_DISCHARGE_OWNER_PENDING")
+                current_child = owner.verify_context(permit, lease=lease)
+                if (current_child.validation_prepared is not v or current_child.validation_result is not o.validation_result
+                        or current_child.review_prepared is not p or current_child.review_result is not result
+                        or (current_child.validation_receipt_id, current_child.blind_receipt_id, current_child.review_receipt_id)
+                        != (o.validation_receipt_id, o.blind_receipt_id, o.review_receipt_id)):
+                    raise SharedAdmissionFactsPending("NORMAL_READMISSION_ORIGINAL_CHILD_INPUTS_MISMATCH")
+            elif o.normal_readmission is not None:
+                raise SharedAdmissionFactsPending("NORMAL_READMISSION_REVISION_DESCENDANT_REQUIRED")
         continuation_hash = None if resolved.continuation_binding is None else resolved.continuation_binding.binding_hash
         meta = self.artifacts.context(lease, now=now)
         if (resolved.lease != lease or resolved.source != p.source or resolved.request != p.request
@@ -366,6 +419,8 @@ class SharedAdmissionFactsOwner:
         review_budget = self._budget(lease, root_id=root_id, reservation_id=p.reservation_id,
             key=f"review.{p.artifact_id.hex}", resources=p.resources, actual=None, receipt_hash=None)
         expiry_bounds = [lease.expires_at, lease.parent_deadline, lease.profile.parent_deadline_at, result.ambiguity.parent_deadline_at]
+        if o.normal_readmission is not None:
+            expiry_bounds.append(o.normal_readmission.valid_until)
         if port is not None:
             scorer = SharedReviewPipeline._result(rp, p, result)
             if port._deadline is None or type(scorer) is not SandboxBlindAnswerScorer:
@@ -424,14 +479,26 @@ class SharedAdmissionFactsOwner:
     def issue(self, *, lease: JobLeaseV1, validation_prepared: PreparedSharedValidation,
               validation_result: SharedValidationResult, validation_receipt_id: UUID,
               review_prepared: PreparedSharedReview, review_result: SharedReviewResult,
-              blind_receipt_id: UUID, review_receipt_id: UUID) -> IssuedSharedAdmissionFactsV1:
+              blind_receipt_id: UUID, review_receipt_id: UUID,
+              normal_readmission: PreparedNormalRevisionReadmission | None = None) -> IssuedSharedAdmissionFactsV1:
         originals = _Originals(validation_prepared, validation_result, validation_receipt_id,
-                               review_prepared, review_result, blind_receipt_id, review_receipt_id)
+                               review_prepared, review_result, blind_receipt_id, review_receipt_id, normal_readmission)
         # No issuance replay with a newly chosen expiry. Caller can verify its
         # original fact, but cannot renew it under the same stage receipts.
         if any(o.review_receipt_id == review_receipt_id for _, o in self._issued.values()):
             raise SharedAdmissionFactsPending("SHARED_FACTS_ALREADY_ISSUED_USE_VERIFY")
-        facts = self._build(originals, lease=lease, receipt_id=uuid4())
+        facts = self._build(originals, lease=lease, receipt_id=uuid4() if normal_readmission is None else normal_readmission.receipt_id)
+        if normal_readmission is not None:
+            owner = self.normal_readmission_owner
+            if owner is None:
+                raise SharedAdmissionFactsPending("NORMAL_READMISSION_ORIGINAL_OWNER_REQUIRED")
+            # Original full source/machine/coverage/risk evaluation already ran.
+            # SQL sees this sealed side receipt BEFORE the unchanged facts INSERT.
+            self._normal_pending[facts.receipt_id] = (facts, originals)
+            try:
+                owner.persist(normal_readmission, facts_owner=self, facts=facts)
+            finally:
+                self._normal_pending.pop(facts.receipt_id, None)
         row = self.conn.execute(
             f"INSERT INTO {TABLE}(id,root_id,job_id,lease_owner,lease_generation,lease_state_version,profile_hash,"
             "generation_artifact_id,item_id,version_id,source_hash,content_hash,continuation_binding_hash,"
@@ -449,6 +516,9 @@ class SharedAdmissionFactsOwner:
         return facts
 
     def verify(self, facts: IssuedSharedAdmissionFactsV1, *, lease: JobLeaseV1) -> AdmissionEvidenceV2:
+        if self._committed_admission is not None:
+            from app.services.learning.item_supply.committed_admission_facts import verify
+            return verify(self,facts,lease=lease)
         self._transaction()
         facts = checked_model(facts, IssuedSharedAdmissionFactsV1)
         original = self._issued.get(facts.receipt_id)
@@ -461,4 +531,17 @@ class SharedAdmissionFactsOwner:
                               checked_at=facts.checked_at, valid_until=facts.valid_until)
         if current != facts:
             raise SharedAdmissionFactsPending("SHARED_FACTS_CURRENT_EVIDENCE_CHANGED")
+        if original[1].normal_readmission is not None:
+            if self.normal_readmission_owner is None:
+                raise SharedAdmissionFactsPending("NORMAL_READMISSION_ORIGINAL_OWNER_REQUIRED")
+            self.normal_readmission_owner.verify_persisted(original[1].normal_readmission, facts=facts)
         return facts.evidence
+
+    def preview_committed(self, frame: IssuedCommittedChildAdmission) -> IssuedSharedAdmissionFactsV1:
+        """Full evaluation DATA in caller rollback; not a facts issuance or publication permit."""
+        from app.services.learning.item_supply.committed_admission_facts import build
+        return build(self,frame,committed=False)
+
+    def issue_committed(self, frame: IssuedCommittedChildAdmission) -> IssuedSharedAdmissionFactsV1:
+        from app.services.learning.item_supply.committed_admission_facts import issue
+        return issue(self,frame)

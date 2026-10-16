@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
@@ -18,7 +18,7 @@ from app.core.config import DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
 from app.services.learning.item_bank.contracts import canonical_hash
 from app.services.learning.item_supply.diagnostic_policy import policy_for_hash
 from app.services.learning.item_supply.finite_candidate_factory import (
-    FiniteCandidateSpecV1, build_finite_candidate_spec, build_finite_generation_request,
+    FLEXIBLE_FACTORY_VERSION, FiniteCandidateSpecV1, build_finite_candidate_spec, build_finite_generation_request,
 )
 from app.services.learning.item_supply.finite_review_descriptor import finite_review_context
 from app.services.learning.item_supply.generation_contracts import GenerationLimitsV2, GenerationRequestV2, GenerationResultV2
@@ -29,6 +29,7 @@ from app.services.learning.item_supply.native_revision_contracts import (
 from app.services.learning.item_supply.native_review_investigation import (
     NativeReviewInvestigationOwner, NativeReviewInvestigationRun, PreparedNativeReviewInvestigation,
 )
+from app.services.learning.item_supply.persistent_pack_committed_revision import CommittedInvestigationEvidence, RECEIPT
 from app.services.learning.item_supply.parameter_profiles import ExecutionParameterProfileV1
 from app.services.learning.item_supply.pipeline_repository import PipelineRepositoryError
 from app.services.learning.item_supply.policies import RetryPolicyV1
@@ -36,7 +37,11 @@ from app.services.learning.item_supply.provider_adapter import OpenAICompatibleG
 from app.services.learning.item_supply.repository import server_clock
 from app.services.learning.item_supply.review_deliberation import substantive_revision_hash
 from app.services.learning.item_supply.shared_pipeline import SharedGenerationPipeline
-from app.services.learning.item_supply.shared_pipeline_contracts import PreparedSharedGeneration, SharedPipelineStageResult
+from app.services.learning.item_supply.shared_pipeline_contracts import GenerationSettlementOutcome, PreparedSharedGeneration, SharedPipelineStageResult
+
+if TYPE_CHECKING:
+    from app.services.learning.item_supply.shared_admission_facts import SharedAdmissionFactsOwner
+    from app.services.learning.item_supply.shared_admission_facts_contracts import IssuedSharedAdmissionFactsV1
 from app.services.learning.item_supply.shared_pipeline_repository import generation_resources
 from app.services.learning.item_supply.storage_contracts import checked_model
 
@@ -44,8 +49,8 @@ from app.services.learning.item_supply.storage_contracts import checked_model
 @dataclass(frozen=True, repr=False)
 class PreparedNativeRevision:
     preparation_id: UUID
-    investigation: PreparedNativeReviewInvestigation
-    investigation_result: NativeReviewInvestigationRun
+    investigation: PreparedNativeReviewInvestigation | CommittedInvestigationEvidence
+    investigation_result: NativeReviewInvestigationRun | None
     investigation_receipt_id: UUID
     investigation_receipt_hash: str
     lease: JobLeaseV1
@@ -94,9 +99,15 @@ class NativeRevisionOwner:
             raise PipelineRepositoryError("NATIVE_REVISION_SCHEMA_REQUIRED")
         return server_clock(self.conn,datetime.now(UTC))
 
-    def _parent(self, p: PreparedNativeReviewInvestigation, result: NativeReviewInvestigationRun,
+    def _parent(self, p: PreparedNativeReviewInvestigation | CommittedInvestigationEvidence, result: NativeReviewInvestigationRun | None,
                 receipt_id: UUID) -> dict[str, Any]:
         self._guard()
+        if isinstance(p, CommittedInvestigationEvidence):
+            if type(p) is not CommittedInvestigationEvidence or result is not None or receipt_id != RECEIPT:
+                raise PipelineRepositoryError("REVISION_EXACT_COMMITTED_EVIDENCE_REQUIRED")
+            return self.investigation_owner.require_committed_revision(p)
+        if type(p) is not PreparedNativeReviewInvestigation or type(result) is not NativeReviewInvestigationRun:
+            raise PipelineRepositoryError("REVISION_VALID_ORIGINAL_INVESTIGATION_REQUIRED")
         self.investigation_owner._result(p,result)
         self.investigation_owner._fence(p)
         if result.report is None or result.safe_reason != "investigation_analysis_pending_revision_owner":
@@ -128,11 +139,40 @@ class NativeRevisionOwner:
 
     def prepare(self, *, investigation: PreparedNativeReviewInvestigation, result: NativeReviewInvestigationRun,
                 investigation_receipt_id: UUID) -> PreparedNativeRevision | None:
+        if type(investigation) is not PreparedNativeReviewInvestigation or type(result) is not NativeReviewInvestigationRun:
+            raise PipelineRepositoryError("REVISION_VALID_ORIGINAL_INVESTIGATION_REQUIRED")
+        return self._prepare(investigation=investigation, result=result, investigation_receipt_id=investigation_receipt_id)
+
+    def prepare_committed(self, evidence: CommittedInvestigationEvidence) -> PreparedNativeRevision | None:
+        self.investigation_owner.require_committed_revision(evidence)
+        return self._prepare(investigation=evidence, result=None, investigation_receipt_id=RECEIPT)
+
+    def _prepare(self, *, investigation: PreparedNativeReviewInvestigation | CommittedInvestigationEvidence,
+                 result: NativeReviewInvestigationRun | None, investigation_receipt_id: UUID) -> PreparedNativeRevision | None:
         row = self._parent(investigation,result,investigation_receipt_id)
-        if self.conn.execute("SELECT 1 FROM tutor_item_supply_shared_revision_preparations WHERE investigation_receipt_id=%s",
-                (investigation_receipt_id,)).fetchone() is not None:
+        predecessor = None
+        if isinstance(investigation, CommittedInvestigationEvidence) and investigation.persistent_phase.execution is not None:
+            from app.services.learning.item_supply.persistent_pack_fresh_committed_revision import successor_predecessor
+            predecessor = successor_predecessor(investigation.persistent_phase)
+        if self.conn.execute("SELECT 1 FROM tutor_item_supply_shared_revision_preparations WHERE investigation_receipt_id=%s "
+                "AND (%s::uuid IS NULL OR id<>%s)",
+                (investigation_receipt_id,predecessor,predecessor)).fetchone() is not None:
             return None  # Replay DATA never issues a new dispatch capability.
         parent = investigation.original
+        allocation=parent.spec.allocation
+        materials = parent.request.materials
+        source_successor = type(investigation) is CommittedInvestigationEvidence and investigation.persistent_phase.source_successor is not None
+        if source_successor:
+            assert isinstance(investigation, CommittedInvestigationEvidence)
+            assert investigation.persistent_phase.source_successor is not None
+            materials = investigation.persistent_phase.source_successor.public_materials
+        if isinstance(investigation, CommittedInvestigationEvidence):
+            allocation=self.investigation_owner._select_registered_child_allocation(investigation.persistent_phase,parent.spec)
+            if allocation != investigation.request.revision_allocation:
+                raise PipelineRepositoryError("PERSISTENT_FROZEN_FAMILY_PLAN_CHANGED_STOP")
+        elif investigation.persistent_phase is not None:
+            allocation=self.investigation_owner.child_allocation(investigation)
+        family_change=allocation!=parent.spec.allocation
         values = investigation.lease.profile.values
         if values.discussion_rounds<2 or values.revision_rounds<1:
             raise PipelineRepositoryError("REVISION_FROZEN_PROFILE_ROUNDS_REQUIRED")
@@ -148,7 +188,7 @@ class NativeRevisionOwner:
         now = server_clock(self.conn,datetime.now(UTC))
         retry = RetryPolicyV1(max_transient_attempts=1,initial_backoff_ms=1,maximum_backoff_ms=1)
         job = self.generation.runtime.enqueue(root_id=investigation.root_id,
-            stage_key="revision."+investigation_receipt_id.hex,profile=profile,now=now,priority=100,
+            stage_key="revision."+investigation_receipt_id.hex+(".successor.1" if predecessor is not None else ""),profile=profile,now=now,priority=100,
             aging_seconds=60,visibility="public",parent_job_id=investigation.lease.job_id,retry_policy=retry)
         lease = self.generation.runtime.claim(root_id=investigation.root_id,lease_owner="revision."+prep_id.hex,
             now=now,lease_seconds=max(1,int((investigation.deadline_at-now).total_seconds())),visibility="public")
@@ -162,25 +202,56 @@ class NativeRevisionOwner:
         inherit_development_model_accounting(self.conn,parent_lease=investigation.lease,child_lease=lease,now=now)
         scope = parent.spec.coverage_blueprint.scope
         spec = build_finite_candidate_spec(target_id=parent.spec.target_id,variant_id=parent.spec.allocation.variant_id,
-            seed=parent.spec.seed,item_key=item_key,version=version,materials=parent.request.materials,
+            seed=parent.spec.seed,item_key=item_key,version=version,materials=materials,
             runtime_profile_hash=None if parent.spec.blueprint.runtime_profile_id is None else scope.runtime_profile_hash,
             scorer_version=scope.scorer_version,assistance_policy_hash=scope.assistance_policy_hash,
             policy_version=parent.spec.coverage_blueprint.policy_version,difficulty_profile=parent.spec.blueprint.difficulty_profile,
-            publication_policy=parent.spec.blueprint.publication_policy,public_spec_version=parent.spec.blueprint.version,
-            allocation=parent.spec.allocation)
-        if spec.coverage_blueprint != parent.spec.coverage_blueprint or spec.blueprint != parent.spec.blueprint:
+            publication_policy=parent.spec.blueprint.publication_policy,
+            public_spec_version=FLEXIBLE_FACTORY_VERSION if family_change else parent.spec.blueprint.version,
+            allocation=allocation)
+        expected_blueprint = parent.spec.blueprint
+        if source_successor:
+            # _parent has verified the original issued evidence/bridge/execution.
+            # Rebind only exact factory-derived citations; never mutate the parent.
+            from app.services.learning.item_supply.finite_candidate_factory import _references
+            if not family_change:
+                raise PipelineRepositoryError("REVISION_SOURCE_SUCCESSOR_REGISTERED_FAMILY_REQUIRED")
+            expected_blueprint = expected_blueprint.model_copy(update={
+                "source_references": _references(materials, parent.spec.target_id)})
+        if (spec.coverage_blueprint != parent.spec.coverage_blueprint
+                or (not family_change and spec.blueprint != expected_blueprint)
+                or (family_change and spec.blueprint.model_dump(mode="json",exclude={"blueprint_key","version"})
+                    !=expected_blueprint.model_dump(mode="json",exclude={"blueprint_key","version"}))):
             raise PipelineRepositoryError("REVISION_FACTORY_CORE_CHANGED")
         request = build_finite_generation_request(spec,candidate_id=candidate,profile=lease.profile,
-            materials=parent.request.materials,limits=GenerationLimitsV2(max_input_bytes=parent.request.limits.max_input_bytes,
+            materials=materials,limits=GenerationLimitsV2(max_input_bytes=parent.request.limits.max_input_bytes,
                 max_output_tokens=DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS,max_output_bytes=parent.request.limits.max_output_bytes))
-        assert result.report is not None
+        report = investigation.report if isinstance(investigation, CommittedInvestigationEvidence) else (None if result is None else result.report)
+        assert report is not None
+        family_revision=None
+        if family_change:
+            from app.services.learning.item_supply.persistent_pack_repair import PersistentCloneFindingV1, PersistentInvestigationInputV1
+            from app.services.learning.item_supply.persistent_pack_revision_contracts import PersistentRegisteredFamilyRevisionV1
+            phase=investigation.persistent_phase
+            if phase is None or phase.version is None or type(investigation.request) is not PersistentInvestigationInputV1:
+                raise PipelineRepositoryError("REVISION_EXACT_PERSISTENT_FAMILY_ISSUER_REQUIRED")
+            clones=[d for d in investigation.request.disputes if type(d) is PersistentCloneFindingV1]
+            if (len(clones)!=1 or allocation!=investigation.request.revision_allocation
+                    or spec.seed!=parent.spec.seed or allocation.variant_id!=parent.spec.allocation.variant_id):
+                raise PipelineRepositoryError("REVISION_FROZEN_ACTUAL_CLONE_FAMILY_PLAN_REQUIRED")
+            family_revision=PersistentRegisteredFamilyRevisionV1(phase_id=phase.record.phase_id,
+                public_slot_id=phase.version.public_slot_id,parent_revision_id=phase.version.revision_id,
+                parent_specification_hash=parent.spec.specification_hash,finding_key=clones[0].dispute_key,child_specification=spec)
         context = NativeRevisionContextV1(parent_artifact_id=parent.artifact_id,parent_artifact_hash=parent.artifact_hash,
             parent_source_hash=parent.source.source_hash,parent_content_hash=parent.source.content_hash,
             parent_review_hash=investigation.request.review_receipt_hash,investigation_receipt_id=investigation_receipt_id,
-            investigation_receipt_hash=row["snapshot_hash"],investigation_report_hash=canonical_hash(result.report.model_dump(mode="json")),
+            investigation_receipt_hash=row["snapshot_hash"],investigation_report_hash=canonical_hash(report.model_dump(mode="json")),
             child_candidate_id=candidate,child_item_key=item_key,child_version=version,scope_hash=request.scope_hash,
             policy_hash=parent.binding.policy_hash,target_definition_hash=parent.spec.target_definition_hash,parent_source=parent.source,
-            problems=tuple(NativeRevisionProblemV1.from_analysis(a) for a in result.report.output.analyses))
+            problems=tuple(NativeRevisionProblemV1.from_analysis(a) for a in report.output.analyses),
+            schema_version=("native_revision_author_context_v3" if source_successor else
+                "native_revision_author_context_v2" if family_change else "native_revision_author_context_v1"),
+            persistent_family_revision=family_revision)
         deadline = min(investigation.deadline_at,lease.expires_at,lease.parent_deadline,lease.profile.parent_deadline_at,
             lease.profile.bound_at+timedelta(milliseconds=lease.profile.values.stage_deadline_ms))
         if deadline<=now:
@@ -223,6 +294,13 @@ class NativeRevisionOwner:
         p.context.check_request(request)
         return p.context
 
+    def _source_authority(self, p: PreparedNativeRevision) -> Any:
+        if isinstance(p.investigation, CommittedInvestigationEvidence):
+            self.investigation_owner.require_committed_revision(p.investigation)
+            return p.investigation.persistent_phase.owner.type_owner.source_authority
+        authority,_,_,_ = self.investigation_owner.review._issued(p.investigation.original)
+        return authority
+
     def prepare_author(self, p: PreparedNativeRevision, *, provider: OpenAICompatibleGenerationProvider) -> PreparedSharedGeneration | None:
         self.generation_context(p,lease=p.lease,request=p.request,committed=False)
         if type(provider) is not OpenAICompatibleGenerationProvider or provider.request_attempt_bound != 1:
@@ -231,7 +309,7 @@ class NativeRevisionOwner:
             raise PipelineRepositoryError("REVISION_ORIGINAL_AUTHOR_CONFIGURATION_REQUIRED")
         if (provider.provider_key,provider.configured_model) != (p.investigation.identity.provider,p.investigation.identity.model):
             raise PipelineRepositoryError("REVISION_ORIGINAL_AUTHOR_MODEL_REQUIRED")
-        authority,_,_,_ = self.investigation_owner.review._issued(p.investigation.original)
+        authority = self._source_authority(p)
         gen = self.generation.prepare_generation(lease=p.lease,request=p.request,provider=provider,source_authority=authority,
             evidence_policy=policy_for_hash(p.context.policy_hash),revision_owner=self,revision_preparation=p)
         if gen is not None:
@@ -256,9 +334,9 @@ class NativeRevisionOwner:
             raise PipelineRepositoryError("REVISION_ORIGINAL_AUTHOR_RESULT_REQUIRED")
         self.generation._result(gen,result)
 
-    def settle(self, p: PreparedNativeRevision, gen: PreparedSharedGeneration, result: GenerationResultV2) -> None:
+    def settle(self, p: PreparedNativeRevision, gen: PreparedSharedGeneration, result: GenerationResultV2) -> GenerationSettlementOutcome:
         self._result(p,gen,result)
-        self.generation.settle_generation(gen,result)
+        return self.generation.settle_generation(gen,result)
 
     def author_binding(self, p: PreparedNativeRevision, gen: PreparedSharedGeneration, result: GenerationResultV2) -> NativeRevisionAuthorInputBindingV1:
         self._result(p,gen,result,original=False)  # Original writer revalidates its data before storage.
@@ -278,7 +356,7 @@ class NativeRevisionOwner:
     def commit_generation(self, p: PreparedNativeRevision, gen: PreparedSharedGeneration, result: GenerationResultV2) -> SharedPipelineStageResult:
         self._result(p,gen,result)
         self.generation_context(p,lease=gen.lease,request=gen.request,committed=True)
-        authority,_,_,_ = self.investigation_owner.review._issued(p.investigation.original)
+        authority = self._source_authority(p)
         return self.generation.commit_generation(gen,result,source_authority=authority)
 
     def persist_lineage(self, p: PreparedNativeRevision, gen: PreparedSharedGeneration, result: GenerationResultV2,
@@ -330,7 +408,9 @@ class NativeRevisionOwner:
         return p.preparation_id
 
     def verified_committed_lineage(self, p: PreparedNativeRevision, gen: PreparedSharedGeneration,
-                                   result: GenerationResultV2, *, lease: JobLeaseV1) -> dict[str, Any]:
+                                   result: GenerationResultV2, *, lease: JobLeaseV1,
+                                   normal_facts_owner: SharedAdmissionFactsOwner | None = None,
+                                   normal_facts: IssuedSharedAdmissionFactsV1 | None = None) -> dict[str, Any]:
         """Original issuer + committed DATA + CURRENT operation, not old stage lease.
 
         No generating/investigation-stage fence is replayed after checkpoints.
@@ -338,6 +418,26 @@ class NativeRevisionOwner:
         """
         self._guard()
         self._result(p,gen,result)
+        if normal_facts_owner is not None or normal_facts is not None:
+            # Only the explicitly NEW normal mode may identify its own exact
+            # child terminal. Controlled ancestry wins before any permission.
+            held = self.conn.execute("SELECT item_supply_internal.controlled_counterexample_held(%s) AS held",
+                (p.lease.job_id,)).fetchone()
+            if held is None or held["held"] is not False:
+                raise PipelineRepositoryError("SHARED_CONTROLLED_EXPERIMENT_HELD")
+            from app.services.learning.item_supply.shared_admission_facts import SharedAdmissionFactsOwner
+            from app.services.learning.item_supply.native_normal_revision_readmission import NativeNormalRevisionReadmissionOwner
+            if type(normal_facts_owner) is not SharedAdmissionFactsOwner or normal_facts is None:
+                raise PipelineRepositoryError("REVISION_NORMAL_ORIGINAL_FACTS_FRAME_REQUIRED")
+            assert normal_facts_owner is not None
+            normal = normal_facts_owner.normal_readmission_owner
+            if (type(normal) is not NativeNormalRevisionReadmissionOwner or normal.conn is not self.conn
+                    or normal.recheck.revision_owner is not self):
+                raise PipelineRepositoryError("REVISION_NORMAL_ORIGINAL_FACTS_FRAME_REQUIRED")
+            frame = normal.require_terminal_frame(facts_owner=normal_facts_owner, facts=normal_facts, lease=lease)
+            if (frame.recheck.revision is not p or frame.recheck.author is not gen
+                    or frame.recheck.author_result is not result):
+                raise PipelineRepositoryError("REVISION_NORMAL_ORIGINAL_CHILD_FRAME_REQUIRED")
         lease = checked_model(lease,JobLeaseV1)
         if ((lease.job_id,lease.generation,lease.lease_owner,lease.profile,lease.visibility) !=
                 (p.lease.job_id,p.lease.generation,p.lease.lease_owner,p.lease.profile,"public")
@@ -363,13 +463,65 @@ class NativeRevisionOwner:
                 or lineage["snapshot_hash"] != canonical_hash(lineage["payload_json"])
                 or self.generation.artifacts.generation_policy(lease,p.request,now=now).policy_hash != p.context.policy_hash):
             raise PipelineRepositoryError("REVISION_COMMITTED_LINEAGE_DATA_CHANGED")
-        terminal = self.conn.execute("SELECT EXISTS(SELECT 1 FROM tutor_item_supply_shared_admission_facts "
-            "WHERE generation_artifact_id=ANY(%s::uuid[])) OR EXISTS(SELECT 1 FROM tutor_item_supply_shared_pipeline_receipts "
-            "WHERE generation_artifact_id=ANY(%s::uuid[]) AND artifact_kind='admission_evaluation') "
-            "OR EXISTS(SELECT 1 FROM tutor_learning_item_publication_events WHERE version_id=ANY(%s::uuid[])) AS terminal",
-            ([p.investigation.original.artifact_id,resolved.artifact["id"]],
-             [p.investigation.original.artifact_id,resolved.artifact["id"]],
-             [UUID(p.investigation.original.binding.version_key), resolved.artifact["version_id"]])).fetchone()
+        if normal_facts_owner is None and normal_facts is None:
+            terminal = self.conn.execute("SELECT EXISTS(SELECT 1 FROM tutor_item_supply_shared_admission_facts "
+                "WHERE generation_artifact_id=ANY(%s::uuid[])) OR EXISTS(SELECT 1 FROM tutor_item_supply_shared_pipeline_receipts "
+                "WHERE generation_artifact_id=ANY(%s::uuid[]) AND artifact_kind='admission_evaluation') "
+                "OR EXISTS(SELECT 1 FROM tutor_learning_item_publication_events WHERE version_id=ANY(%s::uuid[])) AS terminal",
+                ([p.investigation.original.artifact_id,resolved.artifact["id"]],
+                 [p.investigation.original.artifact_id,resolved.artifact["id"]],
+                 [UUID(p.investigation.original.binding.version_key), resolved.artifact["version_id"]])).fetchone()
+        else:
+            if normal_facts is None:
+                raise PipelineRepositoryError("REVISION_NORMAL_ORIGINAL_FACTS_FRAME_REQUIRED")
+            # Parent and unrelated child terminals remain unconditional DENY.
+            # The exact evaluation/publication generated by this same ORIGINAL
+            # facts/publisher is needed for their subsequent final verify calls;
+            # DB rows identify permitted history, never restore a capability.
+            terminal = self.conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM tutor_item_supply_shared_admission_facts WHERE generation_artifact_id=%s) "
+                "OR EXISTS(SELECT 1 FROM tutor_item_supply_shared_pipeline_receipts WHERE generation_artifact_id=%s AND artifact_kind='admission_evaluation') "
+                "OR EXISTS(SELECT 1 FROM tutor_learning_item_publication_events WHERE version_id=%s) "
+                "OR EXISTS(SELECT 1 FROM tutor_item_supply_shared_admission_facts WHERE generation_artifact_id=%s AND (id IS DISTINCT FROM %s OR payload_hash IS DISTINCT FROM %s)) "
+                "OR EXISTS(SELECT 1 FROM tutor_item_supply_shared_pipeline_receipts e WHERE e.generation_artifact_id=%s AND e.artifact_kind='admission_evaluation' "
+                "AND (e.artifact_key IS DISTINCT FROM %s OR e.receipt_hash IS DISTINCT FROM %s OR e.payload_json IS DISTINCT FROM %s "
+                "OR e.mode IS DISTINCT FROM 'live' OR e.job_id IS DISTINCT FROM %s OR e.lease_owner IS DISTINCT FROM %s OR e.lease_generation IS DISTINCT FROM %s)) "
+                "OR EXISTS(SELECT 1 FROM tutor_learning_item_publication_events event WHERE event.version_id=%s AND NOT EXISTS("
+                "SELECT 1 FROM tutor_learning_item_native_publication_proofs proof JOIN tutor_item_supply_shared_pipeline_receipts evaluation ON evaluation.id=proof.evaluation_receipt_id "
+                "WHERE proof.id=event.authority_reference_id AND proof.version_id=event.version_id AND proof.generation_artifact_id=%s "
+                "AND proof.facts_receipt_id=%s AND proof.proof_json->>'facts_hash'=%s "
+                "AND proof.proof_json->'lease'=%s AND evaluation.artifact_key=%s AND evaluation.receipt_hash=%s "
+                "AND evaluation.generation_artifact_id=%s AND evaluation.payload_json=%s "
+                "AND event.authority_kind='native_v2' AND event.authority_hash=proof.proof_hash "
+                "AND event.policy_version=%s AND event.state IN ('agent_reviewed','pilot','published')) "
+                "AND NOT EXISTS(SELECT 1 FROM tutor_learning_item_validation_receipts bank_validation "
+                "JOIN tutor_learning_item_import_receipts imported ON imported.validation_receipt_id=bank_validation.id "
+                "WHERE event.authority_reference_id=bank_validation.id AND imported.initial_publication_event_id=event.id "
+                "AND imported.version_id=event.version_id AND bank_validation.version_id=event.version_id "
+                "AND event.state='machine_verified' AND event.state_version=1 AND event.predecessor_event_id IS NULL "
+                "AND event.authority_kind='validation' AND event.authority_hash=bank_validation.receipt_hash "
+                "AND event.policy_version='learning_item_native_import_v2' AND bank_validation.policy_version=event.policy_version "
+                "AND bank_validation.schema_version='candidate_validation_v2' AND bank_validation.passed IS NULL "
+                "AND bank_validation.native_generation_artifact_id=%s AND bank_validation.native_validation_receipt_id=%s "
+                "AND bank_validation.receipt_hash=%s AND bank_validation.native_specification_hash=%s "
+                "AND bank_validation.native_import_lease_json=%s AND imported.importer_version='learning_item_native_repository_v2' "
+                "AND imported.source_hash=%s AND imported.content_hash=%s)) AS terminal",
+                (p.investigation.original.artifact_id, p.investigation.original.artifact_id,
+                 UUID(p.investigation.original.binding.version_key), resolved.artifact["id"], normal_facts.receipt_id,
+                 normal_facts.receipt_hash, resolved.artifact["id"], "native_admission." + normal_facts.receipt_id.hex,
+                 normal_facts.evaluation.evaluation_hash, Jsonb(normal_facts.evaluation.model_dump(mode="json")),
+                 lease.job_id, lease.lease_owner, lease.generation, normal_facts.version_id,
+                 normal_facts.generation_artifact_id, normal_facts.receipt_id, normal_facts.receipt_hash,
+                 Jsonb(lease.model_dump(mode="json")), "native_admission." + normal_facts.receipt_id.hex,
+                 normal_facts.evaluation.evaluation_hash, normal_facts.generation_artifact_id,
+                 Jsonb(normal_facts.evaluation.model_dump(mode="json")), normal_facts.evaluation.policy_version,
+                 normal_facts.generation_artifact_id, normal_facts.validation_receipt_id, normal_facts.validation_receipt_hash,
+                 normal_facts.specification_hash, Jsonb(lease.model_dump(mode="json")),
+                 normal_facts.evidence.binding.source_hash, normal_facts.evidence.binding.content_hash)).fetchone()
         if terminal is None or terminal["terminal"]:
             raise PipelineRepositoryError("REVISION_FINAL_HISTORY_RETAINED")
+        end = server_clock(self.conn, now)
+        self.generation.runtime._control(lease, now=end)
+        if end>=p.deadline_at or (normal_facts is not None and end>=normal_facts.valid_until):
+            raise PipelineRepositoryError("REVISION_ORIGINAL_EVIDENCE_DEADLINE_REACHED")
         return {"artifact":resolved.artifact,"lineage":lineage,"source":resolved.source,"authority":authority}

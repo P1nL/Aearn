@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 from app.services.grounding.public_course_contracts import PublicCourseEvidenceBindingV1
@@ -24,6 +25,12 @@ class PreparedSharedGeneration:
     attempt_bound: int
     producer_binding: tuple[str, str]
     evidence_policy_hash: str = ""
+
+
+@dataclass(frozen=True)
+class GenerationSettlementOutcome:
+    durability: Literal["not_applicable", "durable", "settled_only"]
+    safe_reason: str
 
 
 @dataclass(frozen=True)

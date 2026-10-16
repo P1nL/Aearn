@@ -1,5 +1,124 @@
 # Aearn 数据库 Schema 与持久化契约
 
+## 2026-10-16：C19 handle域修复563已安装，质量准备回滚通过，writer已过期
+
+原440 private version的opaque storage handle与version UUID分别生成，不能拿它与native canonical handle作等式。563仅精确前向修quality、publication insert/current、continuation terminal与560 readiness五个prosrc，0新增对象；原version行与generic storage不变，native域始终使用已验证actual version UUID派生值。13:17选定安装及catalog/history保全通过，**所有已安装SQL≤563冻结；后续必要修复仅新增≥564**。
+
+新的quality-only flat cap从已提交C18 B、实际output/bridge/completion/artifact/checkpoint和同current writer重新签发，不恢复旧persistence cap或Prepared、不重做A/B。原质量prepare完整回滚PASS，HTTP0。独立最终CODE已PASS，包括在原facts最后SOURCE/accounting复核后的新DB clock检查完整7×timeout+15秒余量；不足时在_started/blind/HTTP前拒绝，普通PRIVATE不扩此规则。
+
+13:28:46只剩565.7316秒，低于715秒下界，故Main未提交C、未调用质量模型。13:48:04只读确认本次C18 writer已于13:38:12自然到期：output/原known费用/bridge/completion/generation Artifact各1，quality/reservation/publication各0，547六项各1，其他非空闲会话0。历史terminal仍返回artifact，不等于live authority或published。账本163、历史UNKNOWN/null不变；作者HTTP0、质量HTTP0。PRIVATE独立质量、增强、真实Tutor及P7仍未完成，后续仅质量新phase/window需另行明确授权与设计；不延长旧lease。完整当前交接见原任务research/p7-c18-c19-result-handoff-20261016.md。
+
+
+## 2026-10-16：C18 指定输出的新持久化／质量阶段562已安装
+
+用户批准对560 output `f4519c66-4130-4e34-b053-64dba6214dcb` 签发一次原owner新阶段及独立新窗口；作者与原作者重结算均为0。历史request/profile/result/source/receipt/known费用不变，新writer/profile/accounting/phase独立。562新增8函数、3trigger，仅精确前向修原artifact接收器、558 terminal及560 readiness的三个prosrc；保留原OID/owner/ACL和非目标目录。A唯一binding与B实际artifact/checkpoint/completion分别deferred闭合，A/B/C使用完整服务器TOP标记；历史完成事实不冒充current权限。
+
+联合DESIGN、CODE及增量CODE通过。Main最终selected compile/replay/catalog/history回滚、原A准备／same-TOP拒绝／无残留回滚均PASS；12:34北京时间选定安装562，证据 `.runtime/p7-private-current-20261014/private-persistence-phase-schema-20261016T043458220158Z/result-private.json`。**所有已安装SQL≤562冻结；后续必要修复只能新增≥563，不重放旧片。** A于12:39:38、B于12:42:19实际提交，原输出已成为Artifact `c8057dcb-a110-45fa-ab0b-46cd91c99191`；C质量准备随后因原524把存储opaque handle与native canonical version-ID handle作等式比较而拒绝，完整回滚且HTTP0。原terminal实际读回artifact，不是published。质量/增强/P7仍未通过；只可在当前writer有效时按已批准的精确committed-completion新owner分支重新签质量权限，不重做A/B或修改旧行。
+
+实际探针中修复了新A多余savepoint与原551的冲突、新SQL把TOP起始时间当实时DB clock的比较、以及accounting projection的batch_id误读。没有修改450/551或延长期限。原PUBLIC审核/547/关系保留不重跑，历史UNKNOWN/null不变；真实PRIVATE质量、增强与Tutor仍需各自证据。最新合同与状态见原任务C18授权、Python/SQL wire及独立检查报告；下列C17/C16段落保留其历史时态。
+
+## 2026-10-16：C16真实输出已留存，C17来源hash域错配已定位
+
+新PRIVATE作者真实HTTP1返回staged，known settlement及完整560 output f4519c66-4130-4e34-b053-64dba6214dcb均独立提交；账本163条、历史UNKNOWN/null不变。原Artifact事务随后在559 source identity守卫拒绝，artifact/quality/publication仍0。原进程已退出，但完整结果已留存在DB，**不得再次付作者或还原旧sender registry**。
+
+Main逐项原current/全回滚与READONLY诊断确认：身份/hash、slot/mapping/goal和全部来源当前条件都通过；实际错误是524 private_native_source_current将完整ClaimEvidenceReceipt hash错比为SignedSourceAssessment verification hash。原具体reader与DB权威列重建一致证明两个hash各自在正确域匹配。来源窄修561已独立CODE通过，05:19:13原fresh SOURCE的source_current/goal_current全回滚正例及四个hash/handle/epoch负例通过；05:19:56选择安装并读回成功，已安装≤561冻结。固定DB output的独立persist-only/quality handoff仍在实现与独立审阅阶段，尚无Artifact。原05:27:49+08 writer截止不延长，到期/质量窗口不足即停止；PRIVATE质量、增强、真实Tutor及P7仍未完成。详见原任务research/p7-c17-private-source-claim-hash-design-20261016.md与p7-c17-durable-output-persistence-continuation-design-20261016.md。
+
+## 2026-10-16：C16 PRIVATE输出留存560已安装，固定技术终结与新准备验收通过
+
+560新增8个封闭函数与2个trigger，仅精确前向修改558 predecessor/terminal的body；原OID/owner/ACL及其余catalog与既有行保持。新原live结果返回前由service封存完整context/result；费用先写、完整输出在同caller TOP的savepoint追加，capture失败不回滚费用；artifact必须另TOP消费匹配的已提交output。原SQL生成并校验完整TOP标记，同TOP释放savepoint不能冒充提交。旧C14 candidate明确禁止回填，known/unknown/null语义保留。
+
+独立CODE通过；直接Python46项、新SQL10项及另一个旧preIO case1项通过，Ruff/新文件scoped mypy通过，7项既有union-attr基线未扩修。Main selected560 compile/replay/history rollback通过，04:21安装提交，**已安装SQL≤560全部冻结**。原固定gap完整rollback及同TOP精确拒绝通过；04:22:47仅提交原issuer精确gap＋必要current-source origin两行，旧control/once/settlement/产物不变。04:25:56新TOP原后继prepare完整rollback的job/control/journal/settlement/artifact/quality/pub残留全0，547六项各1、其他非空闲0、HTTP0、ledger162未变。
+
+现开始一个新有界作者阶段，尚无本次新输出capture或独立质量验收结论。技术gap只记录已收费、自然过期、无持久输出，不把旧staged改为provider失败，不恢复旧cap/once或导入旧文件。PRIVATE增强/真实Tutor/P7整体仍未完成。详情及证据路径见原任务research/p7-private-generation-durability-and-gap-design-20261016.md。
+
+## 2026-10-16：C15 PRIVATE live actor修复559已安装；原作者输出未持久
+
+C14真实新作者返回staged、HTTP1，known结算独立提交（input12916/output2082/total14998、费用null），账本162条。原generation INSERT被524仅允许P6 actor的条件拒绝；artifact/质量/发布均无新增。结算hash只绑定provider元数据，不绑定完整生成内容，原进程已退出，本地DATA不得恢复为原能力或回填。
+
+559仅前向修原pipeline artifact/receipt trigger的PRIVATE live原身份分支，完整namespace/active plan/task/root/phase/lease/source/typed receipt及末端时钟保留。独立CODE和Main selected compile/replay/history rollback通过，03:29+08安装提交；原OID/owner/ACL/其余catalog、既有行与547六项各1不变，HTTP0。已安装SQL≤559冻结，不重放旧524/558或full bootstrap。未来真实generation/receipt正向接收仍待新合法阶段。
+
+C16已独立DESIGN通过、正在实现：仅对固定C14已收费、自然lease过期且无完整持久输出的事实追加technical disposition，不改写staged为provider失败、不恢复旧once；未来原活结果返回前封存，settlement后同TOP savepoint留存完整output、费用始终保留，artifact另TOP核已提交output。具体见原任务research/p7-private-generation-durability-and-gap-design-20261016.md。PRIVATE独立质量/增强/真实Tutor及P7整体未完成；无Git或公开发布。
+
+## 2026-10-16：C14 PRIVATE失败前向接续558已安装，质量链开始执行
+
+用户明确批准P7三阶段统一收口及新PRIVATE作者次数无限制；不恢复旧555 once或旧失败进程能力。558新增10个具体接收器和2个trigger，尝试key严格由同scope已提交真实前驱failure确定；原唯一后继、先提交准备/consume、原IDLE发送、独立结算、fresh SOURCE/lease/accounting及成功artifact后禁止再初始author均保留。仅前向修改原555辅助trigger函数的精确body，向新完整接收器分派，原OID/owner/ACL/非body属性保持；旧SQL源≤557未改，≤558现全部冻结。
+
+Main selected compile/replay/历史行+非目标catalog保全/rollback通过，原service准备完整回滚与错误前驱/未提交consume拒绝通过；02:03:10独立读回该probe全部残留0、547六项各1。selected558随后安装并提交后读回成功。当前才进入原新作者与独立质量阶段，不据schema安装声明PRIVATE质量、增强或真实Tutor通过。新作者human次数不限但原单阶段有界；旧UNKNOWN/费用null和C13 PUBLIC后端PASS保持。详见原任务research/p7-private-author-continuation-design-20261016.md。
+
+## 2026-10-16：C13原Artifact后端无模型完整回滚验收通过
+
+仅修Main验收脚本的programmatic教学输入（2个不同teaching_moves及对应消息），没有改产品SQL、CHECK或TTL。独立CODE及离线实际AST/原DTO验证后，Main一次diagnostic-off原链运行返回completed；原最终SET CONSTRAINTS ALL IMMEDIATE及current_handoff退出通过。事务内读回action1、native consumer create1、529 clearance4（advertise×2、prepare、create）、knowledge_check Artifact1，PUBLIC_scope_cleared=true。证据.runtime/p7-private-current-20261014/fallback-artifact-20261015T162508103303Z/result-private.json。
+
+00:27:19+08只读确认本run/artifact/action/consumer/529全回滚为0，547六项仍各1、其他非空闲会话0；HTTP/模型0、ledger161字节不变。SQL≤557冻结，新pack120及独立30秒保持，没有恢复作者许可、Git提交或公开发布。原PUBLIC整包fallback到Artifact创建的后端programmatic DATA路径现已验收；PRIVATE独立质量链/增强、真实Tutor侧质量及P7整体仍未完成。下节C12失败是保留的先前阶段记录，已由本次合法输入运行解决，不应据其旧状态继续重跑consumer修复。
+
+## 2026-10-16：C12 consumer PUBLIC 合同557已安装，完整Artifact验收仍未通过
+
+549的原consumer组13错误要求严格LearningItemPublicV1中不存在的public_json.visibility。557只将该JOIN谓词改为公内容列/JSON schema均learning_item_public_v1，且原immutable publication proof的lease.visibility=public、owner_id/owner_epoch为显式JSON null；缺键不默认public。PUBLIC身份来自原proof lease命名空间，不来自内容正文。原version/public_hash外键、proof/current-source/selected/member/actor/epoch/同TOP/postwait及所有consumer/Artifact围栏保持；新签发pack120及独立30秒政策不变。
+
+独立DESIGN/CODE、19项focused测试、Ruff/scoped mypy通过。Main00:01:48隔离PG selected557真实编译/同片replay/原行与非目标catalog保全/回滚通过，00:02:12提交安装后读回通过；原consumer OID/owner/ACL/全部非body属性保持。原2practice新JOIN通过，9个错误schema/缺键/private/非空owner等直接谓词负例拒绝；非整个current证明。证据原任务research/p7-consumer-public-contract-fix-design-20261015.md；runtime consumer-public-contract-20261015T160147406440Z与20261015T160211565009Z。≤557全部冻结，旧549不得重放，不运行full bootstrap或激活531。
+
+其后唯一无插桩、无模型原Artifact全链运行已越过consumer及事务内materializer.create返回，失败在action receipt INSERT的chk_tutor_teaching_action_receipts_version_shape：Main programmatic DATA仅1个micro_transfer，而当前合同及实际CHECK要求2..4。不是新的consumer/TTL失败，不放宽原合同、不自动重跑。完整terminal/最终约束验收尚未通过，无持久Artifact，P7未完成。证据.runtime/p7-private-current-20261014/fallback-artifact-20261015T160256682789Z/result-private.json；00:05:14只读确认本run/artifact/action/consumer/529均0、原547六项各1、其他非空闲0。HTTP0、账本161字节不变、作者0，无Git/公开发布。下一步先修Main合法验收DATA，再进行新一次原链完整回滚，不需为该输入错误新增SQL。
+
+## 2026-10-14：550已安装、原四角色关系已commit；整包current受30秒曝光时序阻塞
+
+550仅修原native relation receiver两处query-local c别名与PLpgSQL变量歧义，原root/phase/lease/author separation/request hash等条件未改。实际compile/replay与完整原prepare rollback通过后selected安装，冻结文件SHA f63b7014e5818dc5c6e126ca9ed3ef59be85e37eee4213378369f9bf3483a80a，receiver body70194b777ae1860df750c87e62b278360601842d98c6c9a4011defeba02dbb51，pipeline及producer两处pin同步；原OID/owner/ACL等保全。schema manifest550已登记，<=549冻结。
+
+Main同一任务/selected5的新原phase 032bac08-b091-47dd-bed5-2c99b03a65da真实四角色完成并commit relation_ready，原receipt e1578bca-7835-4884-b8d5-2f45d8194d5c及4ProviderRun已DB回读。4实际HTTP，ledger158→159，旧事件/UNKNOWN保留；runtime aggregate UNKNOWN、金额null。证据 .runtime/p7-current-receivers-20261014/relation-live-20261014T052949500329Z/result-private.json。禁止重付/重生成该关系；关系ready不等整包ready。
+
+其后原get_status→resolve_pack→_exposure真实SQL502拒绝。Main新原snapshot/resolve_pack/savepoint回滚诊断 exposure-diagnose-20261014T063910445789Z：checked14:39:49.867、valid14:40:19.867、真正检查14:42:48.651，179秒后仅time_current=false；水位/计数/原hooks/birth/inbox全true。0HTTP/provider，无关系replay。原snapshot与candidate期限30秒不延，不用旧snapshot；必要原owner TOP生命周期重排处于设计中，源/epoch/退役/曝光变化及原消费门禁独立保留。PRIVATE、原Artifact消费与P7尚未完成。
+
+
+## 2026-10-14：whole-pack原current source及549已验收、安装
+
+原owner显式签发同任务current-source进程能力并经NativeType严格安装；旧PUBLIC proof/source refs、实际published_at、mapping与selected5均不修改。新旧材料/目标/请求语义完全一致，各自签名授权policy/gen/source预算/root/delegation/expiry分别核验；新C不是新模型钱包。549仅向既有PRIVATE journal写显式current origin DATA，原consumer create/consume与PRIVATE base原SQL source fence校验同actor/epoch/mapping/task/原proof/新C及真实provenance，默认旧分支仍严格。origin或文件中的UUID不能恢复能力，provider/relation/exposure/PRIVATE/delivery各门禁独立。
+
+Main正向source-rehearsal-20261014T020236843430Z回滚：原mapping、selected5 NativeType与SQL source接收器均current；原PUBLIC状态仍preparing/relation_required/qualified_slots5。否决source-negative-20261014T021800025454Z：foreign actor/wrong epoch/expired origin均拒绝。install549-20261014T022354186834Z selected安装已commit并注册manifest，冻结SHA a283f28331cc9c1d048ee9a1ae8066ff71ea5e9fd65124f80800a8b6f39f94f2；无需548，531未启用，<=547未改，旧历史/ledger保全，新增项目provider/HTTP为0。完整关系4角色、ready、PRIVATE及原Artifact consumer仍未验收，P7_complete=false。下节“source549实施中”是早先同日历史检查点，当前以本节为准。
+
+
+## 2026-10-14：547历史DATA的原NativeType current读取已修复（无548迁移）
+
+原reader现显式核验547新admission与历史validation/producer/review的分离 origin，不全局放松旧JOIN/profile规则，不恢复旧Issued/lease/scorer注册表。PG prep.created_at是TOP now而非实际lease bind时间，历史校验分别保留audit顺序和stage在原bind/截止内的发行边界。Main原新child current全回滚通过：bank_current/native_current=true、547六项各1、schema/ledger保全、HTTP/provider0；证据.runtime/p7-current-receivers-20261014/probe-20261014T012034658233Z/result-private.json，独立history检查PASS。无需548；547及更早冻结，531未启用。
+
+这只修复最新child历史数据读取；四旧发布版本当前source_unavailable与普通mapping source_or_claim_stale仍准确拒绝。新whole-pack source purpose设计经独立审阅补入549 explicit origin/原consumer与PRIVATEbase SQL source接收器后PASS，产品/DDL仍实施中，未据此声明current整包/PRIVATE/consumer或P7完成。
+
+## 2026-10-14：547 已提交质量回执的零 provider 准入接续（已安装）
+
+`547_learning_item_committed_child_admission_v1.sql` 已在原隔离数据库通过真实有数据 prepare、完整原 admission evaluation（eligible_internal）、重复发行拒绝、DDL 重放及全回滚，并选择性安装。SQL SHA-256 为 `3bc3ec3e0c547a3249dfa25816c50824f9c100c706332ef2411de33c5bb5c7cc`；546及更早已安装片保持不变，531未启用。
+
+新模式仅覆盖原 PUBLIC task 9378a05f-b33e-5fc9-9bd7-6f073c2e6c8c 的已提交 child 4e230bc0-dceb-4d39-bd17-bb5b2a41d8a3 和确切 validation/blind/六审/recheck 回执。复用现有 shared persistent journal 的 committed_admission DATA，不新建表；新原 owner 能力固定 once 身份，独立当前控制/15分钟期限与当前 PRIVATE 来源映射校验。历史 producer/review 的租约只核验当时发行合法性，不延长、不改写；旧 phase UNKNOWN、controlled hold及原费用 UNKNOWN均保留。新 admission role禁止创建 provider reservation，不能重跑作者/调查/审核。normal v3、facts/evaluation、原 native import/internal-publication及同槽 qualified 仍逐项接收，不由 lineage 或新版本号单独放行。
+
+原 admission caller同步修正盲解协议核验：V2仍legacy-only；V3仅识别原已登记协议并重建确切 input hash/prompt。未知版本、错输入、跨policy、角色或风险缺口仍拒绝。没有手填 eligible、恢复旧 scorer/Prepared/review注册表或用本地文件签发权限。
+
+唯一新admission action已实际完成，normal、facts、evaluation、import、native internal-publication、same-slot qualified回读各1，published version为8ba4ca51-e8f4-540a-b52a-eaec8a0a6764。提交证据为`.runtime/p7-committed-admission-20261014/commit-20261013T183819697920Z/result-private.json`及同目录`committed-finalization-private.json`：HTTP/provider0、账本158条原样、旧历史保留。单child成功不等于完整P7或公开发布；旧复核回执的blockers_discharged=false及四条历史unsupported争议不因此改写。随后原current读回确认两个剩余接收阻断：普通映射pending/source_or_claim_stale使get_status拒绝，修订专用来源successor不能升级为整包许可；NativeTypeEvidenceOwner原validation/facts同job/profile JOIN排除新547合法分离模式，报native_exact_original_publication_required。两个0HTTP回滚探针见同目录post-admission-current-pack-private.json及post-publication-current-receivers-private.json，修复尚未实施，不放宽旧SQL。验收：`.runtime/p7-committed-admission-20261014/rehearsal-20261013T183316281657Z/result-private.json`；安装：同目录 `install-20261013T183808319893Z/result-private.json`。两者HTTP/provider为0且账本未变。
+
+## 2026-10-14：546 已提交修订子项的显式 fresh recheck
+
+546_learning_item_committed_revision_recheck_v2.sql 已通过真实PG编译/重放及原有数据prepare、validation prepare、重复拒绝全事务回滚，并于北京时间2026-10-14选择性安装。追加片不修改已安装迁移，531仍未启用；无新表、列或索引。新增4个内部检查函数，精确替换510复核、522 normal分派、persistent journal与原491 adoption共4个receiver，并只扩510 preparation/receipt两处schema-version CHECK；新函数无PUBLIC执行权限。旧行、函数身份/属性、原v1分支及既有唯一性/FK保留。
+
+新v2把历史producer与当前review operation分开：541 output/settlement、原artifact/checkpoint/lineage保持不可变；新phase与491 adoption绑定同root和child。精确committed-child版本DATA先登记，再adoption/validation，避免旧journal必须先有validation的循环。历史generation-policy仍校验原作者request/profile，不覆盖为新审核profile。normal v2经原matcher、facts、import与publication接收链，保留producer和operation双重controlled检查；旧争议未解除。
+
+实际准备/安装证据在 .runtime/p7-post-revision-20261013/。随后真实执行已提交machine_verified validation、独立盲解、六角色全approved和v2复核receipt；normal side/facts仍为0，原phase保留outcome_unknown，不改写为成功或重新付费审核。准入、发布及完整P7未通过。精确异常未保留，后续只应从已提交回执定位和设计未花费准入接续。
+
+
+## 2026-10-13：545已安装，原修订持久化链实际通过
+
+`545_learning_item_revision_source_reference_successor.sql` 仅替换 `fresh_committed_revision_matches`、`enforce_native_revision_insert`、`persistent_registered_family_revision_matches` 三个原函数体；无新表/列/索引/grant，保留OID、owner、ACL和旧数据。原工厂仅在已核验543接续来源时生成显式v3上下文和新引用，其余父项核心、覆盖、profile与family约束保持。545没有原地改写已安装的历史迁移。
+
+完整原组件TOP准备、作者设置、重复拒绝、DDL重放与全回滚通过后安装545。随后单次真实作者将原输出与known用量结算提交；另一进程仅从541数据库durable output恢复，提交子产物 `4e230bc0-dceb-4d39-bd17-bb5b2a41d8a3`、checkpoint与lineage `4228be3f-a129-4c06-a531-4d69a37c1d46`。数据库回读的原输出、request、source、receipt完全一致；恢复过程无HTTP且未还原作者内存注册表。证据：`.runtime/p7-source-mapping-successor-20261013/revision-persist-20261013T142128544206Z/result-private.json` 及同目录 `committed-revision-readback-private.json`。
+
+这完成本次修订的生成及持久化，不解除审核blocker：`admission_eligible=false`、`blockers_discharged=false`、`publication_enabled=false`。旧三条UNKNOWN及539已知结算不变；完整P7仍未通过。以下543/544安装记录保留各自当时的验收范围。
+
+## 2026-10-13：543 来源与已确认课程接续已安装
+
+`543_learning_item_source_mapping_successor_v1.sql` 已通过实际编译、重放、原 PUBLIC/confirmed PRIVATE 来源准备与全回滚，再选择性安装。范围仅4个新内部函数、3个原接收函数体、PRIVATE journal的1个CHECK和1个插入trigger；无新表、列或索引，旧行和原函数身份/权限保留。新函数均撤销PUBLIC执行权限。
+
+`source_mapping_successor` 复用原PRIVATE journal及其生命周期，显式绑定原任务/root/父项/调查与新签名来源，不修改旧mapping、调查、期限或UNKNOWN。原组件的2次新source oracle、签名落库、PUBLIC C激活和PRIVATE provenance实际通过；这不等于修订、准入或发布通过。修订仍须完整无HTTP原TOP验收及实际durability→artifact/checkpoint→lineage。
+
+
+## 2026-10-13：544 原来源单次接续已安装
+
+`544_rag_registered_course_refresh_successor.sql` 独立于来源/映射接续543，仅允许已授权 python_reference gen3单次新抓取。旧来源root、grant、capture、两次历史消耗不变；新access-only root明确携带2次历史消耗，总上限3，仅新增1次dispatch。7天材料及30分钟派发上界仍由原接收函数约束。仅1个原函数体、3个CHECK、2个唯一约束→2个partial UNIQUE；函数OID/owner/ACL及所有旧行保持。实际原issuer、重复拒绝和派发INSERT已在TOP全回滚验证，随后选择性安装成功；不代表新来源证明或修订已通过。
+
 **状态：** 当前 schema 说明，2026-09-02。
 **权威来源：** `aearn/services/api/app/db/schema/__init__.py` 的显式 manifest、`aearn/services/api/app/db/schema/*.sql`、PostgreSQL bootstrap、
 Tutor/LearningTrack repositories 与 schema/cutover tests。
@@ -1158,3 +1277,142 @@ Main仅两SDK文件prospective修复：verify_identity纯CPU检查enabled/exact�
 真实链完成17个去重original-owner run（不是HTTP计数）：作者/独立盲解/六审/508调查/509新作者修订/新独立盲解/新六审；两原确定性validation均machine_verified。首轮4条material争议与有效4-analysis调查、native509preparation/childartifact/lineage及native510复审preparation/receipt均真实落库。新六审全approved，但4条旧争议均`unsupported/no_clause_specific_adapter`，`historical_finding_resolved=false`；无法因新审通过宣称discharge。parent/child及旧marked祖先仍holdtrue，facts/admission_evaluation/publication0，全E/Git尚未接受。
 
 305表6309旧行与安装后全部schema定义保持，96旧历史文件保持。旧key1未结算reservation/失败/once/UNKNOWN未改；账本145原事件保持，仅追加1条至146。可观察input361315/output82742，聚合cached/reasoning/reported total/CNY及HTTP尝试数UNKNOWN。详见 `.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/real-chain-completion-progress-20261011.md`。下一增量是精确原issuer的逐争议证据适配器及后续版本化解除规则，不重跑旧suite/不刷绿/不撤销现有hold。
+
+
+### 520：关系审核production-v2（2026-10-11已安装于原B1d隔离库）
+520_learning_item_native_relation_production_v2.sql仅对原501的public.enforce_native_type_evidence_insert()做两处闭集版本/config/resource绑定扩展，旧v1保留。新v2严格61440/Responses/high/单HTTP/指定schema+model、原四角色和原reservation；无新表/row/hold/source/lease权威。片段SHA1dd5852f8f91b6746f49c83768ef61921a462961aaaf89e6536f310551a59295；prosrc旧5cc1858e2162073e3d5e93dbf5d68f2d639bdafedb52bc807d15ad10bff6cc4c→新204c682ae3e58565e25f9f8099500f7a96f67ddc59b5fc08229bb404f1b0927b。Main选片实际编译/重放/强制rollback恢复/安装通过，305表6603原行、其他functions/triggers/constraints不变；未验证新relation真实数据正链或P7/E。实证.runtime/p7-to-e-mainline-20261011/schema520-7c160c37a7ee/result.json。520从此immutable，后续521+先重查占号。
+
+
+### 2026-10-11 SQL521 native original-consumer bridge (internal only)
+521 selected B1d install is verified: two private sidecars (`tutor_item_supply_native_consumer_receipts`, `tutor_item_supply_native_artifact_bindings`), ten bounded current-owner/source/purge helpers, six trigger instances, and one exact effective230 receiver replacement. Original305 tables/6707 prior row instances, old triggers/constraints and unrelated functions preserved; selected replay and forced rollback restoration passed. Creation/ongoing action authority are separate; mode+action-bound permits do not restore historical JSON, and frozen catalog strings remain distinct. Actual native Artifact/KC delivery is pending fresh pack. 522 is registered as staged code, not installed/live; manifest registration is not full schema replay or admission. No production/public/Gate/mastery enablement.
+
+
+### 2026-10-11 SQL522 normal revision new-version permission (internal only)
+522 selected B1d install is verified: one shared-confidential immutable normal-readmission side table, three exact helpers/two triggers, and conditional replacement of original509 deny function only. Original307 tables/6707 row instances and all unrelated functions/old triggers/constraints preserved; replay and forced rollback restoration passed. Controlled ancestry is denied before normal permission. This is version-specific admission capability for genuinely new validated/independently-reviewed child/full original facts, NOT historical finding discharge,6bool approval or separate publisher. Positive live normal readmission/P7 still pending; old code/default holds and old510 audit remain unchanged.
+
+### 2026-10-12 persistent pack / PRIVATE native authority (implementation pending acceptance)
+
+Approved P7 scope adds one SHARED producer journal and nine PRIVATE responsibilities,
+not a new scoring engine or a substitute approval flag. SQL523 owns
+`tutor_item_supply_shared_persistent_pack_journal` and
+`tutor_item_supply_private_persistent_pack_journal`; SQL524 owns PRIVATE native
+`quality_evidence`, `publications`, `eligibility`, `exposure_origins`,
+`exposure_snapshots`, `assessment_reservations`, `consumer_receipts` and
+`artifact_bindings` (all prefixed `tutor_item_supply_private_native_`). Existing
+generation, versions, source records, jobs, canonical roots and usage accounting
+remain their original owners' responsibilities.
+
+The PRIVATE journal binds ONE confirmed demand task, user/epoch, goal scope and
+five stable logical item slots. The SHARED journal has only public target/work
+coordinates: no private task, learner, goal/hash, private receipt or raw preference.
+An initial task may explicitly adopt unchanged, freshly eligible inventory by
+purpose role; a logical slot position is not a licence to rewrite an original
+factory variant/full specification. Later revisions must bind the same slot,
+canonical root, immutable parent and substantive child, with complete new evidence.
+Journal DATA alone cannot issue a publication, pack or consumer capability.
+
+New PRIVATE evidence/receivers must be independently closed over actual original
+author, validation, blind solve, six peers, normal investigation/revision/recheck,
+source/current, union exposure and consumer writes. Expired producer authority is
+historical, not a standalone current-content rejection; a current owner must still
+recheck source/latest eligibility/materialization/runtime/exposure. Technical phase
+expiry cannot create a replacement question, task or budget wallet. Paid opaque
+UNKNOWN is retained without automatic re-dispatch.
+
+All ten tables are classified explicitly in supply storage. Safe PRIVATE export
+is bounded identity/scope/time only; the two PRIVATE exposure tables have no scope
+column and artifact bindings use their actual `artifact_id` key. Epoch reset/delete
+must fence first, purge PRIVATE children before the task journal and original
+parents, retain the tombstone, and leave SHARED/other-user/history untouched.
+
+SQL523 is independently reviewed and **installed only in B1d** at SHA
+`0f8e40c66c64e343ffe85e67b101e10105f268bdd0972506299be6c8f204307b`.
+Selected compile/replay/forced rollback/install equality passed; all 308 prior
+tables/rows, unrelated functions and old triggers/constraints were preserved.
+Only the reviewed original native-type receiver changed and one oldtable epoch
+trigger was added. SQL523 is immutable after installation. Main's actual current
+five-slot adoption/idempotency/closed task receiver check passed under rollback;
+its returned task ID is not a live capability or the subsequently created task.
+
+Historical pre-install checkpoint: SQL524 was registered as staged code, **not
+installed or accepted at that checkpoint**. Main compile failed with `42703`
+on `x.exercise_version`; the prior smaller
+snapshot's rollback PASS cannot authorize a changed fragment. PRIVATE normal,
+phase and real consumer acceptance remain separate gates. Manifest registration
+is not full bootstrap/replay or P7 completion. Installed 508–523 bytes, historical
+failures/holds/UNKNOWN and formal Gate/Attempt/mastery boundaries remain preserved.
+
+Latest selected installation checkpoint (2026-10-12, B1d only): SQL524 at
+`ace39dd73748e68091ed55e08e7b8aae0d5c429071a4de93a0f9e96506381db1`,
+SQL525 at `54140bdcac2c1aa85817efa809dad66d382d2c73f9f757b56e50059e1ab4196f`,
+and SQL526 at `e7a826cfc0c7370f9a0e7a722b72846946fd262fdfb811b9a38740430055cde1`
+were independently slice-reviewed and selectively installed by Main. Selected
+compile/replay/forced-rollback/install equality passed; prior rows and unrelated
+functions/triggers/constraints were retained. Installed 508–526 bytes are frozen.
+SQL524 adds eight PRIVATE authority tables; SQL525 adds the registered-family
+normal-revision receiver branch without new tables; SQL526 adds the immutable
+PRIVATE enhancement-intent receiver. First-veto failure is not fallback authority.
+
+The live persistent task retains the original five logical slots and still lacks
+whole-pack readiness. Its original same-task normal-repair preparation currently
+stops at original shared-candidate-continuation INSERT with 23514 before HTTP;
+this is a receiver integration gate, not a reason to create a replacement pack.
+Append-only follow-up receivers and actual PRIVATE/consumer/export/reset checks
+remain pending. These selected installs do not establish full bootstrap, P7
+completion, P8 formal Gate/Attempt/mastery, or public/production release.
+
+### 2026-10-12 persistent normal input expression repair (534)
+
+Selected sandbox migration `534_learning_item_persistent_normal_input_expression_fix.sql` changes only the body of `item_supply_internal.assert_persistent_normal_repair(jsonb)`: JSON extraction is parenthesized before removing allowed keys. Latest530 source/mapping checks remain intact. The migration verifies exact old/new body hashes and all original function attributes before replay, then preserves OID/owner/ACL and all metadata except prosrc. No new table, function, trigger, constraint or grant is introduced.
+
+Actual selected compile/replay/forced rollback/install preserved318 old tables and rows plus other function/trigger/constraint definitions. Installed508–530 files remain immutable.534 installation is not authority to repeat an UNKNOWN phase: prestart proof and a same-task/root successor remain separate original-owner gates. Private evidence: `.runtime/p7-prestart-recovery-20261012/534-install-20261012T093144684397Z/result.json`.
+
+### 542: explicit same-investigation revision successor (2026-10-13, installed)
+
+542 narrowly updates assert_committed_revision_execution, fresh_committed_revision_matches, enforce_committed_revision_execution_insert and enforce_native_revision_insert, retaining their exact OID/owner/ACL/metadata. A separately authorized .successor.1 parent and child can use the same task/root/committed investigation; the consumed539 attempt and its known settlement remain historical. The original receipt-wide UNIQUE is replaced by two partial unique indexes: all other receipts retain single-revision uniqueness, while the one explicit receipt is unique by (investigation_receipt_id,parent_job_id). The original receiver also requires the exact registered successor parent, preventing arbitrary new parents. No new table/function/grant is added;508–541 files are unchanged.
+
+Original TOP prepare plus original author setup, duplicate-once denial, no-HTTP enforcement and full rollback passed. The selected installation reused that successful identical-input rehearsal and preserved319 existing tables/rows and all unrelated schema. Evidence: .runtime/p7-revision-successor-20261013/542-install-20261013T080122897505Z/result.json. The later live preparation was rolled back at native_mapping_current_required before author dispatch; source_or_claim_stale was confirmed separately.542 does not renew a source grant, alter the historical source upper bound or claim revision/P7 acceptance.
+
+### 541: original revision output durability (2026-10-13, installed)
+
+Append-only541 adds tutor_item_supply_shared_revision_generation_outputs, internal enforce_revision_generation_output_insert() / assert_revision_generation_output_current(uuid), and INSERT/immutable triggers on the new table only. It binds the original staged output, complete generation receipt, frozen request and observed author-input to the preparation/root/job/reservation/settlement. The INSERT trigger assigns capture_txid from the server TOP transaction; the current receiver rejects same-TOP records even when inserted through a savepoint. PUBLIC privileges are revoked. Installed508–540 and all old function metadata remain unchanged; this grants no provider, admission or publication authority.
+
+Actual selected installation passed compile, DATA guard regression in a real nested savepoint, replay and full rollback, followed by exact installation. All318 prior tables/8148 rows, old functions/permissions/triggers/constraints and the156-event ledger were preserved; the new output table was installed empty. Evidence: .runtime/p7-generation-durability-20261013/541-schema-2ec17d275c32/result.json. No full bootstrap or real-provider cross-process recovery is claimed. The old c859 revision has no durable output to consume and was not backfilled.
+
+### 540: revision generation matches the frozen child request (2026-10-13, installed)
+
+The first fresh539 author invocation returned a staged result and committed known usage, but the original509 generation trigger rejected insertion with23514: its blueprint operand still referenced context.parent_source.blueprint. Registered family revision v2 can legitimately use a different frozen child blueprint. Append-only540 changes only that operand to request.blueprint; NEW.request_json equality, candidate/root binding, substantive change and valid_until checks are unchanged.509 and all other installed SQL files remain unchanged; no new authority, table, trigger or grant is added.
+
+Selected sandbox installation passed compile/replay/full rollback, then exact installation. All318 existing table contents, other functions/constraints/indexes/triggers and the receiver OID/owner/ACL/full metadata were preserved. A rollback-only TEMP trigger regression accepted the captured source against its frozen child request and rejected the parent blueprint; exact diagnostic/deadline/substantive checks excluded other rejection causes. This is guard DATA acceptance, not an artifact or lineage write. Evidence: .runtime/p7-fresh-revision-20261013/540-install-20261013T051105381539Z/result.json. No provider calls occurred during540 installation; full bootstrap and P7 acceptance remain unclaimed.
+
+### 539: fresh committed-investigation revision execution (2026-10-13, installed)
+
+539 adds owner-only assert_committed_revision_execution(jsonb), fresh_committed_revision_matches(jsonb), enforce_committed_revision_execution_insert(), the PRIVATE a003_committed_revision_execution BEFORE INSERT trigger, and only committed_revision_execution in the existing record-kind CHECK. No table/index/public grant is added. Only enforce_native_revision_insert() and persistent_registered_family_revision_matches(jsonb) receive the registered-case execution/evidence separation; OID, owner, ACL and remaining metadata are preserved. Legacy/default paths retain their old expiry gates.
+
+The original TOP exercised a fresh same-root original517/P3 window, actual revision preparation/author preparation, current context and one-use refusal without HTTP, then restored all318 tables/rows/schema/indexes and ledger155. Selected installation reused that successful same-input replay/rollback and required the current DB baseline to match; it did not repeat the rehearsal. Evidence: .runtime/p7-fresh-revision-20261013/revision-rehearsal-20261013T041239245797Z/result-private.json and539-install-20261013T042522750279Z/result.json. Installed508–538 bytes stayed unchanged. Manifest now includes539, not531; this does not claim full-bootstrap or P7/public acceptance.
+
+### 2026-10-13 persistent allocation scalar expression repair (538)
+
+The original revision-preparation rollback test after537 exposed a fifth extraction-minus operand: (spec->'allocation'-'variant_id') raised42725.538 only parenthesizes that extraction before scalar-key subtraction, changing the same function body9a2376... to21e3c91fc8d3efb576fc456aaf17de1040e5296d66985b276e9ee610e5984ae3. All five actual JSONB subtractions in the complete function are now parenthesized.537 and older installed files remain immutable.
+
+Actual selected538 compile/replay/forced rollback/install preserved318 tables/rows, function OID/owner/ACL/all other metadata, other schema/indexes,27 old SQL files and ledger155. SQL SHAd5c784a6840dfb9286564634df5884a9473449961644384140aee7c575749e82; receipt .runtime/p7-committed-revision-20261013/538-install-20261012T180757361325Z/result.json. Manifest includes538 after537, not531. No full original revision business acceptance/live call is claimed: the original window subsequently expired and remains closed without changing old timestamps.
+
+### 2026-10-13 persistent registered family expression repair (537)
+
+Selected537 is installed in the original B1d sandbox. It changes only persistent_registered_family_revision_matches(jsonb): four JSON extraction operands (spec/parent blueprint and public_template) receive parentheses before subtraction. Old prosrc8df23b08aee40c277a320efa8df047d279250944d89157342349253aad83026b becomes9a2376a15e47517a2229da3456184e2e497d9cd736dc6f7856533bf81e2e84b6. Every other expression, current-source/phase/family/history gate and function metadata/OID/owner/ACL remains unchanged. No new table, index, trigger, constraint or grant.
+
+Actual selected compile/replay/forced rollback/install preserved318 old tables/rows, all other functions/triggers/constraints, both-schema index definitions,26 installed SQL files and the155-event ledger. SQL SHA50cdcff72db8857177d66fa5610022baba9d7ae6002add443d8f44d567a47cc3; actual receipt .runtime/p7-committed-revision-20261013/537-install-20261012T173754062551Z/result.json. Manifest registers537 after536;531 remains unregistered/uninstalled. Installation is not business revision acceptance or permission to replay an investigation/UNKNOWN.
+
+### 2026-10-13 explicit single-attempt recovery (536, selected sandbox installation)
+
+536 is installed only in the original B1d sandbox. It adds four owner-only SECURITY DEFINER functions and three additive insert triggers, extending the existing PRIVATE journal record-kind CHECK with `explicit_recovery_approval` and `explicit_recovery_binding`. It creates no table or general grant and replaces no old function or trigger. The permission is the registered human-approved new attempt despite retained uncertainty, not historical HTTP=0 proof or generic UNKNOWN clearance; consumed535 evidence and both old failed phases remain immutable.
+
+The exact preparation `UNIQUE(review_receipt_id)` constraint and its backing index are replaced by `shared_investigation_explicit_review_once`: ordinary reviews retain one unique bucket; only the registered review and exact repair.frame.3 operation have a second bucket. The added preparation trigger still requires the genuine original binding/phase/job/reservation, so a forged JSON operation key cannot authorize insertion. The original reservation uniqueness and composite preparation/receipt FK remain intact; no external FK depended on the removed single-column unique constraint.
+
+Final SQL SHA256 is `7d1d262615bcc38a1bc1d5da1c8cac3d2149ae43a4363f24f8c288bd0c129b66`. Actual original-owner TOP preparation, local seal/fence, registered stage-start, wrong-case/unbound denial, unique-index algorithm, safe export and epoch isolation passed with a forced rollback, restoring318 old tables/rows/schema, every public index and the154-event ledger; no network attempt occurred in that rehearsal. Evidence: `.runtime/p7-explicit-recovery-20261012/536-full-rollback-20261012T164016018467Z/result-private.json`. Selected compile/replay/rollback/install then passed the exact function/trigger/CHECK/index whitelist with old rows,25 installed SQL files and ledger unchanged: `.runtime/p7-explicit-recovery-20261012/536-install-20261012T165420772583Z/result.json`. Manifest now registers536 after535;531 remains uninstalled/unregistered. Installation does not establish live success, full bootstrap, P7 completion or public release.
+
+### 2026-10-12 registered prestart recovery (535)
+
+Selected sandbox migration 535 adds owner-only functions assert_persistent_prestart_recovery(jsonb,uuid) and enforce_persistent_prestart_insert(), plus a001_persistent_prestart_insert on the existing PRIVATE persistent journal. Only its exact record_kind CHECK is extended with prestart_proof/prestart_binding. No table, index or grant is added; no prior function or trigger is replaced. Installed508–534 bytes remain immutable. The exact registered original task/failed phase/root/revision/slot and accepted original prestart prerequisites gate a one-use successor; a proof/binding row is not an execution capability.
+
+Main exercised the actual original recovery and investigator preparation, one-use/wrong-case denial, existing private export and original epoch purge in one TOP forced rollback. All318 old tables/rows/schema and ledger were restored with no HTTP attempts. The final raw receipt binds SQL, Python and harness versions: .runtime/p7-prestart-recovery-20261012/535-full-rollback-20261012T110905257567Z/result-private.json. Selected535 compile/replay/rollback/install then passed the precise whitelist and preservation check: .runtime/p7-prestart-recovery-20261012/535-install-20261012T111922358340Z/result.json. Manifest includes535 after534; unreviewed531 remains uninstalled/unregistered. This is not a full-bootstrap or P7/public-release acceptance.

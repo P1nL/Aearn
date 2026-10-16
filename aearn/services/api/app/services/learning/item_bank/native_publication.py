@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from psycopg import Connection
@@ -42,6 +42,10 @@ from app.services.learning.item_supply.diagnostic_policy import (
 )
 from app.services.learning.practice.repository import PostgresExerciseGateRepository
 from app.services.tutor.execution import ExecutionIntentRepository
+
+
+if TYPE_CHECKING:
+    from app.services.learning.item_supply.persistent_pack_current_source import IssuedCurrentPackSourceBinding
 
 
 def _runtime(spec: FiniteCandidateSpecV1, approved: dict[str, NativeInternalRuntimeBindingV1]) -> NativeInternalRuntimeBindingV1:
@@ -98,6 +102,9 @@ class NativeLearningItemPublicationService:
             raise NativePublicationPending("native_publication_runtime_facts_mismatch")
 
     def _committed_stages(self, facts: IssuedSharedAdmissionFactsV1) -> None:
+        admission = self.importer.committed_admission
+        quality_lease = facts.lease if admission is None else admission.quality.review_lease
+        quality_continuation = facts.continuation_binding_hash if admission is None else admission.quality.review_row["continuation_binding_hash"]
         rows = self.conn.execute(
             "SELECT *,xmin::text::bigint=(txid_current() %% 4294967296) AS same_transaction "
             "FROM tutor_item_supply_shared_pipeline_receipts WHERE id=ANY(%s::uuid[]) FOR SHARE",
@@ -112,12 +119,12 @@ class NativeLearningItemPublicationService:
             kind, digest = expected[UUID(str(row["id"]))]
             if (row["same_transaction"] or row["artifact_kind"] != kind or row["receipt_hash"] != digest
                     or row["receipt_hash"] != canonical_hash(row["payload_json"])
-                    or UUID(str(row["job_id"])) != facts.lease.job_id or row["lease_generation"] != facts.lease.generation
+                    or UUID(str(row["job_id"])) != quality_lease.job_id or row["lease_generation"] != quality_lease.generation
                     or UUID(str(row["generation_artifact_id"])) != facts.generation_artifact_id
                     or UUID(str(row["version_id"])) != facts.version_id
                     or row["source_hash"] != facts.evidence.binding.source_hash
                     or row["content_hash"] != facts.evidence.binding.content_hash
-                    or row.get("continuation_binding_hash") != facts.continuation_binding_hash):
+                    or row.get("continuation_binding_hash") != quality_continuation):
                 raise NativePublicationPending("native_publication_committed_stage_mismatch")
 
     def publish_internal(self, imported: LearningItemImportResult, *, lease: JobLeaseV1,
@@ -175,9 +182,12 @@ class NativeLearningItemPublicationService:
                 return proof
             if current is None or current["state"] != "machine_verified" or current["state_version"] != 1:
                 raise NativePublicationPending("native_publication_initial_state_required")
-            evaluation_row = self.importer.artifacts.store_receipt(lease=lease, artifact_id=facts.generation_artifact_id,
-                kind="admission_evaluation", payload=facts.evaluation, artifact_key=f"native_admission.{facts.receipt_id.hex}",
-                now=facts.checked_at, source_authority=self.importer.authority, spec=spec, continuation_owner=self.importer.continuation)
+            if self.importer.committed_admission is not None:
+                evaluation_row = self.importer.artifacts.store_committed_evaluation(self.importer.committed_admission,facts=facts)
+            else:
+                evaluation_row = self.importer.artifacts.store_receipt(lease=lease, artifact_id=facts.generation_artifact_id,
+                    kind="admission_evaluation", payload=facts.evaluation, artifact_key=f"native_admission.{facts.receipt_id.hex}",
+                    now=facts.checked_at, source_authority=self.importer.authority, spec=spec, continuation_owner=self.importer.continuation)
             material = build_native_practice_material(source, spec=spec, materials=generation.request.materials)
             exercise_id = UUID(PostgresExerciseGateRepository(self.conn).ensure_exercise_authority(
                 material.exercise, material.rubric, now=facts.checked_at))
@@ -323,9 +333,15 @@ class NativePublishedItemQuery:
         return diagnostic_warnings(facts.evaluation)
 
     def query_exact(self, *, handle: str, spec: FiniteCandidateSpecV1,
-                    source_authority: RagSourceAuthority) -> NativePublishedItemData | None:
+                    source_authority: RagSourceAuthority,
+                    current_source_binding: IssuedCurrentPackSourceBinding | None = None) -> NativePublishedItemData | None:
         self.artifacts.require_owner()
         self.artifacts.require_source(source_authority)
+        if current_source_binding is not None:
+            from app.services.learning.item_supply.persistent_pack_current_source import IssuedCurrentPackSourceBinding
+            if type(current_source_binding) is not IssuedCurrentPackSourceBinding:
+                raise NativePublicationPending("native_current_source_original_issuer_required")
+            current_source_binding.require()
         spec = checked_model(spec, FiniteCandidateSpecV1)
         runtime = _runtime(spec, self._bindings)
         row = self.conn.execute("SELECT p.proof_json,p.proof_hash,p.runner_material_json,c.public_json,g.source_json,"
@@ -368,8 +384,12 @@ class NativePublishedItemQuery:
         # is not a current-state fence: quarantine may commit while source checks
         # wait. Lock the version, then use a NEW read-committed statement to see
         # the latest event (a SELECT snapshot taken before the lock wait is old).
-        for material, receipt in zip(proof.materials, proof.source_receipts, strict=True):
-            source_authority.assert_current(material, receipt)
+        if current_source_binding is None:
+            for material, receipt in zip(proof.materials, proof.source_receipts, strict=True):
+                source_authority.assert_current(material, receipt)
+        else:
+            current_source_binding.current_receipts(query=self, proof=proof,
+                published_at=row["occurred_at"], source_authority=source_authority)
         locked = self.conn.execute(
             "SELECT id FROM tutor_learning_item_versions WHERE id=%s AND handle=%s FOR SHARE",
             (proof.version_id, handle),
@@ -386,9 +406,14 @@ class NativePublishedItemQuery:
         # Recheck source time bounds after any bank-lock wait. The historical
         # producer lease/facts remain audit data and are never renewed here.
         current_receipts = []
-        for material, receipt in zip(proof.materials, proof.source_receipts, strict=True):
-            current = checked_model(source_authority.assert_current(material, receipt), SourceReceiptV2)
-            current_receipts.append(canonical_hash(current.model_dump(mode="json")))
+        if current_source_binding is None:
+            for material, receipt in zip(proof.materials, proof.source_receipts, strict=True):
+                current = checked_model(source_authority.assert_current(material, receipt), SourceReceiptV2)
+                current_receipts.append(canonical_hash(current.model_dump(mode="json")))
+        else:
+            fresh = current_source_binding.current_receipts(query=self, proof=proof,
+                published_at=row["occurred_at"], source_authority=source_authority)
+            current_receipts.extend(canonical_hash(r.model_dump(mode="json")) for r in fresh)
         checked_at = server_clock(self.conn, now)
         health_hash = self._current_runtime(runtime, now=checked_at)
         public = LearningItemPublicV1.model_validate_json(json.dumps(row["public_json"]))

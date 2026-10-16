@@ -25,6 +25,7 @@ from app.services.learning.item_supply.generation_contracts import (
     SourceAuthority, SourceReceiptV2,
 )
 from app.services.learning.item_supply.jobs import CheckpointV1, JobLeaseV1
+from app.services.learning.item_supply.private_enhancement_contracts import PrivateSlotRef
 from app.services.learning.item_supply.pipeline_repository import (
     ArtifactKind, ArtifactMode, PipelineArtifactRepository, PipelineReceipt, PipelineRepositoryError,
 )
@@ -275,6 +276,7 @@ class ItemSupplyPipeline:
     def commit_generation(
         self, prepared: PreparedGeneration, result: GenerationResultV2,
         *, source_authority: RagSourceAuthority | None = None,
+        private_slot_ref: PrivateSlotRef | None = None,
     ) -> PipelineStageResult:
         """Settlement is separate; caller can retain cost even if this fence fails."""
         result = checked_model(result, GenerationResultV2)
@@ -292,7 +294,7 @@ class ItemSupplyPipeline:
             return PipelineStageResult(result.state, result.safe_reason)
         row = self.artifacts.store_generation(lease=lease, scope_id=prepared.scope_id,
             request=prepared.request, result=result, artifact_key=f"generation.{prepared.request.candidate_id.hex}",
-            now=now, mode=prepared.mode, source_authority=source_authority)
+            now=now, mode=prepared.mode, source_authority=source_authority,private_slot_ref=private_slot_ref)
         self.runtime.checkpoint(lease, CheckpointV1(stage="generating", attempt=1, status="completed",
             receipt_hash=row["artifact_hash"], safe_reason="candidate_staged"), now=now)
         return PipelineStageResult("staged", "candidate_staged", UUID(str(row["id"])))

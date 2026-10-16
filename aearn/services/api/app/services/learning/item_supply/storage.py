@@ -30,7 +30,8 @@ from app.services.learning.item_supply.storage_contracts import (
 )
 from app.services.learning.item_supply.storage_tables import (
     NATIVE_EXPOSURE_UNSCOPED_TABLES, NATIVE_TYPE_UNSCOPED_TABLES,
-    P7_FINITE_COURSE_MAPPING_TABLES, PRIVATE_TABLES,
+    P7_FINITE_COURSE_MAPPING_TABLES, P7_NATIVE_CONSUMER_TABLES, PRIVATE_TABLES,
+    PRIVATE_NATIVE_UNSCOPED_TABLES,
 )
 
 
@@ -341,12 +342,20 @@ def export_private_supply(conn: Connection[dict[str, object]], user_id: UUID) ->
         elif (table == "tutor_item_supply_private_runtime_user_limits"
               or table in NATIVE_EXPOSURE_UNSCOPED_TABLES
               or table in NATIVE_TYPE_UNSCOPED_TABLES
-              or table in P7_FINITE_COURSE_MAPPING_TABLES):
+              or table in P7_FINITE_COURSE_MAPPING_TABLES
+              or table in P7_NATIVE_CONSUMER_TABLES
+              or table in PRIVATE_NATIVE_UNSCOPED_TABLES):
             scope_column = "NULL::uuid AS scope_id"
         else:
             scope_column = "scope_id"
+        identity_column = (
+            "artifact_id AS id"
+            if table in {"tutor_item_supply_native_artifact_bindings",
+                         "tutor_item_supply_private_native_artifact_bindings"} else "id"
+        )
         rows = conn.execute(sql.SQL(
-            "SELECT id," + scope_column + ",created_at FROM {} WHERE user_id=%s ORDER BY created_at,id LIMIT 1001"
+            "SELECT " + identity_column + "," + scope_column
+            + ",created_at FROM {} WHERE user_id=%s ORDER BY created_at,id LIMIT 1001"
         ).format(sql.Identifier(table)), (user_id,)).fetchall()
         result[table] = {
             "records": [{"id": str(row["id"]),

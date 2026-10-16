@@ -178,3 +178,13 @@ The correct path advertises only server-proven handles, validates the exact deci
 
 Retry must not only inherit LearningTrack scope. Before admitting a retry of a learner-message teaching run, lock conversation then verify the original session/checkpoint/track/assignment/document authority remains current. Bind the new input message and revision to a new learner stimulus and teaching scope in the same API idempotency transaction as the new run and queue control event; return teaching_scope. Stale authority or binding failure rolls back all new records. Non-learner control/domain stimuli must be reissued via current teaching controls rather than masquerading as learner messages. Historical unbound retries are not rewritten.
 - 2026-09-10: Preserve TeachingStepDecision.public_message whitespace/Markdown exactly (after outer trim). Collapsing spaces/newlines made equal provider message fields unequal during TutorDecision assembly. Regression includes multiline paragraphs and indented code. No weakening of exact-message validation.
+
+
+## Programmatic backend acceptance inputs（2026-10-16）
+无模型Artifact后端验收的programmatic TeachingStepDecision也必须遵守已发布教学合同：v2/v3教学单元使用2..4个不同的允许teaching_moves，public_message与这些动作一致；artifact interaction保持真实candidate的intent/handle。原DTO构造成功不代表SQL receipt CHECK必然接受，不能仅依赖DTO当前max_length=4而漏掉下限。
+
+- 错误：仅micro_transfer一项，绕过provider/parser直接进入complete_run；原teaching_action_receipt_v3的version_shape会拒绝。
+- 正确：真实Python绑定练习的无模型DATA可用targeted_explanation+micro_transfer及对应简短规则说明/练习提示；离线抽取实际operator构造验证2个不同允许动作、artifact语义，随后原无插桩transaction/完整constraint回滚验收。
+- 不为测试输入错误修改产品DTO、旧SQL、CHECK或TTL；保留原失败证据。完整后端DATA验收成功仍不等于真实Tutor模型、PRIVATE质量链或P7整体完成。
+
+该输入修正的C13真实验收已于2026-10-16通过：原complete_run、最终即时约束检查及scope退出完成；原action/consumer/Artifact实际同事务写入后完整回滚。证据见题库任务research/p7-consumer-public-contract-fix-design-20261015.md§11；仍标为programmatic DATA而非模型输出。

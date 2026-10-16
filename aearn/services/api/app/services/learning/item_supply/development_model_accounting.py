@@ -97,6 +97,10 @@ def _batch(conn: Connection[dict[str, Any]], batch_id: UUID, root_id: UUID, *, n
 
 
 def accounting_batch_for_lease(conn: Connection[dict[str, Any]], lease: JobLeaseV1, *, now: datetime) -> dict[str, Any] | None:
+    if lease.visibility == "private":
+        from app.services.learning.item_supply.private_development_model_accounting import accounting_batch_for_lease as private_batch_for_lease
+
+        return private_batch_for_lease(conn, lease, now=now)
     if lease.visibility != "public" or lease.owner_id is not None or lease.owner_epoch is not None:
         return None
     if not _available(conn):

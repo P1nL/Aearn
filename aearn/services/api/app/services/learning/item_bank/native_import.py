@@ -9,13 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from app.core.config import Settings
+if TYPE_CHECKING:
+    from app.services.learning.item_supply.persistent_pack_committed_admission import IssuedCommittedChildAdmission
 from app.services.learning.item_bank.contracts import (
     LEARNING_ITEM_COMPILER_VERSION, LearningItemKind, canonical_hash, learning_item_handle,
     learning_item_uuid, stable_key,
@@ -118,7 +120,7 @@ class NativeLearningItemBankImporter:
     def __init__(self, conn: Connection[dict[str, Any]], settings: Settings, *,
                  artifacts: SharedPipelineArtifactRepository, source_authority: RagSourceAuthority,
                  continuation_owner: SharedCandidateContinuationOwner | None = None,
-                 enabled: bool = False) -> None:
+                 enabled: bool = False, committed_admission: IssuedCommittedChildAdmission | None = None) -> None:
         self.conn, self.settings, self.enabled = conn, settings, enabled
         if type(artifacts) is not SharedPipelineArtifactRepository or artifacts.conn is not conn:
             raise LearningItemBankError("NATIVE_BANK_SHARED_OWNER_REQUIRED")
@@ -128,9 +130,32 @@ class NativeLearningItemBankImporter:
             raise LearningItemBankError("NATIVE_BANK_CONTINUATION_OWNER_REQUIRED")
         self.artifacts, self.authority, self.continuation = artifacts, source_authority, continuation_owner
         self.bank = PostgresLearningItemBankRepository(conn)
+        self.committed_admission = committed_admission
+        if committed_admission is not None:
+            from app.services.learning.item_supply.persistent_pack_committed_admission import IssuedCommittedChildAdmission
+            if (type(committed_admission) is not IssuedCommittedChildAdmission or committed_admission.owner.conn is not conn
+                    or continuation_owner is not None or committed_admission.owner.type_owner.source_authority is not source_authority):
+                raise LearningItemBankError("COMMITTED_ADMISSION_NATIVE_IMPORT_OWNER_REQUIRED")
 
     def _load(self, *, lease: JobLeaseV1, artifact_id: UUID, validation_receipt_id: UUID,
               spec: FiniteCandidateSpecV1) -> _ValidatedNativeData:
+        if self.committed_admission is not None:
+            from app.services.learning.item_supply.persistent_pack_committed_admission import require
+            frame = self.committed_admission
+            require(frame)
+            q = frame.quality
+            if (lease != frame.lease or artifact_id != q.artifact["id"] or validation_receipt_id != q.validation_row["id"]
+                    or spec != q.spec):
+                raise LearningItemBankError("COMMITTED_ADMISSION_IMPORT_EXACT_QUALITY_REQUIRED")
+            historical_row = dict(q.validation_row)
+            historical_row.update(preparation_id=q.validation_preparation["id"],preparation_json=q.validation_preparation["payload_json"],
+                preparation_hash=q.validation_preparation["payload_hash"],preparation_same_transaction=q.validation_preparation["same_transaction"],
+                evidence_id=q.validation_evidence["id"],evidence_json=q.validation_evidence["payload_json"],
+                evidence_hash=q.validation_evidence["payload_hash"],evidence_same_transaction=q.validation_evidence["same_transaction"],
+                reservation_id=q.validation_evidence["reservation_id"])
+            # Historical validation DATA is checked against its ACTUAL producer lease.
+            # New use is separately authorized by require(frame), never the old lease.
+            return _check_validation_binding(frame.generation_data(),lease=q.validation_lease,spec=spec,row=historical_row)
         now = server_clock(self.conn, datetime.now(UTC))
         generation = self.artifacts.resolve_generation(lease=lease, artifact_id=artifact_id, now=now,
             source_authority=self.authority, spec=spec, continuation_owner=self.continuation)

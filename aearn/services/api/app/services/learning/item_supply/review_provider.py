@@ -254,7 +254,8 @@ class BoundedOpenAIReviewClient:
         )
         evidenced = schema_name in {"item_supply_evidenced_review_output_v1", EVIDENCED_WIRE_SCHEMA_NAME,
                                    "item_supply_review_diagnostic_output_v1",
-                                   "native_shared_review_investigation_output_v1"}
+                                   "native_shared_review_investigation_output_v1",
+                                   "native_content_relation_production_output_v2"}
         return client.complete_json(
             messages, max_tokens=max_tokens, timeout_seconds=timeout_seconds,
             output_schema=output_schema, schema_name=schema_name,

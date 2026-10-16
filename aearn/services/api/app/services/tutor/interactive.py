@@ -61,6 +61,7 @@ from app.services.learning.plan_repository import (
     PostgresLearningPlanSessionRepository,
 )
 from app.services.learning.teaching_candidates import (
+    NativeTeachingArtifactCandidateBuilder,
     TeachingArtifactCandidateBuildError,
     project_teaching_provider_context,
 )
@@ -549,6 +550,7 @@ class PostgresTutorLearningContextLoader:
         base_loader: PostgresTutorContextLoader,
         settings: Settings | None = None,
         material_feedback_consumer: PostgresMaterialPlanningConsumer | None = None,
+        native_artifact_candidate_builder: NativeTeachingArtifactCandidateBuilder | None = None,
     ) -> None:
         resolved_settings = settings or get_settings()
         self._conn = conn
@@ -560,12 +562,24 @@ class PostgresTutorLearningContextLoader:
         self._actions = PostgresActionReceiptStore(conn)
         self._base_loader = base_loader
         self._material_feedback_consumer = material_feedback_consumer
+        if native_artifact_candidate_builder is not None:
+            from app.services.learning.item_supply.native_fallback_candidates import NativeFallbackTeachingArtifactCandidateBuilder
+            if (type(native_artifact_candidate_builder) not in (NativeTeachingArtifactCandidateBuilder, NativeFallbackTeachingArtifactCandidateBuilder)
+                    or native_artifact_candidate_builder.conn is not conn
+                    or native_artifact_candidate_builder.settings is not resolved_settings):
+                raise ValueError("native candidate builder requires the exact loader connection and settings")
+        self._native_artifact_candidate_builder = native_artifact_candidate_builder
+        self._settings = resolved_settings
 
     def load_context(self, snapshot: TutorRunSnapshot, *, input_revision: int) -> TutorContextInput:
         base = self._base_loader.load_context(snapshot, input_revision=input_revision)
         learning = self._learning.load(user_id=snapshot.user_id, run_id=snapshot.run_id)
         try:
-            teaching_context = self._teaching.teaching_context(user_id=snapshot.user_id, run_id=snapshot.run_id)
+            teaching = self._teaching
+            if self._native_artifact_candidate_builder is not None:
+                teaching = TeachingSessionRepository(self._conn, settings=self._settings,
+                    artifact_candidate_builder=self._native_artifact_candidate_builder.for_run(snapshot.run_id))
+            teaching_context = teaching.teaching_context(user_id=snapshot.user_id, run_id=snapshot.run_id)
         except TeachingSessionConflict as exc:
             raise TutorContextError("TUTOR_TEACHING_SESSION_STALE") from exc
         teaching_session = teaching_context.get("session") if teaching_context is not None else None

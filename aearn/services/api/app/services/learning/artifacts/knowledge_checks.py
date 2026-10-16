@@ -5,9 +5,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import uuid4
+from typing import Literal
 
 from psycopg import Connection
 from pydantic import ValidationError
+
+from app.services.learning.item_supply.private_enhancement_contracts import IssuedPrivateConsumerAuthority
+from app.services.learning.item_supply.private_native_consumer_bridge import require_private_consumer_authority
+
+from app.services.learning.item_supply.native_consumer_bridge import (
+    IssuedNativeConsumerAuthority,
+    require_consumer_authority,
+)
 
 from app.services.learning.item_bank.contracts import (
     LearningItemKnowledgeCheckContentV1,
@@ -85,11 +94,13 @@ def apply_knowledge_check_action(
     artifact: TutorPublicArtifactItem,
     action: TutorArtifactRequestHintAction | TutorArtifactRequestDirectAnswerAction | TutorArtifactRespondAction,
     owner_context_version: int,
+    native_authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority | None = None,
 ) -> ArtifactMutation:
     presentation = artifact.presentation
     if not isinstance(presentation, TutorArtifactKnowledgeCheckPresentationV1):
         raise ArtifactOwnerActionInvalid("knowledge-check action requires a knowledge-check presentation")
-    public, private, remediation_policy = _load_authority(conn, artifact=artifact)
+    public, private, remediation_policy = _load_authority(
+        conn, artifact=artifact, native_authority=native_authority, native_action=action.action)
     if isinstance(action, TutorArtifactRequestHintAction):
         return _apply_hint(
             conn,
@@ -100,6 +111,11 @@ def apply_knowledge_check_action(
             owner_context_version=owner_context_version,
         )
     if isinstance(action, TutorArtifactRequestDirectAnswerAction):
+        transfer = None
+        if native_authority is not None:
+            # Resolve the mandatory current mapped successor BEFORE the original
+            # assistance/response writer. PUBLIC native remains unsupported here.
+            transfer = _select_native_successor(native_authority, artifact=artifact, purpose="transfer_check")
         return _apply_direct_answer(
             conn,
             artifact=artifact,
@@ -107,10 +123,13 @@ def apply_knowledge_check_action(
             public=public,
             private=private,
             owner_context_version=owner_context_version,
+            native_transfer_handle=transfer,
+            native_authority=native_authority,
         )
     return _apply_response(
         conn,
         artifact=artifact,
+        native_authority=native_authority,
         presentation=presentation,
         public=public,
         private=private,
@@ -164,6 +183,8 @@ def _apply_direct_answer(
     public: LearningItemPublicV1,
     private: LearningItemKnowledgeCheckPrivateV1,
     owner_context_version: int,
+    native_transfer_handle: str | None = None,
+    native_authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority | None = None,
 ) -> ArtifactMutation:
     if presentation.answer_locked:
         raise ArtifactOwnerActionInvalid("answered knowledge check is immutable")
@@ -173,7 +194,7 @@ def _apply_direct_answer(
         assistance_kind="direct_answer",
         hint_level=None,
     )
-    transfer_handle = _select_transfer(conn, artifact=artifact, public=public)
+    transfer_handle = native_transfer_handle or _select_transfer(conn, artifact=artifact, public=public)
     if transfer_handle is None:
         raise ArtifactOwnerVersionConflict(
             "knowledge-check direct answer transfer is unavailable"
@@ -186,6 +207,7 @@ def _apply_direct_answer(
         outcome="incorrect",
         assistance_kind="direct_answer",
         independent_mastery_eligible=False,
+        native_authority=native_authority,
     )
     completed = presentation.model_copy(
         update={
@@ -229,6 +251,7 @@ def _apply_response(
     remediation_policy: LearningItemRemediationPolicyV1 | None,
     response: TutorArtifactResponseV1,
     owner_context_version: int,
+    native_authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority | None = None,
 ) -> ArtifactMutation:
     if presentation.answer_locked:
         raise ArtifactOwnerActionInvalid("answered knowledge check is immutable")
@@ -253,18 +276,26 @@ def _apply_response(
         and first_failure in {"hint_then_remediate", "explain_then_remediate"}
     )
     if should_remediate:
-        remediation_handle = _select_remediation(
-            conn,
-            artifact=artifact,
-            public=public,
-            successor_item_key=public.remediation_item_key,
-        )
+        if native_authority is not None:
+            _require_response_authority(native_authority,conn=conn,artifact=artifact)
+            remediation_handle = _select_native_successor(native_authority,artifact=artifact,purpose="remediation")
+        else:
+            remediation_handle = _select_remediation(
+                conn,
+                artifact=artifact,
+                public=public,
+                successor_item_key=public.remediation_item_key,
+            )
         if remediation_handle is None:
             raise ArtifactOwnerVersionConflict(
                 "knowledge-check remediation successor is unavailable"
             )
     elif not correct and artifact.purpose.value == "remediation":
-        transfer_handle = _select_transfer(conn, artifact=artifact, public=public)
+        if native_authority is not None:
+            _require_response_authority(native_authority,conn=conn,artifact=artifact)
+            transfer_handle = _select_native_successor(native_authority,artifact=artifact,purpose="transfer_check")
+        else:
+            transfer_handle = _select_transfer(conn, artifact=artifact, public=public)
         if transfer_handle is None:
             raise ArtifactOwnerVersionConflict(
                 "knowledge-check transfer successor is unavailable"
@@ -284,6 +315,7 @@ def _apply_response(
         outcome="correct" if correct else "incorrect",
         assistance_kind=assistance_kind,
         independent_mastery_eligible=independent,
+        native_authority=native_authority,
     )
     completed = presentation.model_copy(
         update={
@@ -408,6 +440,7 @@ def _insert_response_receipt(
     outcome: str,
     assistance_kind: str,
     independent_mastery_eligible: bool,
+    native_authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority | None = None,
 ) -> tuple[str, str]:
     response_hash = canonical_hash(response_json)
     result_hash = canonical_hash(
@@ -420,14 +453,26 @@ def _insert_response_receipt(
         }
     )
     receipt_id = str(uuid4())
+    columns = ""
+    placeholders = ""
+    private_params: tuple[object, ...] = ()
+    source_version: str | None = artifact.owner_id
+    if isinstance(native_authority, IssuedPrivateConsumerAuthority):
+        require_private_consumer_authority(native_authority,conn=conn,artifact=artifact,expected_mode="current",
+            expected_action="request_direct_answer" if response_kind=="direct_answer" else "respond")
+        binding=native_authority.owner._issued[native_authority.receipt_id][2]
+        columns=",private_native_version_id,private_native_epoch,private_native_scope_id"
+        placeholders=",%s,%s,%s"
+        private_params=(artifact.owner_id,binding['epoch'],binding['scope_id'])
+        source_version=None
     conn.execute(
-        """
+        f"""
         INSERT INTO tutor_knowledge_check_response_receipts (
           id,artifact_id,user_id,conversation_id,learning_track_id,knowledge_key,
           teaching_session_id,checkpoint_id,learning_item_version_id,artifact_version,
           response_kind,response_json,response_hash,outcome,assistance_kind,
-          independent_mastery_eligible,result_hash,score_policy_version
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s)
+          independent_mastery_eligible,result_hash,score_policy_version{columns}
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s{placeholders})
         """,
         (
             receipt_id,
@@ -438,7 +483,7 @@ def _insert_response_receipt(
             artifact.knowledge_key,
             artifact.teaching_session_id,
             artifact.checkpoint_id,
-            artifact.owner_id,
+            source_version,
             artifact.version,
             response_kind,
             _canonical_json(response_json),
@@ -448,16 +493,45 @@ def _insert_response_receipt(
             independent_mastery_eligible,
             result_hash,
             KNOWLEDGE_CHECK_SCORE_POLICY_VERSION,
-        ),
+        ) + private_params,
     )
     return receipt_id, result_hash
+
+
+def _require_response_authority(authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority,
+                                *, conn: Connection[dict[str, object]], artifact: TutorPublicArtifactItem) -> None:
+    if isinstance(authority, IssuedPrivateConsumerAuthority):
+        require_private_consumer_authority(authority,conn=conn,artifact=artifact,expected_mode='current',expected_action='respond')
+    else:
+        require_consumer_authority(authority,conn=conn,artifact=artifact,expected_mode='consume',expected_action='respond')
 
 
 def _load_authority(
     conn: Connection[dict[str, object]],
     *,
     artifact: TutorPublicArtifactItem,
+    native_authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority | None = None,
+    native_action: str | None = None,
 ) -> tuple[LearningItemPublicV1, LearningItemKnowledgeCheckPrivateV1, LearningItemRemediationPolicyV1 | None]:
+    if isinstance(native_authority, IssuedPrivateConsumerAuthority):
+        if native_action not in {'request_hint','request_direct_answer','respond'}:
+            raise ArtifactOwnerVersionConflict('private KC exact current content action required')
+        resolved = require_private_consumer_authority(native_authority,conn=conn,artifact=artifact,
+            expected_mode='current',expected_action=native_action)
+        if resolved is None or not isinstance(resolved.quality.source.private.content, LearningItemKnowledgeCheckPrivateV1):
+            raise ArtifactOwnerVersionConflict('private KC current original content authority required')
+        return (resolved.quality.source.public,resolved.quality.source.private.content,
+                resolved.quality.source.blueprint.remediation_policy)
+    # Without a concrete PRIVATE issuer, the unchanged curated/public receiver
+    # cannot resolve a PRIVATE version. No unconditional dependency on524.
+    predicate = "versions.knowledge_key=tutor_artifact_catalog_knowledge_key(%s)"
+    authority_parameter: object = artifact.id
+    if native_authority is not None:
+        if native_action not in {"request_hint", "request_direct_answer", "respond"}:
+            raise ArtifactOwnerVersionConflict("native KC content action authority is missing")
+        authority_parameter = require_consumer_authority(native_authority, conn=conn, artifact=artifact,
+                                                       expected_mode="consume", expected_action=native_action)
+        predicate = "item_supply_internal.native_consumer_receipt_current(%s)"
     row = conn.execute(
         """
         SELECT public.public_json, private.private_json, blueprints.blueprint_json
@@ -467,9 +541,8 @@ def _load_authority(
         JOIN tutor_learning_item_blueprints AS blueprints ON blueprints.id=versions.blueprint_id
         JOIN tutor_learning_item_publication_events AS publication
           ON publication.version_id=versions.id AND publication.state_version=%s AND publication.state='published'
-        WHERE versions.id=%s AND versions.knowledge_key=tutor_artifact_catalog_knowledge_key(%s)
-        """,
-        (artifact.owner_version, artifact.owner_id, artifact.id),
+        WHERE versions.id=%s AND """ + predicate,
+        (artifact.owner_version, artifact.owner_id, authority_parameter),
     ).fetchone()
     if row is None:
         raise ArtifactOwnerVersionConflict("Learning Item knowledge-check authority is stale")
@@ -485,6 +558,23 @@ def _load_authority(
     except (KeyError, TypeError, ValidationError) as exc:
         raise ArtifactOwnerVersionConflict("stored knowledge-check authority is invalid") from exc
     return public, private, policy
+
+
+def _select_native_successor(
+    authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority,
+    *, artifact: TutorPublicArtifactItem, purpose: Literal['remediation','transfer_check'],
+) -> str:
+    from app.services.learning.item_supply.private_enhancement_contracts import PrivateNativePending
+    from app.services.learning.item_supply.private_native_successors import PrivateNativeSuccessorOwner
+    if not isinstance(authority, IssuedPrivateConsumerAuthority) or purpose not in {"remediation", "transfer_check"}:
+        raise ArtifactOwnerVersionConflict("native knowledge-check successor requires the concrete mapped private owner")
+    owner = authority.owner.successors
+    if type(owner) is not PrivateNativeSuccessorOwner:
+        raise ArtifactOwnerVersionConflict("native knowledge-check successor current whole-pack owner is unavailable")
+    try:
+        return owner.select(authority,artifact=artifact,purpose=purpose)
+    except PrivateNativePending as exc:
+        raise ArtifactOwnerVersionConflict("native knowledge-check current mapped successor is unavailable") from exc
 
 
 def _select_remediation(

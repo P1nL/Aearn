@@ -6,6 +6,17 @@ from collections.abc import Mapping
 
 from psycopg import Connection
 
+from app.services.learning.item_supply.native_consumer_bridge import (
+    IssuedNativeConsumerAuthority,
+    NativeArtifactConsumerOwner,
+    require_consumer_authority,
+)
+
+from app.services.learning.item_supply.private_enhancement_contracts import IssuedPrivateConsumerAuthority
+from app.services.learning.item_supply.private_native_consumer_bridge import (
+    PrivateNativeArtifactConsumerOwner, require_private_consumer_authority,
+)
+
 from .contracts import (
     TutorArtifactActionRequest,
     TutorArtifactCompleteReviewAction,
@@ -53,6 +64,16 @@ class _TeachingArtifactOwnerAdapter:
         artifact: TutorPublicArtifactItem,
         request: TutorArtifactActionRequest,
     ) -> ArtifactMutation:
+        return self._apply_cancel(conn=conn, artifact=artifact, request=request)
+
+    def _apply_cancel(
+        self,
+        *,
+        conn: Connection[dict[str, object]],
+        artifact: TutorPublicArtifactItem,
+        request: TutorArtifactActionRequest,
+        native_authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority | None = None,
+    ) -> ArtifactMutation:
         row = _locked_owner_row(
             conn,
             artifact=artifact,
@@ -68,6 +89,8 @@ class _TeachingArtifactOwnerAdapter:
             row=row,
             artifact=artifact,
             owner_kind=self.owner_kind,
+            native_authority=native_authority,
+            native_action="cancel",
         )
         return ArtifactMutation(
             state=TutorArtifactState.CANCELLED,
@@ -89,6 +112,11 @@ class _TeachingArtifactOwnerAdapter:
 class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
     owner_kind = TutorArtifactOwnerKind.LEARNING_ITEM
 
+    def __init__(self, *, native_consumer_owner: NativeArtifactConsumerOwner | PrivateNativeArtifactConsumerOwner | None = None) -> None:
+        if native_consumer_owner is not None and type(native_consumer_owner) not in (NativeArtifactConsumerOwner, PrivateNativeArtifactConsumerOwner):
+            raise ArtifactOwnerVersionConflict("native consumer requires the concrete original owner")
+        self._native_consumer_owner = native_consumer_owner
+
     def apply_action(
         self,
         *,
@@ -96,6 +124,13 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
         artifact: TutorPublicArtifactItem,
         request: TutorArtifactActionRequest,
     ) -> ArtifactMutation:
+        native_authority = None
+        owner = self._native_consumer_owner
+        if owner is not None:
+            if owner.conn is not conn:
+                raise ArtifactOwnerVersionConflict("native consumer requires the original connection")
+            if owner.is_bound(artifact):
+                native_authority = owner.prepare(artifact=artifact, action=request.action.action)
         if artifact.artifact_kind is TutorArtifactKind.KNOWLEDGE_CHECK and isinstance(
             request.action,
             (
@@ -115,11 +150,14 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
                 row=row,
                 artifact=artifact,
                 owner_kind=self.owner_kind,
+                native_authority=native_authority,
+                native_action=request.action.action,
             )
             return apply_knowledge_check_action(
                 conn,
                 artifact=artifact,
                 action=request.action,
+                native_authority=native_authority,
                 owner_context_version=_positive_int(
                     row.get("owner_context_version"),
                     "owner_context_version",
@@ -204,7 +242,8 @@ class LearningItemArtifactOwnerAdapter(_TeachingArtifactOwnerAdapter):
                     "descriptor_hash": receipt.descriptor_hash,
                 },
             )
-        return super().apply_action(conn=conn, artifact=artifact, request=request)
+        return self._apply_cancel(conn=conn, artifact=artifact, request=request,
+                                  native_authority=native_authority)
 
     def prepare_model_review_v2(
         self,
@@ -332,6 +371,8 @@ def _validate_cancel_authority(
     row: Mapping[str, object],
     artifact: TutorPublicArtifactItem,
     owner_kind: TutorArtifactOwnerKind,
+    native_authority: IssuedNativeConsumerAuthority | IssuedPrivateConsumerAuthority | None = None,
+    native_action: str | None = None,
 ) -> None:
     if owner_kind is TutorArtifactOwnerKind.TEACHING_PRACTICE:
         if (
@@ -342,6 +383,16 @@ def _validate_cancel_authority(
             raise ArtifactOwnerVersionConflict(
                 "legacy teaching-practice owner is stale"
             )
+        return
+    if native_authority is not None:
+        if native_action not in {"cancel", "request_hint", "request_direct_answer", "respond"}:
+            raise ArtifactOwnerVersionConflict("native consumer action authority is missing")
+        if isinstance(native_authority, IssuedPrivateConsumerAuthority):
+            require_private_consumer_authority(native_authority,conn=conn,artifact=artifact,
+                expected_mode='cancel' if native_action=='cancel' else 'current',expected_action=native_action)
+        else:
+            require_consumer_authority(native_authority, conn=conn, artifact=artifact,
+                expected_mode='cancel' if native_action=='cancel' else 'consume', expected_action=native_action)
         return
     item = conn.execute(
         """

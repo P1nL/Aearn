@@ -7,7 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -15,6 +20,8 @@ from psycopg import Connection
 from psycopg.errors import LockNotAvailable
 from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
+
+from app.core.source_fence_diagnostics import observe_source_fence
 
 from app.services.learning.item_bank.contracts import canonical_hash
 from app.services.grounding.corpus_repository import CorpusRepository
@@ -41,7 +48,32 @@ from .source_review_repository import CompleteCapture, QualityFinding, SourceRev
 OWNED_DATABASE = "aearn_b1d_sandbox_20261001"
 if TYPE_CHECKING:
     from .actual_d_private_provenance import PrivatePublicProvenance
+    from app.services.learning.item_supply.persistent_pack_current_source import IssuedCurrentPackSourceBinding
 USAGES: tuple[Usage, ...] = ("assessment_evidence",)
+
+
+@dataclass(frozen=True)
+class _VerifiedReceiptData:
+    signed: SignedSourceAssessment
+    payload: SourceAssessmentPayload
+    capture: CompleteCapture
+    digest: str
+    payload_digest: str
+    predicates: tuple[tuple[str, Any], ...]
+
+
+@dataclass
+class _CurrentReceiptData:
+    repository: AssessmentReceiptRepository
+    cap: IssuedCurrentPackSourceBinding
+    keys: dict[str, bytes]
+    provenance: PostgresCurrentCaptureProvenanceResolver | PinnedCaptureProvenanceComposition
+    private_enabled: bool
+    loads: dict[UUID, _VerifiedReceiptData] = field(default_factory=dict)
+    sealed: bool = False
+
+
+_CURRENT_RECEIPT_DATA: ContextVar[_CurrentReceiptData | None] = ContextVar("current_receipt_data", default=None)
 
 
 class AssessmentReceiptRepository:
@@ -63,13 +95,15 @@ class AssessmentReceiptRepository:
         if (not self.enabled or self.conn.autocommit
                 or self.conn.info.transaction_status != TransactionStatus.INTRANS):
             raise SourceAssessmentDenied("SOURCE_GATE_CLOSED")
-        row = self.conn.execute("SELECT current_database() AS name").fetchone()
-        if row is None or row["name"] != OWNED_DATABASE:
+        row = self.conn.execute(
+            "SELECT current_database() AS name, "
+            "current_setting('transaction_isolation') AS transaction_isolation, "
+            "current_setting('transaction_read_only') AS transaction_read_only"
+        ).fetchone()
+        if row is None or row.get("name") != OWNED_DATABASE:
             raise SourceAssessmentDenied("SOURCE_DATABASE_DENIED")
-        isolation = self.conn.execute("SHOW transaction_isolation").fetchone()
-        readonly = self.conn.execute("SHOW transaction_read_only").fetchone()
-        if (isolation is None or isolation["transaction_isolation"] != "read committed"
-                or readonly is None or readonly["transaction_read_only"] != "off"):
+        if (row.get("transaction_isolation") != "read committed"
+                or row.get("transaction_read_only") != "off"):
             raise SourceAssessmentDenied("SOURCE_TRANSACTION_DENIED")
 
     def _clock(self) -> datetime:
@@ -118,6 +152,13 @@ class AssessmentReceiptRepository:
             base_selection_handle=base_selection_handle, node_id=node_id, target_id=target_id,
             companion_capture_ids=companion_capture_ids, oracle_run_id=uuid4(), allow_confirmed=False)
 
+    def prepare_confirmed_successor(self, *, capture_id: UUID, document_handle: str,
+                                    mapping_receipt_id: UUID) -> PreparedActualDSourceAssessment:
+        """Explicit registered confirmed-course successor; ordinary issuance remains draft-only."""
+        from .confirmed_source_successor import prepare_confirmed_successor
+        return prepare_confirmed_successor(self,capture_id=capture_id,document_handle=document_handle,
+            mapping_receipt_id=mapping_receipt_id)
+
     def _prepare_actual_d(self, *, capture_id: UUID, document_handle: str, draft: DraftScope,
                           base_selection_handle: str, node_id: str, target_id: TargetId,
                           companion_capture_ids: tuple[UUID, UUID] | None,
@@ -161,7 +202,11 @@ class AssessmentReceiptRepository:
                 with self.conn.transaction():
                     current_actual_d_epoch(self.conn, user_id=UUID(actual_d.draft.user_id),
                                            expected_epoch=actual_d.user_epoch, nowait=False)
-            except (ValueError, LockNotAvailable):
+            except LockNotAvailable as exc:
+                observe_source_fence("actual_d_epoch", "epoch_lock_unavailable", exc)
+                raise SourceAssessmentDenied("SOURCE_ACTUAL_D_SCOPE_STALE") from None
+            except ValueError as exc:
+                observe_source_fence("actual_d_epoch", "epoch_scope_rejected", exc)
                 raise SourceAssessmentDenied("SOURCE_ACTUAL_D_SCOPE_STALE") from None
         lifetime_policy = lifetime_policy if lifetime_policy is not None else (COURSE_MATERIAL_POLICY if native_course else LEGACY_MATERIAL_POLICY)
         material_lifetime(lifetime_policy)
@@ -221,11 +266,21 @@ class AssessmentReceiptRepository:
                 with self.conn.transaction():
                     current_actual_d_epoch(self.conn, user_id=UUID(d.draft.user_id),
                                            expected_epoch=d.user_epoch, nowait=not for_issuance)
-            except (ValueError, LockNotAvailable):
+            except LockNotAvailable as exc:
+                observe_source_fence("actual_d_epoch", "epoch_lock_unavailable", exc)
                 raise SourceAssessmentDenied("SOURCE_ACTUAL_D_SCOPE_STALE") from None
+            except ValueError as exc:
+                observe_source_fence("actual_d_epoch", "epoch_scope_rejected", exc)
+                raise SourceAssessmentDenied("SOURCE_ACTUAL_D_SCOPE_STALE") from None
+            allow_confirmed = not for_issuance
+            if for_issuance and type(p.prepared) is PreparedActualDSourceAssessment:
+                from .confirmed_source_successor import ORACLE_RUN, require_confirmed_successor
+                if d.oracle_run_id == ORACLE_RUN:
+                    require_confirmed_successor(self,p.prepared)
+                    allow_confirmed = True
             fresh = self._prepare_actual_d(capture_id=p.prepared.capture_id, document_handle=p.prepared.document_handle,
                 draft=d.draft, base_selection_handle=d.base_selection_handle, node_id=d.node_id, target_id=d.target_id,
-                companion_capture_ids=companion_ids, oracle_run_id=d.oracle_run_id, allow_confirmed=not for_issuance)
+                companion_capture_ids=companion_ids, oracle_run_id=d.oracle_run_id, allow_confirmed=allow_confirmed)
         else:
             fresh = self.prepare(capture_id=p.prepared.capture_id,
                 document_handle=p.prepared.document_handle, demand=p.prepared.demand,
@@ -325,7 +380,65 @@ class AssessmentReceiptRepository:
             self._load(p.evidence_id)
         return p.admission_id
 
-    def _load(self, evidence_id: UUID) -> tuple[SourceAssessmentPayload, CompleteCapture, dict[str, Any]]:
+    @contextmanager
+    def _current_scope(self, cap: IssuedCurrentPackSourceBinding) -> Iterator[None]:
+        """Original source-owner lexical DATA only; never an authority registry."""
+        from app.services.learning.item_supply.persistent_pack_current_source import _scope_origin_guard
+
+        self.require_transaction()
+        _scope_origin_guard(cap, repository=self)
+        if _CURRENT_RECEIPT_DATA.get() is not None:
+            raise SourceAssessmentDenied("SOURCE_CURRENT_SCOPE_CONFLICT")
+        data = _CurrentReceiptData(self, cap, dict(self.service_keys), self.provenance,
+            self.actual_d_private_provenance_enabled)
+        token = _CURRENT_RECEIPT_DATA.set(data)
+        try:
+            yield None
+        finally:
+            data.loads.clear()
+            _CURRENT_RECEIPT_DATA.reset(token)
+
+    def _scope_data(self) -> _CurrentReceiptData | None:
+        data = _CURRENT_RECEIPT_DATA.get()
+        if data is None or data.repository is not self:
+            return None
+        from app.services.learning.item_supply.persistent_pack_current_source import _invalidate_current_scope, _scope_origin_guard
+
+        try:
+            _scope_origin_guard(data.cap, repository=self)
+            if (self.service_keys != data.keys or self.provenance is not data.provenance
+                    or self.provenance.conn is not self.conn
+                    or self.actual_d_private_provenance_enabled != data.private_enabled
+                    or not self.actual_d_private_provenance_enabled):
+                raise SourceAssessmentDenied("SOURCE_CONFIG_DENIED")
+            return data
+        except BaseException:
+            _invalidate_current_scope(data.cap)
+            raise
+
+    def _clear_current_scope(self, cap: IssuedCurrentPackSourceBinding) -> None:
+        """Leave the lexical tombstone in place; never fall back to strict DATA."""
+        data = _CURRENT_RECEIPT_DATA.get()
+        if data is not None and data.repository is self and data.cap is cap:
+            data.loads.clear()
+            data.sealed = True
+
+    def _require_current_records(self, cap: IssuedCurrentPackSourceBinding) -> None:
+        data = self._scope_data()
+        if data is None or data.cap is not cap or not data.loads:
+            raise SourceAssessmentDenied("SOURCE_CURRENT_SCOPE_REQUIRED")
+        # The exact full front is now closed. Late unrelated evidence must take
+        # the strict path; it cannot enlarge the reusable front DATA set.
+        data.sealed = True
+        try:
+            for evidence_id, loaded in tuple(data.loads.items()):
+                self._require_front_record(self._read_current_record(evidence_id), loaded)
+        except BaseException:
+            from app.services.learning.item_supply.persistent_pack_current_source import _invalidate_current_scope
+            _invalidate_current_scope(data.cap)
+            raise
+
+    def _read_current_record(self, evidence_id: UUID) -> dict[str, Any]:
         self.require_transaction()
         row = self.conn.execute(
             """SELECT e.*,r.id AS review_id,r.review_receipt_hash,r.quality_evidence_hash,
@@ -347,12 +460,11 @@ class AssessmentReceiptRepository:
         ).fetchone()
         if row is None or row["revoked_at"] is not None:
             raise SourceAssessmentDenied("SOURCE_EVIDENCE_MISSING")
-        signed = SignedSourceAssessment.model_validate_json(json.dumps(row["signed_proof"]))
-        p, capture = self._verify_current(signed)
+        return row
+
+    def _record_predicates(self, signed: SignedSourceAssessment, p: SourceAssessmentPayload) -> tuple[tuple[str, Any], ...]:
+        """Original closed set, computed only after the complete signed verifier."""
         q = p.prepared
-        if isinstance(q, (PreparedActualDSourceAssessment, PreparedActualDSQLiteSourceAssessment)) and (
-                row.get("private_user_id") != UUID(q.actual_d.draft.user_id) or row.get("private_epoch") != q.actual_d.user_epoch):
-            raise SourceAssessmentDenied("SOURCE_BINDING_DENIED")
         _, _, applicability = source_request(q.profile_id)
         checks = {
             "id": p.evidence_id, "capture_id": q.capture_id, "source_handle": q.source_handle,
@@ -377,14 +489,64 @@ class AssessmentReceiptRepository:
             "applicability": applicability, "applicability_hash": hashlib.sha256(applicability.encode()).hexdigest(),
             "source_document_hash": q.document_hash, "execution_receipt_handle": p.execution_handle,
             "verification_receipt_hash": source_proof_hash(signed), "method": "isolated_execution",
-            "execution_scope_json": q.execution_scope.model_dump(mode="json"),
+            "execution_scope_json": MappingProxyType(q.execution_scope.model_dump(mode="json")),
         }
-        if (any(row[key] != value for key,value in checks.items())
-                or tuple(row["facets"]) != q.demand.scope.facets
-                or tuple(row["covered_facets"]) != q.demand.scope.facets
-                or tuple(row["scope_facets"]) != q.demand.scope.facets
-                or tuple(row["review_usages"]) != USAGES or tuple(row["admission_usages"]) != USAGES):
+        checks.update(facets=q.demand.scope.facets, covered_facets=q.demand.scope.facets,
+            scope_facets=q.demand.scope.facets, review_usages=USAGES, admission_usages=USAGES)
+        if isinstance(q, (PreparedActualDSourceAssessment, PreparedActualDSQLiteSourceAssessment)):
+            checks.update(private_user_id=UUID(q.actual_d.draft.user_id), private_epoch=q.actual_d.user_epoch)
+        return tuple(checks.items())
+
+    @staticmethod
+    def _compare_record(row: dict[str, Any], predicates: tuple[tuple[str, Any], ...]) -> None:
+        for key, expected in predicates:
+            actual = row.get(key) if key in ("private_user_id", "private_epoch") else row[key]
+            if key in ("facets", "covered_facets", "scope_facets", "review_usages", "admission_usages"):
+                actual = tuple(cast(Any, actual))
+            if actual != expected:
+                raise SourceAssessmentDenied("SOURCE_BINDING_DENIED")
+
+    def _require_loaded_record(self, row: dict[str, Any], signed: SignedSourceAssessment,
+                               p: SourceAssessmentPayload, capture: CompleteCapture) -> tuple[tuple[str, Any], ...]:
+        predicates = self._record_predicates(signed, p)
+        self._compare_record(row, predicates)
+        return predicates
+
+    def _require_front_record(self, row: dict[str, Any], loaded: _VerifiedReceiptData) -> None:
+        # Reuse only the exact fully verified immutable DATA. Re-serializing it
+        # detects mutation without re-running finite-definition DTO validators.
+        if (canonical_hash(loaded.signed.model_dump(mode="json")) != loaded.digest
+                or canonical_hash(row["signed_proof"]) != loaded.digest
+                or canonical_hash(loaded.payload.model_dump(mode="json")) != loaded.payload_digest):
             raise SourceAssessmentDenied("SOURCE_BINDING_DENIED")
+        self._compare_record(row, loaded.predicates)
+        if not loaded.payload.issued_at <= self._clock() < loaded.payload.expires_at:
+            raise SourceAssessmentDenied("SOURCE_AUTHORITY_STALE")
+
+    def _load(self, evidence_id: UUID) -> tuple[SourceAssessmentPayload, CompleteCapture, dict[str, Any]]:
+        try:
+            return self._load_current(evidence_id)
+        except BaseException:
+            data = _CURRENT_RECEIPT_DATA.get()
+            if data is not None and data.repository is self:
+                from app.services.learning.item_supply.persistent_pack_current_source import _invalidate_current_scope
+                _invalidate_current_scope(data.cap)
+            raise
+
+    def _load_current(self, evidence_id: UUID) -> tuple[SourceAssessmentPayload, CompleteCapture, dict[str, Any]]:
+        row = self._read_current_record(evidence_id)
+        data = self._scope_data()
+        loaded = data.loads.get(evidence_id) if data is not None else None
+        if loaded is None:
+            signed = SignedSourceAssessment.model_validate_json(json.dumps(row["signed_proof"]))
+            p, capture = self._verify_current(signed)
+            predicates = self._require_loaded_record(row, signed, p, capture)
+            if data is not None and not data.sealed:
+                data.loads[evidence_id] = _VerifiedReceiptData(signed, p, capture, source_proof_hash(signed),
+                    canonical_hash(p.model_dump(mode="json")), predicates)
+        else:
+            p, capture = loaded.payload, loaded.capture
+            self._require_front_record(row, loaded)
         return p,capture,row
 
     def _find(self, handle: str, *, execution: bool = False) -> tuple[SourceAssessmentPayload, CompleteCapture, dict[str, Any]]:
@@ -574,7 +736,8 @@ class PostgresAssessmentClaimResolver:
                 document_revision=q.document_hash,document_hash=q.document_hash,applicability=r["applicability"],
                 method="isolated_execution",execution_receipt_id=p.execution_handle,
                 execution_scope=q.execution_scope,verified=True,revoked=False)
-        except Exception:
+        except Exception as exc:
+            observe_source_fence("claim_resolver", "claim_resolution_denied", exc)
             return None
 
 
@@ -602,7 +765,8 @@ class PostgresAssessmentExecutionResolver:
                 demand_hash=q.demand.demand_hash,scope=q.demand.scope,source_handle=q.source_handle,
                 document_handle=carrier.prepared.document_handle,document_revision=q.document_hash,document_hash=q.document_hash,
                 execution_scope=q.execution_scope,verified=True,revoked=False)
-        except Exception:
+        except Exception as exc:
+            observe_source_fence("execution_resolver", "execution_resolution_denied", exc)
             return None
 
 

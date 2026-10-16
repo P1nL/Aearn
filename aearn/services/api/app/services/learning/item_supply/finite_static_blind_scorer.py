@@ -7,7 +7,7 @@ from app.services.learning.item_supply.finite_candidate_factory import FiniteCan
 from app.services.learning.item_supply.finite_candidate_validation import FiniteKcValidationFactsV1, prepare_finite_candidate_validation
 from app.services.learning.item_supply.generation_contracts import PublicMaterialV2
 from app.services.learning.item_supply.policies import ResourceAmounts
-from app.services.learning.item_supply.review_contracts_v2 import BlindScoreV2, CandidateBindingV2, check_subject
+from app.services.learning.item_supply.review_contracts_v2 import BlindScoreV2, BlindSolveReceiptV2, CandidateBindingV2, check_subject
 from app.services.learning.item_supply.storage_contracts import checked_model
 from app.services.learning.practice.contracts import ExerciseAttemptOutcome
 from app.services.learning.practice.policies import evaluate_static_reasoning
@@ -90,3 +90,23 @@ class FiniteStaticBlindScorer:
                     and self._score(source, issued[2]) == score)
         except (ValueError, TypeError, AttributeError):
             return False
+
+    @classmethod
+    def verify_committed_single_choice(cls, source: LearningItemSourceV1, *, spec: FiniteCandidateSpecV1,
+            materials: tuple[PublicMaterialV2, ...], blind: BlindSolveReceiptV2) -> str:
+        """Verify DATA against every legal output, without restoring _issued/score()."""
+        from app.services.learning.item_supply.blind_protocol import SINGLE_CHOICE_BLIND_PROMPT_VERSION
+        from app.services.learning.item_bank.contracts import LearningItemKnowledgeCheckContentV1
+        if (spec.target_id != "python-kc-binding-v1" or blind.state != "completed"
+                or not isinstance(source.public.content, LearningItemKnowledgeCheckContentV1)
+                or blind.run.prompt_version != SINGLE_CHOICE_BLIND_PROMPT_VERSION):
+            raise ValueError("committed_single_choice_protocol_required")
+        choices = tuple(o.option_id for o in source.public.content.options)
+        matched = tuple(answer for answer in choices if canonical_hash(answer) == blind.solution_hash)
+        if len(choices) != 4 or len(set(choices)) != 4 or len(matched) != 1:
+            raise ValueError("committed_single_choice_evidence_missing")
+        scorer = cls(binding=blind.binding, spec=spec, materials=materials)
+        # _score is the original pure rule. Never call score or seed its registry.
+        if scorer._score(source, matched[0]) != blind.score:
+            raise ValueError("committed_single_choice_score_mismatch")
+        return matched[0]

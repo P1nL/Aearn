@@ -64,7 +64,9 @@ class OfflineConnection:
     def execute(self, sql, params=()):
         assert self.info.transaction_status == TransactionStatus.INTRANS
         self.statements.append(sql)
-        if "to_regclass" in sql:
+        if "to_regclass" in sql and "controlled" in sql:
+            row = {"t": None, "execution_t": None}
+        elif "to_regclass" in sql:
             row = {"table_id": "tutor_item_supply_shared_generation_policy_bindings"}
         elif sql.startswith("INSERT INTO tutor_item_supply_shared_generation_policy_bindings"):
             payload = params[-1].obj
@@ -76,6 +78,8 @@ class OfflineConnection:
             row = self.policy_binding
         elif "FROM tutor_item_supply_shared_reservations" in sql:
             row = None  # No old author allowance may be upgraded.
+        elif "FROM tutor_item_supply_shared_revision_preparations" in sql:
+            row = None  # This legacy fixture is explicitly not a revision.
         elif "current_database()" in sql:
             row = {"db": "aearn_b1d_sandbox_20261001"}
         elif sql.startswith("INSERT INTO tutor_item_supply_shared_generation_artifacts"):

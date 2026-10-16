@@ -5,10 +5,11 @@ publication, runtime, mapping and complete exposure fences. No JSON is a capabil
 """
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import datetime, timedelta
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 import json
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Iterator, cast
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -34,10 +35,11 @@ from app.services.learning.item_supply.finite_review_descriptor import finite_re
 from app.services.learning.item_supply.native_type_contracts import (
     IssuedNativePackCapability, NativeRelationReport, NativeResolvedContent, NativeTypeEvidencePending,
 )
+from app.services.learning.item_supply.native_exposure_contracts import CURRENT_PACK_TTL
 from app.services.learning.item_supply.native_type_fingerprints import native_content_identity
 from app.services.learning.item_supply.pack_builder import build_pack
 from app.services.learning.item_supply.pack_contracts import (
-    CompleteExposureV2, FamilyMemberEvidenceV2, NativeScopedCandidateV2, NativeScopedProofV2,
+    AuthorizedSubDemandV1, CompleteExposureV2, FamilyMemberEvidenceV2, NativeScopedCandidateV2, NativeScopedProofV2,
     PackCandidateV2, PackInputsV2, PackSnapshotV2,
 )
 from app.services.learning.item_supply.rag_evidence_adapter import RagSourceAuthority
@@ -56,6 +58,32 @@ from app.services.learning.item_supply.type_evidence import (
 )
 from app.services.learning.item_supply.validation_adapter import CandidateValidationV2
 
+if TYPE_CHECKING:
+    from app.services.learning.item_supply.persistent_pack_current_source import IssuedCurrentPackSourceBinding
+    from app.services.learning.item_supply.native_type_exposure import NativeExposureOwnerV2
+    from app.services.learning.item_supply.native_type_exposure_contracts import NativeTypeExposureSnapshot
+
+
+@dataclass
+class _CurrentPackData:
+    txid: int
+    mapping_id: UUID
+    versions: tuple[UUID, ...]
+    relation_ids: tuple[UUID, ...]
+    exposure_owner: NativeExposureOwnerV2
+    source_binding: IssuedCurrentPackSourceBinding | None
+    mapping: FiniteCourseMappingReceiptV1 | None = None
+    contents: dict[UUID, NativeResolvedContent] = field(default_factory=dict)
+    historical: dict[UUID, NativeResolvedContent] = field(default_factory=dict)
+    published_at: dict[UUID, datetime] = field(default_factory=dict)
+    source_deadlines: dict[UUID, datetime] = field(default_factory=dict)
+    extras: dict[UUID, tuple[type[Any], dict[str, Any]]] = field(default_factory=dict)
+    projections: dict[UUID, tuple[PackCandidateV2, dict[str, Any], dict[str, Any]]] = field(default_factory=dict)
+    relation_rows: dict[UUID, dict[str, Any]] = field(default_factory=dict)
+    observation: NativeTypeExposureSnapshot | None = None
+    inputs: PackInputsV2 | None = None
+    capability: IssuedNativePackCapability | None = None
+
 # Main integrates classification/export constants into the existing inventory.
 NATIVE_TYPE_PRIVATE_TABLES = (
     "tutor_item_supply_native_content_facts", "tutor_item_supply_native_relation_preparations",
@@ -68,7 +96,10 @@ def _model(model: type[Any], raw: Any) -> Any:
 
 
 def _original_profile_binding(row: dict[str, Any], request: GenerationRequestV2,
-                              spec: FiniteCandidateSpecV1, facts: IssuedSharedAdmissionFactsV1) -> None:
+                              spec: FiniteCandidateSpecV1, facts: IssuedSharedAdmissionFactsV1) -> str:
+    if "committed_admission_history" in row:
+        from app.services.learning.item_supply.native_committed_admission_history import verify_committed_admission_history
+        return verify_committed_admission_history(row, request, spec, facts)
     preparation = row["preparation_json"]
     lease = _model(JobLeaseV1, preparation["lease"])
     # State versions/heartbeats may advance between preparation and facts. The
@@ -86,7 +117,7 @@ def _original_profile_binding(row: dict[str, Any], request: GenerationRequestV2,
         if (request.profile != lease.profile or row["lease_generation"] != lease.generation
                 or facts.continuation_binding_hash is not None or continuation is not None):
             raise ValueError("original generation profile mismatch")
-        return
+        return facts.profile_hash
     # A cross-job historical read needs the actual immutable491 row. Do not call
     # the live continuation owner, renew a lease, or restore an execution permit.
     if continuation is None or facts.continuation_binding_hash is None:
@@ -117,6 +148,7 @@ def _original_profile_binding(row: dict[str, Any], request: GenerationRequestV2,
             or continuation["publication_enabled"] is not False
             or binding.item_id != facts.item_id or binding.version_id != facts.version_id):
         raise ValueError("original continuation stored coordinates mismatch")
+    return facts.profile_hash
 
 
 def reconstruct_native_content(row: dict[str, Any]) -> NativeResolvedContent:
@@ -127,7 +159,7 @@ def reconstruct_native_content(row: dict[str, Any]) -> NativeResolvedContent:
         source = _model(LearningItemSourceV1, row["source_json"])
         request = _model(GenerationRequestV2, row["preparation_json"]["request"])
         facts = _model(IssuedSharedAdmissionFactsV1, row["facts_json"])
-        _original_profile_binding(row, request, spec, facts)
+        historical_quality_profile = _original_profile_binding(row, request, spec, facts)
         validation = _model(CandidateValidationV2, row["validation_json"])
         blind = _model(BlindSolveReceiptV2, row["blind_json"])
         bundle = parse_bundle(row["review_json"])
@@ -161,7 +193,7 @@ def reconstruct_native_content(row: dict[str, Any]) -> NativeResolvedContent:
                 or expected_evaluation.disposition != "eligible_internal" or target is None
                 or target.proof_hash != facts.evidence.coverage_proof_hash
                 or facts.evidence.binding.policy_hash != proof.policy_hash
-                or facts.evidence.binding.profile_hash != facts.profile_hash
+                or facts.evidence.binding.profile_hash != historical_quality_profile
                 or (facts.evidence.binding.source_hash, facts.evidence.binding.content_hash)
                     != (source.source_hash, source.content_hash)
                 or facts.validation_receipt_hash != validation.evidence_hash
@@ -220,7 +252,30 @@ def reconstruct_native_content(row: dict[str, Any]) -> NativeResolvedContent:
         raise NativeTypeEvidencePending("native_original_facts_invalid") from None
 
 
+def require_content_mapping_identity(resolved: NativeResolvedContent,
+                                     mapping: FiniteCourseMappingReceiptV1) -> AuthorizedSubDemandV1:
+    """Pure immutable identity check; does not issue current candidate eligibility."""
+    spec = resolved.spec
+    entry = next((e for e in mapping.pack_request.demands if e.slot == spec.allocation.slot), None)
+    if entry is None:
+        raise NativeTypeEvidencePending("native_candidate_mapping_mismatch")
+    scope = entry.demand.scope
+    if (spec.target_id != mapping.target_id or spec.target_definition_hash != mapping.target_definition_hash
+            or any(getattr(spec.coverage_blueprint.scope, k) != getattr(scope, k) for k in (
+                "runtime_profile_id", "runtime_profile_hash", "scorer_version", "assistance_policy_hash",
+                "subject_id", "subject_version", "required_facets", "required_capabilities", "assessment_contract_version"))):
+        raise NativeTypeEvidencePending("native_candidate_mapping_mismatch")
+    target = resolved.facts.target_proof
+    if target is None or tuple((a, b) for a, b, _, _ in mapping.pack_request.clause_mapping) != tuple(
+            (c.clause_id.upper(), c.clause_hash) for c in target.mappings):
+        raise NativeTypeEvidencePending("native_clause_mapping_mismatch")
+    return entry
+
+
 class NativeTypeEvidenceOwner:
+    # Preserve legacy dynamic attributes while making the new context explicit.
+    __slots__ = ("current_source_binding", "__dict__", "__weakref__")
+
     def __init__(self, conn: Connection[dict[str, Any]], settings: Settings, *, user_id: UUID,
                  epoch: int, query: NativePublishedItemQuery, source_authority: RagSourceAuthority,
                  mapping_owner: FiniteCourseMappingOwner, enabled: bool = False) -> None:
@@ -232,31 +287,284 @@ class NativeTypeEvidenceOwner:
         self.conn, self.settings, self.user_id, self.epoch = conn, settings, user_id, epoch
         self.query, self.source_authority, self.mapping_owner, self.enabled = query, source_authority, mapping_owner, enabled
         self._issued: dict[UUID, tuple[IssuedNativePackCapability, int, str, UUID, tuple[UUID, ...], UUID, tuple[UUID, ...]]] = {}
+        self.current_source_binding: IssuedCurrentPackSourceBinding | None = None
+        self._pack_scope: _CurrentPackData | None = None
+
+    def _clear_pack_scope(self) -> None:
+        scope = getattr(self, '_pack_scope', None)
+        if scope is not None:
+            if scope.capability is not None:
+                self._issued.pop(scope.capability.eligibility_id, None)
+            scope.contents.clear()
+            scope.historical.clear()
+            scope.published_at.clear()
+            scope.source_deadlines.clear()
+            scope.extras.clear()
+            scope.projections.clear()
+            scope.relation_rows.clear()
+            scope.mapping = None
+            scope.inputs = scope.observation = scope.capability = None
+            self._pack_scope = None
+
+    def _current_pack_data(self) -> _CurrentPackData | None:
+        scope = getattr(self, '_pack_scope', None)
+        if scope is not None and (scope.source_binding is not NativeTypeEvidenceOwner._source_binding(self)
+                or scope.exposure_owner.type_owner is not self
+                or scope.exposure_owner.conn is not self.conn
+                or (scope.exposure_owner.user_id, scope.exposure_owner.epoch) != (self.user_id, self.epoch)):
+            self._clear_pack_scope()
+            raise NativeTypeEvidencePending('native_pack_scope_original_owner_required')
+        return scope
+
+    @staticmethod
+    def _validate_pack_refs(candidates: tuple[UUID, ...], relations: tuple[UUID, ...]) -> None:
+        if (not isinstance(candidates, tuple) or not isinstance(relations, tuple)
+                or not 5 <= len(candidates) <= 16 or not 1 <= len(relations) <= 16
+                or any(type(v) is not UUID for v in (*candidates, *relations))
+                or len(set(candidates)) != len(candidates) or len(set(relations)) != len(relations)):
+            raise NativeTypeEvidencePending('native_pack_inputs_bound_invalid')
+
+    @contextmanager
+    def current_pack(self, mapping_receipt_id: UUID, candidate_version_ids: tuple[UUID, ...],
+                     relation_receipt_ids: tuple[UUID, ...], exposure_owner: NativeExposureOwnerV2
+                     ) -> Iterator[IssuedNativePackCapability]:
+        """Original verification and exact fresh issuance, valid only in this TOP.
+
+        Local data never replaces current C/D, bank, epoch or SQL502 authority.
+        The caller must keep this scope open through the original Artifact writer.
+        """
+        from app.services.learning.item_supply.native_type_exposure import NativeExposureOwnerV2
+        if (type(self) is not NativeTypeEvidenceOwner or type(exposure_owner) is not NativeExposureOwnerV2
+                or exposure_owner.type_owner is not self or exposure_owner.conn is not self.conn
+                or (exposure_owner.user_id, exposure_owner.epoch) != (self.user_id, self.epoch)
+                or getattr(self, '_pack_scope', None) is not None
+                or type(mapping_receipt_id) is not UUID
+                or not isinstance(candidate_version_ids, tuple) or not isinstance(relation_receipt_ids, tuple)
+                or not 5 <= len(candidate_version_ids) <= 16 or not 1 <= len(relation_receipt_ids) <= 16
+                or any(type(v) is not UUID for v in (*candidate_version_ids, *relation_receipt_ids))
+                or len(set(candidate_version_ids)) != len(candidate_version_ids)
+                or len(set(relation_receipt_ids)) != len(relation_receipt_ids)):
+            raise NativeTypeEvidencePending('native_pack_scope_original_owner_required')
+        _, txid = self._guard()
+        candidate_version_ids = tuple(sorted(candidate_version_ids, key=str))
+        relation_receipt_ids = tuple(sorted(relation_receipt_ids, key=str))
+        source = NativeTypeEvidenceOwner._source_binding(self)
+        scope = _CurrentPackData(txid, mapping_receipt_id, candidate_version_ids,
+            relation_receipt_ids, exposure_owner, source)
+        try:
+            # Source owner enters BEFORE all expensive core verification. It owns
+            # its original exact signed data/origin and dynamic PUBLIC/PRIVATE fences.
+            with source.current_scope() if source is not None else nullcontext():
+                self._pack_scope = scope
+                mapping = self.resolve_mapping(mapping_receipt_id)
+                scope.mapping = mapping
+                for version in candidate_version_ids:
+                    resolved = self.resolve_content(version, current=True)
+                    scope.contents[version] = resolved
+                    # Precompute immutable type/static/runner facts, not authority.
+                    now, _ = self._guard()
+                    self._candidate(resolved, mapping, now)
+                history = exposure_owner._prepare_history()
+                scope.historical.update(history.contents)
+                contents = {**scope.historical, **scope.contents}
+                now, _ = self._guard()
+                relation_args = self._relation_arguments(relation_receipt_ids, mapping, contents, now)
+                # Re-fence every selected source -> bank and relation after front
+                # lock waits, before the true collector clock starts its 30s TTL.
+                self.resolve_mapping(mapping_receipt_id)
+                for resolved in scope.contents.values():
+                    self._require_scoped_content(resolved)
+                self._require_scoped_relations(scope)
+                observation = exposure_owner._snapshot_from_history(history)
+                if observation.snapshot_id is None or observation.exposure is None:
+                    raise NativeTypeEvidencePending('native_complete_exposure_required')
+                scope.observation = observation
+                now, _ = self._guard()
+                records = tuple(self._candidate(c, mapping, now) for c in scope.contents.values())
+                relations = tuple(ContentRelationshipEvidenceV2(**args,
+                    exposure_receipt_hash=observation.exposure.completeness_receipt_hash,
+                    exposure_watermark=observation.exposure.watermark) for args in relation_args)
+                scope.inputs = PackInputsV2(request=mapping.pack_request, candidates=records,
+                    relationships=relations, exposure=observation.exposure)
+                # One uninterrupted original issuer invocation: front retained
+                # source -> bank locks and verified exact immutable DATA; the
+                # real fresh collector and pure projections just completed.
+                # Do not run _inputs' whole dynamic loop and then immediately
+                # repeat it in first require_pack. That ORIGINAL final fence
+                # below still runs after issuance, before any cap can escape.
+                capability = self._issue_pack_from_inputs(scope.inputs, mapping_receipt_id,
+                    candidate_version_ids, observation.snapshot_id, relation_receipt_ids)
+                scope.capability = capability
+                self.require_pack(capability)
+                yield capability
+                # Delivery's original capture may now add an inbox event. No
+                # further cap reuse is allowed, but successful creation must not
+                # be undone by inventing an additional post-delivery exposure use.
+                # Still forbid a scope crossing commit/rollback into another TOP.
+                self._guard()
+        finally:
+            self._clear_pack_scope()
+
+    def _scoped_observation(self, owner: NativeExposureOwnerV2) -> NativeTypeExposureSnapshot | None:
+        scope = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scope is None or scope.observation is None:
+            return None
+        self._guard()
+        if (scope.exposure_owner is not owner or scope.capability is None
+                or scope.observation.snapshot_id is None or scope.observation.exposure is None):
+            raise NativeTypeEvidencePending('native_pack_scope_original_owner_required')
+        try:
+            # Snapshot is original exposure DATA, not a whole-pack permission.
+            # Keep its own exact current mapping/source, epoch, persisted issuer,
+            # SQL502 and lock-post clock fences; effects separately require pack.
+            self._require_pack_identity(scope.capability)
+            self.resolve_mapping(scope.mapping_id)
+            self._exposure(scope.observation.snapshot_id, self._guard()[0])
+            final, _ = self._guard()
+            if not scope.observation.exposure.observed_at <= final < scope.observation.exposure.valid_until:
+                raise NativeTypeEvidencePending('native_exposure_current_required')
+        except Exception:
+            self._clear_pack_scope()
+            raise
+        return scope.observation
+
+    def _require_scoped_content(self, resolved: NativeResolvedContent) -> None:
+        try:
+            self._require_scoped_content_current(resolved)
+        except Exception:
+            self._clear_pack_scope()
+            raise
+
+    def _require_scoped_content_current(self, resolved: NativeResolvedContent) -> None:
+        """Retained original immutable data + ORIGINAL current source/bank ports."""
+        scope = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scope is None or scope.contents.get(resolved.content.version_id) is not resolved:
+            raise NativeTypeEvidencePending('native_pack_scope_exact_content_required')
+        p = resolved.publication
+        def source_fence() -> None:
+            if scope.source_binding is not None:
+                # Checks SQL549 AND original repository PUBLIC/PRIVATE predicates.
+                scope.source_binding.current_receipts(query=self.query, proof=p,
+                    published_at=scope.published_at[p.version_id],
+                    source_authority=self.source_authority)
+            else:
+                for material, receipt in zip(p.materials, p.source_receipts, strict=True):
+                    self.source_authority.assert_current(material, receipt)
+        source_fence()
+        self._lock_scoped_bank(resolved)
+        source_fence()  # Same original source -> bank / lock-post ordering.
+        self._require_scoped_runtime(resolved)
+
+    def _lock_scoped_bank(self, resolved: NativeResolvedContent) -> None:
+        """Original version lock and separate post-lock latest event statement."""
+        p = resolved.publication
+        locked = self.conn.execute('SELECT id FROM tutor_learning_item_versions WHERE id=%s AND handle=%s FOR SHARE',
+            (p.version_id, p.item_handle)).fetchone()
+        event = self.conn.execute('SELECT id,state FROM tutor_learning_item_publication_events WHERE version_id=%s '
+            'ORDER BY state_version DESC LIMIT 1', (p.version_id,)).fetchone()
+        if (locked is None or event is None or event['state'] != 'published'
+                or UUID(str(event['id'])) != p.publication_event_id):
+            raise NativeTypeEvidencePending('native_content_current_required')
+
+    def _require_scoped_runtime(self, resolved: NativeResolvedContent) -> None:
+        """Original runtime/scorer binding and actual health port, never cached."""
+        p = resolved.publication
+        now, _ = self._guard()
+        from app.services.learning.item_bank.native_publication import _runtime
+        runtime = _runtime(resolved.spec, self.query._bindings)
+        if runtime != p.runtime:
+            raise NativeTypeEvidencePending('native_content_runtime_current_required')
+        health = self.query._current_runtime(runtime, now=now)
+        if resolved.consumption is None or health != resolved.consumption.runtime_health_registry_hash:
+            raise NativeTypeEvidencePending('native_content_runtime_current_required')
+
+    def _require_scoped_relations(self, scope: _CurrentPackData) -> None:
+        now, _ = self._guard()
+        for receipt, original in scope.relation_rows.items():
+            row = self.conn.execute('SELECT * FROM tutor_item_supply_native_relation_batches '
+                'WHERE id=%s AND user_id=%s AND epoch=%s AND mapping_receipt_id=%s FOR SHARE',
+                (receipt, self.user_id, self.epoch, scope.mapping_id)).fetchone()
+            if row != original or not original['checked_at'] <= now < original['valid_until']:
+                raise NativeTypeEvidencePending('native_relation_current_bound_required')
+            if any(not datetime.fromisoformat(r['checked_at']) <= now < datetime.fromisoformat(r['valid_until'])
+                    for r in original['payload_json']['reports']):
+                raise NativeTypeEvidencePending('native_relation_current_bound_required')
+
+    def _source_binding(self, cap: IssuedCurrentPackSourceBinding | None = None) -> IssuedCurrentPackSourceBinding | None:
+        from app.services.learning.item_supply.persistent_pack import PersistentPackTaskOwner
+        from app.services.learning.item_supply.persistent_pack_current_source import IssuedCurrentPackSourceBinding
+        cap = getattr(self, "current_source_binding", None) if cap is None else cap
+        if cap is None:
+            return None
+        if (type(self) is not NativeTypeEvidenceOwner or type(cap) is not IssuedCurrentPackSourceBinding
+                or type(cap.owner) is not PersistentPackTaskOwner or cap.owner.type_owner is not self
+                or cap.owner.conn is not self.conn or cap.owner.user_id != self.user_id or cap.owner.epoch != self.epoch):
+            raise NativeTypeEvidencePending("native_current_source_original_owner_required")
+        return cap
+
+    def attach_current_source_binding(self, cap: IssuedCurrentPackSourceBinding) -> None:
+        from app.services.learning.item_supply.persistent_pack_current_source import IssuedCurrentPackSourceBinding
+        if type(cap) is not IssuedCurrentPackSourceBinding:
+            raise NativeTypeEvidencePending("native_current_source_original_owner_required")
+        original = NativeTypeEvidenceOwner._source_binding(self, cap)
+        assert original is not None
+        original.require()
+        self.current_source_binding = original
 
     def _guard(self) -> tuple[datetime, int]:
         if (not self.enabled or not self.settings.learning_item_supply_enabled
                 or not self.settings.learning_item_v2_admission_enabled):
             raise NativeTypeEvidencePending("native_type_disabled")
         if self.conn.autocommit or self.conn.info.transaction_status != TransactionStatus.INTRANS:
+            self._clear_pack_scope()
             raise NativeTypeEvidencePending("native_type_transaction_required")
         self.query.artifacts.require_owner()
         lock_private_namespace(self.conn, self.user_id, self.epoch)
         row = self.conn.execute("SELECT clock_timestamp() AS now,txid_current() AS txid").fetchone()
         if row is None:
             raise NativeTypeEvidencePending("native_type_clock_missing")
+        scope = getattr(self, '_pack_scope', None)
+        if scope is not None and int(row['txid']) != scope.txid:
+            self._clear_pack_scope()
+            raise NativeTypeEvidencePending('native_pack_scope_transaction_changed')
         return row["now"], int(row["txid"])
 
     def resolve_mapping(self, receipt_id: UUID) -> FiniteCourseMappingReceiptV1:
         self._guard()
+        cap = NativeTypeEvidenceOwner._source_binding(self)
+        if cap is not None:
+            mapping = cap.resolve_mapping(receipt_id)
+            scope = NativeTypeEvidenceOwner._current_pack_data(self)
+            if scope is not None and (receipt_id != scope.mapping_id
+                    or scope.mapping is not None and mapping != scope.mapping):
+                raise NativeTypeEvidencePending('native_pack_scope_exact_mapping_required')
+            return mapping
         result = self.mapping_owner.resolve(receipt_id=receipt_id, user_id=self.user_id, epoch=self.epoch)
         if result.receipt is None:
+            from app.core.source_fence_diagnostics import observe_source_fence
+            observe_source_fence("mapping_resolve", result.reason)
             raise NativeTypeEvidencePending("native_mapping_current_required")
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None and (receipt_id != scoped.mapping_id
+                or scoped.mapping is not None and scoped.mapping != result.receipt):
+            raise NativeTypeEvidencePending('native_pack_scope_exact_mapping_required')
         return result.receipt
 
     def resolve_content(self, version_id: UUID, current: bool = True) -> NativeResolvedContent:
         self._guard()
         if type(current) is not bool:
             raise NativeTypeEvidencePending("native_content_current_mode_invalid")
+        scope = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scope is not None:
+            cached = scope.contents.get(version_id) if current else (
+                scope.historical.get(version_id) or scope.contents.get(version_id))
+            if cached is not None:
+                if current:
+                    self.resolve_mapping(scope.mapping_id)
+                    self._require_scoped_content(cached)
+                return cached
+            if scope.observation is not None:
+                raise NativeTypeEvidencePending('native_pack_scope_exact_content_required')
         rows = self.conn.execute(
             "SELECT n.proof_json,n.proof_hash,n.runner_material_json,g.source_json,c.public_json,"
             "g.request_json,g.root_id,g.job_id,g.lease_generation,"
@@ -290,6 +598,11 @@ class NativeTypeEvidenceOwner:
             "JOIN tutor_learning_item_practice_materializations m ON m.id=n.materialization_id "
             "JOIN tutor_learning_item_publication_events e ON e.id=n.publication_event_id AND e.state='published' "
             "WHERE n.version_id=%s ORDER BY n.created_at DESC LIMIT 2", (version_id,)).fetchall()
+        if not rows:
+            from app.services.learning.item_supply.native_committed_admission_history import read_committed_admission_row
+            historical = read_committed_admission_row(self.conn, version_id)
+            if historical is not None:
+                rows = [historical]
         if len(rows) != 1:
             raise NativeTypeEvidencePending("native_exact_original_publication_required")
         resolved = reconstruct_native_content(rows[0])
@@ -299,8 +612,13 @@ class NativeTypeEvidenceOwner:
             raise NativeTypeEvidencePending("native_content_version_mismatch")
         if current:
             try:
-                found = self.query.query_exact(handle=resolved.content.item_handle, spec=resolved.spec,
-                    source_authority=self.source_authority)
+                cap = NativeTypeEvidenceOwner._source_binding(self)
+                if cap is None:
+                    found = self.query.query_exact(handle=resolved.content.item_handle, spec=resolved.spec,
+                        source_authority=self.source_authority)
+                else:
+                    found = self.query.query_exact(handle=resolved.content.item_handle, spec=resolved.spec,
+                        source_authority=self.source_authority, current_source_binding=cap)
             except (NativePublicationPending, SourceEvidenceDenied):
                 raise NativeTypeEvidencePending("native_content_current_required") from None
             if found is None or found.proof_id != resolved.publication.proof_id:
@@ -322,6 +640,25 @@ class NativeTypeEvidenceOwner:
             raise NativeTypeEvidencePending("native_content_immutable_conflict")
 
     def source_deadline(self, resolved: NativeResolvedContent) -> datetime:
+        cap = NativeTypeEvidenceOwner._source_binding(self)
+        if cap is not None:
+            cap.require()
+            proof = resolved.publication
+            publication = self.conn.execute(
+                "SELECT e.occurred_at FROM tutor_learning_item_native_publication_proofs n "
+                "JOIN tutor_learning_item_publication_events e ON e.id=n.publication_event_id AND e.version_id=n.version_id "
+                "WHERE n.id=%s AND n.version_id=%s AND n.proof_hash=%s AND e.state='published' FOR SHARE OF n,e",
+                (proof.proof_id, proof.version_id, proof.proof_hash)).fetchone()
+            if publication is None:
+                raise NativeTypeEvidencePending("native_current_source_exact_publication_required")
+            scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+            if scoped is not None:
+                scoped.published_at[proof.version_id] = publication['occurred_at']
+            cap.current_receipts(query=self.query, proof=proof, published_at=publication["occurred_at"],
+                source_authority=self.source_authority)
+            if scoped is not None:
+                scoped.source_deadlines[proof.version_id] = cap.source_deadline
+            return cap.source_deadline
         deadline: datetime | None = None
         for material in resolved.publication.materials:
             reviews = self.source_authority._current.governance.source_reviews
@@ -333,17 +670,79 @@ class NativeTypeEvidenceOwner:
             deadline = review.grant.retained_until if deadline is None else min(deadline, review.grant.retained_until)
         if deadline is None:
             raise NativeTypeEvidencePending("native_source_current_deadline_missing")
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None:
+            scoped.source_deadlines[resolved.content.version_id] = deadline
         return deadline
 
     def _deadline(self, resolved: NativeResolvedContent, now: datetime) -> datetime:
         # Fresh bounded observation, never renewal of an old producer fact lease.
-        deadline = min(now + timedelta(seconds=30), self.source_deadline(resolved))
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None and scoped.observation is not None and scoped.inputs is None:
+            # Initial projection is DATA computation, not another source use.
+            # The closed front supplied these exact bounds; _inputs and first
+            # require_pack still re-fence CURRENT authority before any cap escapes.
+            source_deadline = scoped.source_deadlines[resolved.content.version_id]
+        else:
+            source_deadline = self.source_deadline(resolved)
+        deadline = min(now + CURRENT_PACK_TTL, source_deadline)
+        if scoped is not None and scoped.observation is not None and scoped.observation.exposure is not None:
+            deadline = min(deadline, scoped.observation.exposure.valid_until,
+                *(r['valid_until'] for r in scoped.relation_rows.values()),
+                *(datetime.fromisoformat(report['valid_until']) for row in scoped.relation_rows.values()
+                  for report in row['payload_json']['reports']))
         if deadline <= now:
             raise NativeTypeEvidencePending("native_source_current_deadline_missing")
         return deadline
 
     def _candidate(self, resolved: NativeResolvedContent, mapping: FiniteCourseMappingReceiptV1,
                    now: datetime) -> PackCandidateV2:
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None:
+            if scoped.contents.get(resolved.content.version_id) is not resolved or mapping != scoped.mapping:
+                raise NativeTypeEvidencePending('native_pack_scope_exact_content_required')
+            if scoped.inputs is not None:
+                if (scoped.capability is None or scoped.observation is None
+                        or scoped.observation.snapshot_id is None):
+                    raise NativeTypeEvidencePending('native_pack_scope_issuance_required')
+                try:
+                    self._require_pack_identity(scoped.capability)
+                    self.resolve_mapping(scoped.mapping_id)
+                    self._require_scoped_content(resolved)
+                    self._require_scoped_relations(scoped)
+                    self._exposure(scoped.observation.snapshot_id, self._guard()[0])
+                    record = next(c for c in scoped.inputs.candidates if c.version_id == resolved.content.version_id)
+                    final, _ = self._guard()
+                    if not record.observed_at <= final < record.valid_until:
+                        raise NativeTypeEvidencePending('native_pack_deadline_elapsed')
+                    return record
+                except Exception:
+                    self._clear_pack_scope()
+                    raise
+            if scoped.observation is not None:
+                # This front template was never issued/persisted as authority.
+                # Keep its exact already-verified immutable DATA, not expensive
+                # publication/source/facts reconstruction after snapshot issuance.
+                template, authorization_data, type_data = scoped.projections[resolved.content.version_id]
+                original_candidate = template.candidate
+                if not isinstance(original_candidate, NativeScopedCandidateV2):
+                    raise NativeTypeEvidencePending('native_pack_scope_exact_content_required')
+                deadline = self._deadline(resolved, now)
+                authorization_hash = canonical_hash({**authorization_data, 'checked_at': now.isoformat()})
+                authorization = original_candidate.current_authorization.model_copy(update={
+                    'authorization_hash': authorization_hash, 'checked_at': now, 'valid_until': deadline})
+                proof = original_candidate.proof.model_copy(update={
+                    'authorization_hash': authorization_hash, 'authorization_checked_at': now,
+                    'authorization_valid_until': deadline, 'checked_at': now, 'valid_until': deadline})
+                candidate = original_candidate.model_copy(update={
+                    'proof': proof, 'current_authorization': authorization})
+                evidence = template.type_evidence.model_copy(update={'receipt_id': uuid4(),
+                    'checked_at': now, 'valid_until': deadline,
+                    'receipt_hash': canonical_hash({**type_data, 'checked_at': now.isoformat()})})
+                # Original PackInputs/build_pack validation and SQL501 issuance
+                # still validate the resulting typed projection before it escapes.
+                return template.model_copy(update={'candidate': candidate, 'type_evidence': evidence,
+                    'observed_at': now, 'valid_until': deadline})
         source, spec, p, facts = resolved.source, resolved.spec, resolved.publication, resolved.facts
         if resolved.consumption is None:
             raise NativeTypeEvidencePending("native_candidate_current_consumption_required")
@@ -357,61 +756,69 @@ class NativeTypeEvidenceOwner:
                 or len(current.current_source_receipt_hashes) != len(p.materials)):
             raise NativeTypeEvidencePending("native_candidate_current_consumption_mismatch")
         slot = spec.allocation.slot
-        entry = next(e for e in mapping.pack_request.demands if e.slot == slot)
+        entry = require_content_mapping_identity(resolved, mapping)
+        cap = NativeTypeEvidenceOwner._source_binding(self)
+        mapping_source_hash = mapping.source_authorization_hash
+        if cap is not None:
+            initial_projection = scoped is not None and scoped.observation is not None and scoped.inputs is None
+            if not initial_projection and cap.resolve_mapping(mapping.receipt_id) != mapping:
+                raise NativeTypeEvidencePending("native_current_source_mapping_mismatch")
+            mapping_source_hash = cap.source_authorization_hash
         scope = entry.demand.scope
-        if (spec.target_id != mapping.target_id or spec.target_definition_hash != mapping.target_definition_hash
-                or any(getattr(spec.coverage_blueprint.scope, k) != getattr(scope, k) for k in (
-                    "runtime_profile_id", "runtime_profile_hash", "scorer_version", "assistance_policy_hash",
-                    "subject_id", "subject_version", "required_facets", "required_capabilities", "assessment_contract_version"))):
-            raise NativeTypeEvidencePending("native_candidate_mapping_mismatch")
         target = facts.target_proof
-        if target is None or tuple((a, b) for a, b, _, _ in mapping.pack_request.clause_mapping) != tuple(
-                (c.clause_id.upper(), c.clause_hash) for c in target.mappings):
-            raise NativeTypeEvidencePending("native_clause_mapping_mismatch")
+        assert target is not None  # Checked by the shared immutable identity check above.
         clauses = tuple(ClauseCoverageV1(clause_id=c, clause_hash=h) for _, _, c, h in mapping.pack_request.clause_mapping)
         deadline = self._deadline(resolved, now)
         source_set_hash = canonical_hash(list(resolved.consumption.current_source_receipt_hashes))
-        authorization_hash = canonical_hash({"mapping": mapping.source_authorization_hash,
+        authorization_data = {"mapping": mapping_source_hash,
             "publication": p.proof_hash, "source_set": source_set_hash,
-            "current_consumption": canonical_hash(resolved.consumption.model_dump(mode="json")), "checked_at": now.isoformat()})
+            "current_consumption": canonical_hash(resolved.consumption.model_dump(mode="json"))}
+        authorization_hash = canonical_hash({**authorization_data, "checked_at": now.isoformat()})
         common = dict(scope_hash=scope.scope_hash, objective_hash=entry.demand.objective_hash,
             target_definition_hash=mapping.target_definition_hash, course_mapping_hash=mapping.mapping_hash,
             runtime_profile_id=scope.runtime_profile_id, runtime_profile_hash=scope.runtime_profile_hash,
             scorer_version=scope.scorer_version, assistance_policy_hash=scope.assistance_policy_hash,
             validation_receipt_hash=facts.validation_receipt_hash, item_review_bundle_hash=facts.review_receipt_hash,
             receipt_id=uuid4(), checked_at=now, valid_until=deadline, content=resolved.content)
-        if spec.target_id == "python-kc-binding-v1":
-            static = prepare_finite_candidate_validation(source, spec=spec, materials=p.materials).static_facts
-            if static is None:
-                raise NativeTypeEvidencePending("native_static_facts_missing")
-            extra = dict(truth_derivation_hash=static.instance_hash,
-                all_options_verification_hash=canonical_hash([o.model_dump(mode="json") for o in static.options]),
-                blind_solve_receipt_hash=facts.blind_receipt_hash, ambiguity_review_receipt_hash=facts.ambiguity.receipt_hash,
-                misconception_review_receipt_hash=next(c.ambiguity_report_hash for c in target.mappings))
-            evidence_type: type[Any] = KCTypeEvidenceV2
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None and p.version_id in scoped.extras:
+            evidence_type, extra = scoped.extras[p.version_id]
         else:
-            inputs = prepare_finite_candidate_validation(source, spec=spec, materials=p.materials)
-            plan = inputs.probe_plan
-            terminals = {t.probe_name: t for t in facts.validation_terminals}
-            required = ("reference", "equivalent", "wrong_rejected", "boundary")
-            if plan is None or any(name not in terminals for name in required):
-                raise NativeTypeEvidencePending("native_execution_controls_missing")
-            extra = dict(terminal_receipt_hash=canonical_hash([t.model_dump(mode="json") for t in facts.validation_terminals]),
-                scorer_receipt_hash=canonical_hash(facts.scorer_counts),
-                reference_submission_hash=submission_fingerprint(source,
-                    getattr(source.private.content, "standard_answer", getattr(source.private.content, "standard_query", ""))),
-                equivalent_submission_hash=submission_fingerprint(source, plan.equivalent),
-                reference_execution_hash=canonical_hash(terminals["reference"].model_dump(mode="json")),
-                equivalent_execution_hash=canonical_hash(terminals["equivalent"].model_dump(mode="json")),
-                wrong_solution_control_hash=canonical_hash(terminals["wrong_rejected"].model_dump(mode="json")),
-                hardcoded_control_hash=canonical_hash({"boundary_terminal": terminals["boundary"].model_dump(mode="json"),
-                    "independent_cases": plan.boundary_cases_json, "independent_tests": plan.boundary_tests_json}),
-                boundary_control_hash=canonical_hash(terminals["boundary"].model_dump(mode="json")))
-            evidence_type = PythonTypeEvidenceV2 if spec.python_goal is not None else SQLiteTypeEvidenceV2
-        type_evidence: TypeAssessmentEvidenceV2 = evidence_type(**common, **extra,
-            receipt_hash=canonical_hash({"facts": facts.receipt_hash, "scope": scope.scope_hash,
+            if spec.target_id == "python-kc-binding-v1":
+                static = prepare_finite_candidate_validation(source, spec=spec, materials=p.materials).static_facts
+                if static is None:
+                    raise NativeTypeEvidencePending("native_static_facts_missing")
+                extra = dict(truth_derivation_hash=static.instance_hash,
+                    all_options_verification_hash=canonical_hash([o.model_dump(mode="json") for o in static.options]),
+                    blind_solve_receipt_hash=facts.blind_receipt_hash, ambiguity_review_receipt_hash=facts.ambiguity.receipt_hash,
+                    misconception_review_receipt_hash=next(c.ambiguity_report_hash for c in target.mappings))
+                evidence_type = KCTypeEvidenceV2
+            else:
+                inputs = prepare_finite_candidate_validation(source, spec=spec, materials=p.materials)
+                plan = inputs.probe_plan
+                terminals = {t.probe_name: t for t in facts.validation_terminals}
+                required = ("reference", "equivalent", "wrong_rejected", "boundary")
+                if plan is None or any(name not in terminals for name in required):
+                    raise NativeTypeEvidencePending("native_execution_controls_missing")
+                extra = dict(terminal_receipt_hash=canonical_hash([t.model_dump(mode="json") for t in facts.validation_terminals]),
+                    scorer_receipt_hash=canonical_hash(facts.scorer_counts),
+                    reference_submission_hash=submission_fingerprint(source,
+                        getattr(source.private.content, "standard_answer", getattr(source.private.content, "standard_query", ""))),
+                    equivalent_submission_hash=submission_fingerprint(source, plan.equivalent),
+                    reference_execution_hash=canonical_hash(terminals["reference"].model_dump(mode="json")),
+                    equivalent_execution_hash=canonical_hash(terminals["equivalent"].model_dump(mode="json")),
+                    wrong_solution_control_hash=canonical_hash(terminals["wrong_rejected"].model_dump(mode="json")),
+                    hardcoded_control_hash=canonical_hash({"boundary_terminal": terminals["boundary"].model_dump(mode="json"),
+                        "independent_cases": plan.boundary_cases_json, "independent_tests": plan.boundary_tests_json}),
+                    boundary_control_hash=canonical_hash(terminals["boundary"].model_dump(mode="json")))
+                evidence_type = PythonTypeEvidenceV2 if spec.python_goal is not None else SQLiteTypeEvidenceV2
+            if scoped is not None:
+                scoped.extras[p.version_id] = evidence_type, extra
+        type_data = {"facts": facts.receipt_hash, "scope": scope.scope_hash,
                 "objective": entry.demand.objective_hash, "mapping": mapping.mapping_hash,
-                "checked_at": now.isoformat(), "extra": extra}))
+                "extra": extra}
+        type_evidence: TypeAssessmentEvidenceV2 = evidence_type(**common, **extra,
+            receipt_hash=canonical_hash({**type_data, "checked_at": now.isoformat()}))
         source_coordinates = [m.binding.evidence[0].binding.model_dump(mode="json") for m in p.materials]
         # One bounded identity for the ENTIRE verified material/claim set. This is
         # not a grant or a guessed first-source alias; current native query checks
@@ -453,13 +860,16 @@ class NativeTypeEvidenceOwner:
             course_mapping_hash=mapping.mapping_hash, candidate_content_hash=source.content_hash,
             slot=slot, purpose=source.public.purpose.value)
         member = FamilyMemberEvidenceV2(**member_data, receipt_hash=canonical_hash(member_data))
-        return PackCandidateV2(candidate=candidate, member=member, type_evidence=type_evidence,
+        record = PackCandidateV2(candidate=candidate, member=member, type_evidence=type_evidence,
             publication_id=p.publication_event_id, materialization_id=p.materialization_id, proof_id=p.proof_id,
             version_id=p.version_id, owner_id=None, epoch=None, storage_scope_id=entry.storage_scope_id,
             original_publication_hash=p.proof_hash, original_materialization_hash=p.materialization_hash,
             original_proof_hash=target.proof_hash, complete_source_set_hash=source_set_hash,
             runtime_or_static_observation_hash=canonical_hash(resolved.consumption.model_dump(mode="json")),
             observed_at=now, valid_until=deadline)
+        if scoped is not None:
+            scoped.projections[p.version_id] = record, authorization_data, type_data
+        return record
 
     def _exposure(self, snapshot_id: UUID, now: datetime) -> CompleteExposureV2:
         row = self.conn.execute("SELECT * FROM tutor_item_supply_type_exposure_snapshots "
@@ -483,8 +893,15 @@ class NativeTypeEvidenceOwner:
     def _relations(self, ids: tuple[UUID, ...], mapping: FiniteCourseMappingReceiptV1,
                    contents: dict[UUID, NativeResolvedContent], exposure: CompleteExposureV2,
                    now: datetime) -> tuple[ContentRelationshipEvidenceV2, ...]:
+        return tuple(ContentRelationshipEvidenceV2(**args,
+            exposure_receipt_hash=exposure.completeness_receipt_hash,
+            exposure_watermark=exposure.watermark) for args in self._relation_arguments(ids, mapping, contents, now))
+
+    def _relation_arguments(self, ids: tuple[UUID, ...], mapping: FiniteCourseMappingReceiptV1,
+                            contents: dict[UUID, NativeResolvedContent], now: datetime
+                            ) -> tuple[dict[str, Any], ...]:
         from uuid import uuid5
-        relations: dict[str, ContentRelationshipEvidenceV2] = {}
+        relations: dict[str, dict[str, Any]] = {}
         for receipt_id in ids:
             row = self.conn.execute("SELECT * FROM tutor_item_supply_native_relation_batches "
                 "WHERE id=%s AND user_id=%s AND epoch=%s AND mapping_receipt_id=%s FOR SHARE",
@@ -493,6 +910,9 @@ class NativeTypeEvidenceOwner:
                     or row["payload_hash"] != canonical_hash(row["payload_json"])
                     or not row["checked_at"] <= now < row["valid_until"]):
                 raise NativeTypeEvidencePending("native_relation_current_bound_required")
+            scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+            if scoped is not None:
+                scoped.relation_rows[receipt_id] = row
             payload = row["payload_json"]
             reports = tuple(_model(NativeRelationReport, r) for r in payload["reports"])
             if ({r.role for r in reports} != {"curriculum", "technical", "ambiguity", "adversarial"}
@@ -526,9 +946,8 @@ class NativeTypeEvidenceOwner:
                         covered_binding_hashes=(binding,), conclusion=judgment.conclusion,
                         rationale_evidence_hash=judgment.rationale_evidence_hash,
                         checked_at=report.checked_at, valid_until=report.valid_until))
-                relation = ContentRelationshipEvidenceV2(profile=profile, request_hash=mapping.pack_request.request_hash,
-                    left=left.content, right=right.content, exposure_receipt_hash=exposure.completeness_receipt_hash,
-                    exposure_watermark=exposure.watermark, reviews=tuple(reviews),
+                relation = dict(profile=profile, request_hash=mapping.pack_request.request_hash,
+                    left=left.content, right=right.content, reviews=tuple(reviews),
                     # Exact stable501 batch identity/interval. The pair and
                     # current exposure are eligibility projections, not renewed
                     # immutable review data under an old receipt ID.
@@ -543,9 +962,19 @@ class NativeTypeEvidenceOwner:
     def _inputs(self, mapping_id: UUID, candidates: tuple[UUID, ...], exposure_id: UUID,
                 relation_ids: tuple[UUID, ...]) -> PackInputsV2:
         self._guard()
-        if (not 5 <= len(candidates) <= 16 or len(set(candidates)) != len(candidates)
-                or not 1 <= len(relation_ids) <= 16 or len(set(relation_ids)) != len(relation_ids)):
-            raise NativeTypeEvidencePending("native_pack_inputs_bound_invalid")
+        NativeTypeEvidenceOwner._validate_pack_refs(candidates, relation_ids)
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None and scoped.inputs is not None:
+            if (mapping_id != scoped.mapping_id or set(candidates) != set(scoped.versions)
+                    or set(relation_ids) != set(scoped.relation_ids) or scoped.observation is None
+                    or exposure_id != scoped.observation.snapshot_id):
+                raise NativeTypeEvidencePending('native_pack_scope_exact_inputs_required')
+            self.resolve_mapping(mapping_id)
+            for content in scoped.contents.values():
+                self._require_scoped_content(content)
+            self._require_scoped_relations(scoped)
+            self._exposure(exposure_id, self._guard()[0])
+            return scoped.inputs
         mapping = self.resolve_mapping(mapping_id)
         contents = {v: self.resolve_content(v, current=True) for v in candidates}
         # query_exact stamps each consumption proof with a fresh DB clock.
@@ -562,7 +991,36 @@ class NativeTypeEvidenceOwner:
 
     def resolve_pack(self, mapping_receipt_id: UUID, candidate_version_ids: tuple[UUID, ...],
                      exposure_snapshot_id: UUID, relation_receipt_ids: tuple[UUID, ...]) -> IssuedNativePackCapability:
+        NativeTypeEvidenceOwner._validate_pack_refs(candidate_version_ids, relation_receipt_ids)
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None and scoped.capability is not None:
+            if (mapping_receipt_id != scoped.mapping_id or set(candidate_version_ids) != set(scoped.versions)
+                    or set(relation_receipt_ids) != set(scoped.relation_ids) or scoped.observation is None
+                    or exposure_snapshot_id != scoped.observation.snapshot_id):
+                raise NativeTypeEvidencePending('native_pack_scope_exact_inputs_required')
+            self.require_pack(scoped.capability)
+            return scoped.capability
         inputs = self._inputs(mapping_receipt_id, candidate_version_ids, exposure_snapshot_id, relation_receipt_ids)
+        return self._issue_pack_from_inputs(inputs, mapping_receipt_id, candidate_version_ids,
+            exposure_snapshot_id, relation_receipt_ids)
+
+    def _issue_pack_from_inputs(self, inputs: PackInputsV2, mapping_receipt_id: UUID,
+                               candidate_version_ids: tuple[UUID, ...], exposure_snapshot_id: UUID,
+                               relation_receipt_ids: tuple[UUID, ...]) -> IssuedNativePackCapability:
+        """The original issuer body; no new authority or scope permission flag.
+
+        Strict resolve_pack still obtains its inputs from the original _inputs.
+        Initial current_pack instead supplies EXACT local DATA, then runs the
+        original dynamic require_pack before yielding to any consumer.
+        """
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None and (inputs is not scoped.inputs or scoped.capability is not None
+                or mapping_receipt_id != scoped.mapping_id or scoped.mapping is None
+                or inputs.request != scoped.mapping.pack_request
+                or candidate_version_ids != scoped.versions or relation_receipt_ids != scoped.relation_ids
+                or scoped.observation is None or exposure_snapshot_id != scoped.observation.snapshot_id
+                or inputs.exposure != scoped.observation.exposure):
+            raise NativeTypeEvidencePending('native_pack_scope_exact_inputs_required')
         now, txid = self._guard()
         result = build_pack(inputs, now=now)
         if result.snapshot is None:
@@ -582,6 +1040,15 @@ class NativeTypeEvidenceOwner:
         return cap
 
     def require_pack(self, capability: IssuedNativePackCapability) -> PackSnapshotV2:
+        try:
+            return NativeTypeEvidenceOwner._require_pack(self, capability)
+        except Exception:
+            # A failed dynamic fence or aborted/rolled-back transaction discards
+            # this call's data. Catching the failure cannot revive the scope.
+            NativeTypeEvidenceOwner._clear_pack_scope(self)
+            raise
+
+    def _require_pack_identity(self, capability: IssuedNativePackCapability) -> datetime:
         if type(capability) is not IssuedNativePackCapability:
             raise NativeTypeEvidencePending("native_pack_owner_capability_required")
         now, txid = self._guard()
@@ -595,13 +1062,52 @@ class NativeTypeEvidenceOwner:
             (capability.eligibility_id, self.user_id, self.epoch, txid)).fetchone()
         if row is None or row["snapshot_hash"] != entry[2]:
             raise NativeTypeEvidencePending("native_pack_persisted_capability_missing")
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is not None and scoped.capability is not capability:
+            raise NativeTypeEvidencePending('native_pack_scope_exact_capability_required')
+        return now
+
+    def _require_pack(self, capability: IssuedNativePackCapability) -> PackSnapshotV2:
+        now = NativeTypeEvidenceOwner._require_pack_identity(self, capability)
+        entry = self._issued[capability.eligibility_id]
         self.resolve_mapping(entry[3])
-        self._exposure(entry[5], now)
-        for version in entry[4]:
-            self.resolve_content(version, current=True)
+        self._exposure(entry[5], self._guard()[0])
+        scoped = NativeTypeEvidenceOwner._current_pack_data(self)
+        if scoped is None:
+            for version in entry[4]:
+                self.resolve_content(version, current=True)
+        elif scoped.source_binding is None:
+            for version in entry[4]:
+                self._require_scoped_content(scoped.contents[version])
+        else:
+            contents = tuple(scoped.contents[version] for version in entry[4])
+            proof_bindings = tuple((content.publication, scoped.published_at[content.content.version_id])
+                for content in contents)
+            # The ORIGINAL source owner validates the exact original cap/proof
+            # set and identical PUBLIC/PRIVATE source once before these bank
+            # locks and fully again after ALL locks/health reads. No user yield,
+            # callback, provider IO or body write occurs inside this invocation.
+            # Next independent verifier enters a NEW initial/final source use.
+            with scoped.source_binding.current_pack_invocation(query=self.query,
+                    source_authority=self.source_authority, proof_bindings=proof_bindings):
+                for content in contents:
+                    self._lock_scoped_bank(content)
+                    self._require_scoped_runtime(content)
+                # Relation SHARE waits belong BEFORE the original source owner's
+                # complete post-source/config/SQL549/clock fence on context exit.
+                self._require_scoped_relations(scoped)
+        if scoped is not None:
+            if scoped.capability is not capability:
+                raise NativeTypeEvidencePending('native_pack_scope_exact_capability_required')
+            if scoped.source_binding is None:
+                self._require_scoped_relations(scoped)
         # Still-valid original content relation rows, including conflict/uncertain
         # vetoes, cannot be swapped by mutating the capability object.
         final = server_clock(self.conn, now)
+        # Source/bank/relation lock waits may expose a new actual inbox or consume
+        # the window. SQL502 and the final DB clock are BOTH rechecked afterwards.
+        self._exposure(entry[5], final)
+        final = server_clock(self.conn, final)
         if final >= capability.snapshot.valid_until:
             raise NativeTypeEvidencePending("native_pack_deadline_elapsed")
         return capability.snapshot

@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from app.services.learning.item_bank.contracts import LearningItemSourceV1, canonical_hash
 from app.services.learning.item_supply.contracts import Digest, Identifier
 from app.services.learning.item_supply.generation_contracts import GenerationRequestV2
+from app.services.learning.item_supply.persistent_pack_revision_contracts import PersistentRegisteredFamilyRevisionV1
 from app.services.learning.item_supply.review_contracts_v2 import ReviewDiagnosticReferenceV1
 from app.services.learning.item_supply.storage_contracts import StorageContract, checked_model
 
@@ -32,7 +33,7 @@ class NativeRevisionProblemV1(StorageContract):
 
 
 class NativeRevisionContextV1(StorageContract):
-    schema_version: Literal["native_revision_author_context_v1"] = "native_revision_author_context_v1"
+    schema_version: Literal["native_revision_author_context_v1", "native_revision_author_context_v2", "native_revision_author_context_v3"] = "native_revision_author_context_v1"
     purpose: Literal["bounded_content_revision_not_admission"] = "bounded_content_revision_not_admission"
     parent_artifact_id: UUID
     parent_artifact_hash: Digest
@@ -52,6 +53,14 @@ class NativeRevisionContextV1(StorageContract):
     problems: tuple[NativeRevisionProblemV1, ...] = Field(min_length=1, max_length=144, repr=False)
     publication_enabled: Literal[False] = False
     blockers_discharged: Literal[False] = False
+    persistent_family_revision: PersistentRegisteredFamilyRevisionV1 | None = Field(default=None,repr=False)
+
+    @model_serializer(mode="wrap")
+    def preserve_v1_wire(self, handler: SerializerFunctionWrapHandler) -> dict[str,Any]:
+        payload=handler(self)
+        if self.schema_version=="native_revision_author_context_v1":
+            payload.pop("persistent_family_revision",None)
+        return payload
 
     @model_validator(mode="after")
     def exact_parent(self) -> NativeRevisionContextV1:
@@ -59,6 +68,25 @@ class NativeRevisionContextV1(StorageContract):
         if ((source.source_hash, source.content_hash) != (self.parent_source_hash, self.parent_content_hash)
                 or len({p.dispute_key for p in self.problems}) != len(self.problems)):
             raise ValueError("revision original source/problems mismatch")
+        family=self.persistent_family_revision
+        if self.schema_version=="native_revision_author_context_v1":
+            if family is not None:
+                raise ValueError("v1 cannot contain registered-family permission DATA")
+        else:
+            if family is None:
+                raise ValueError("v2 exact registered-family DATA required")
+            spec=family.child_specification
+            baseline = source.blueprint
+            if self.schema_version == "native_revision_author_context_v3":
+                # DATA shape only, not a source grant. The original owner/SQL must
+                # validate the stored bridge; check_request binds factory citations.
+                baseline = baseline.model_copy(update={"source_references": spec.public_template.source_references})
+            if (spec.target_definition_hash!=self.target_definition_hash
+                    or spec.coverage_blueprint.scope.scope_hash!=self.scope_hash
+                    or spec.blueprint.model_dump(mode="json",exclude={"blueprint_key","version"})
+                        !=baseline.model_dump(mode="json",exclude={"blueprint_key","version"})
+                    or family.finding_key not in {p.dispute_key for p in self.problems}):
+                raise ValueError("v2 same public objective/risk/capabilities and actual finding required")
         return self
 
     @property
@@ -70,9 +98,22 @@ class NativeRevisionContextV1(StorageContract):
         request = checked_model(request, GenerationRequestV2)
         if (request.candidate_id != context.child_candidate_id or request.item_key != context.child_item_key
                 or request.version != context.child_version or request.scope_hash != context.scope_hash
-                or request.materials == () or request.demand_binding is not None
-                or request.blueprint != context.parent_source.blueprint):
+                or request.materials == () or request.demand_binding is not None):
             raise ValueError("revision child request/context mismatch")
+        if context.schema_version=="native_revision_author_context_v1":
+            if request.blueprint!=context.parent_source.blueprint:
+                raise ValueError("revision child request/context mismatch")
+        else:
+            family=context.persistent_family_revision
+            if family is None:
+                raise ValueError("v2 registered-family DATA required")
+            spec=family.child_specification
+            if (request.blueprint!=spec.blueprint or request.public_template!=spec.public_template
+                    or (spec.public_template.item_key,spec.public_template.version)!=(request.item_key,request.version)):
+                raise ValueError("v2 exact original-factory child request required")
+            if context.schema_version == "native_revision_author_context_v3":
+                from app.services.learning.item_supply.finite_candidate_factory import check_finite_public_request
+                check_finite_public_request(request)
 
     @property
     def provider_payload(self) -> dict[str, object]:

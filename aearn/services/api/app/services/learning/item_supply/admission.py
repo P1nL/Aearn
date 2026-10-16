@@ -12,9 +12,10 @@ from app.services.learning.item_supply.review_contracts_v2 import (
     ReviewBundleV2, ValidationReceiptV2, check_subject, checked_validation_receipt,
     execution_receipt_digest, receipt_digest, validation_passed,
 )
-from app.services.learning.item_supply.review_provider import (
-    BLIND_PROMPT_VERSION, blind_input,
+from app.services.learning.item_supply.blind_protocol import (
+    LEGACY_BLIND_PROTOCOL, blind_prompt_version, blind_protocol_for_prompt_version,
 )
+from app.services.learning.item_supply.review_provider import blind_input
 from app.services.learning.item_supply.review_protocol import make_review_request, report_protocol, verify_review_report
 from app.services.learning.item_supply.risk_registry import RiskAdapterRegistry, required_critical_risks
 from app.services.learning.item_supply.storage_contracts import AutonomousEvidencePolicyV2, checked_model
@@ -38,8 +39,12 @@ def _check_bundle(
 ) -> None:
     if bundle.binding != binding or bundle.author_identity != author_identity:
         raise ValueError("stale bundle")
-    if (bundle.blind_solve.run.input_hash != blind_input(source, binding).input_hash
-            or bundle.blind_solve.run.prompt_version != BLIND_PROMPT_VERSION):
+    # V2 remains legacy-only. V3 recognizes only the original closed protocols,
+    # and still authenticates the exact public request; a version is not authority.
+    protocol = (blind_protocol_for_prompt_version(bundle.blind_solve.run.prompt_version)
+                if type(bundle) is ReviewBundleV3 else LEGACY_BLIND_PROTOCOL)
+    if (bundle.blind_solve.run.input_hash != blind_input(source, binding, blind_protocol=protocol).input_hash
+            or bundle.blind_solve.run.prompt_version != blind_prompt_version(protocol)):
         raise ValueError("stale blind input")
     for report in bundle.reports:
         expected = make_review_request(source, binding=binding, role=report.role,

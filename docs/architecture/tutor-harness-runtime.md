@@ -1,6 +1,51 @@
 # Tutor Harness Runtime Architecture
 
-**Status:** Current runtime contract as of 2026-09-02.
+## 2026-10-14：550已安装、原四角色关系已commit；整包current受30秒曝光时序阻塞
+
+550仅修原native relation receiver两处query-local c别名与PLpgSQL变量歧义，原root/phase/lease/author separation/request hash等条件未改。实际compile/replay与完整原prepare rollback通过后selected安装，冻结文件SHA f63b7014e5818dc5c6e126ca9ed3ef59be85e37eee4213378369f9bf3483a80a，receiver body70194b777ae1860df750c87e62b278360601842d98c6c9a4011defeba02dbb51，pipeline及producer两处pin同步；原OID/owner/ACL等保全。schema manifest550已登记，<=549冻结。
+
+Main同一任务/selected5的新原phase 032bac08-b091-47dd-bed5-2c99b03a65da真实四角色完成并commit relation_ready，原receipt e1578bca-7835-4884-b8d5-2f45d8194d5c及4ProviderRun已DB回读。4实际HTTP，ledger158→159，旧事件/UNKNOWN保留；runtime aggregate UNKNOWN、金额null。证据 .runtime/p7-current-receivers-20261014/relation-live-20261014T052949500329Z/result-private.json。禁止重付/重生成该关系；关系ready不等整包ready。
+
+其后原get_status→resolve_pack→_exposure真实SQL502拒绝。Main新原snapshot/resolve_pack/savepoint回滚诊断 exposure-diagnose-20261014T063910445789Z：checked14:39:49.867、valid14:40:19.867、真正检查14:42:48.651，179秒后仅time_current=false；水位/计数/原hooks/birth/inbox全true。0HTTP/provider，无关系replay。原snapshot与candidate期限30秒不延，不用旧snapshot；必要原owner TOP生命周期重排处于设计中，源/epoch/退役/曝光变化及原消费门禁独立保留。PRIVATE、原Artifact消费与P7尚未完成。
+
+
+## 2026-10-14：whole-pack原current source及549已验收、安装
+
+原owner显式签发同任务current-source进程能力并经NativeType严格安装；旧PUBLIC proof/source refs、实际published_at、mapping与selected5均不修改。新旧材料/目标/请求语义完全一致，各自签名授权policy/gen/source预算/root/delegation/expiry分别核验；新C不是新模型钱包。549仅向既有PRIVATE journal写显式current origin DATA，原consumer create/consume与PRIVATE base原SQL source fence校验同actor/epoch/mapping/task/原proof/新C及真实provenance，默认旧分支仍严格。origin或文件中的UUID不能恢复能力，provider/relation/exposure/PRIVATE/delivery各门禁独立。
+
+Main正向source-rehearsal-20261014T020236843430Z回滚：原mapping、selected5 NativeType与SQL source接收器均current；原PUBLIC状态仍preparing/relation_required/qualified_slots5。否决source-negative-20261014T021800025454Z：foreign actor/wrong epoch/expired origin均拒绝。install549-20261014T022354186834Z selected安装已commit并注册manifest，冻结SHA a283f28331cc9c1d048ee9a1ae8066ff71ea5e9fd65124f80800a8b6f39f94f2；无需548，531未启用，<=547未改，旧历史/ledger保全，新增项目provider/HTTP为0。完整关系4角色、ready、PRIVATE及原Artifact consumer仍未验收，P7_complete=false。下节“source549实施中”是早先同日历史检查点，当前以本节为准。
+
+
+## 2026-10-14：547历史DATA的原NativeType current读取已修复（无548迁移）
+
+原reader现显式核验547新admission与历史validation/producer/review的分离 origin，不全局放松旧JOIN/profile规则，不恢复旧Issued/lease/scorer注册表。PG prep.created_at是TOP now而非实际lease bind时间，历史校验分别保留audit顺序和stage在原bind/截止内的发行边界。Main原新child current全回滚通过：bank_current/native_current=true、547六项各1、schema/ledger保全、HTTP/provider0；证据.runtime/p7-current-receivers-20261014/probe-20261014T012034658233Z/result-private.json，独立history检查PASS。无需548；547及更早冻结，531未启用。
+
+这只修复最新child历史数据读取；四旧发布版本当前source_unavailable与普通mapping source_or_claim_stale仍准确拒绝。新whole-pack source purpose设计经独立审阅补入549 explicit origin/原consumer与PRIVATEbase SQL source接收器后PASS，产品/DDL仍实施中，未据此声明current整包/PRIVATE/consumer或P7完成。
+
+## 2026-10-14：从已提交审核 DATA 接续尚未执行的准入
+
+`PersistentPackTaskOwner.prepare_committed_child_admission(...)` / `run_committed_child_admission(frame)` 只为确切原 task/slot/child/回执发行新原-process能力。历史质量与当前执行权限分离：保留旧质量回执及其当时的时间、profile、UNKNOWN settlement；新 admission job沿原 canonical root，有当前 source/mapping/epoch/controlled复核和独立15分钟期限，禁止任何 provider reservation。仅当前 finite single-choice KC可从合法输出闭集唯一匹配既有 solution_hash，再核原完整 score；新 static ambiguity是明确新观察，不伪造旧 run。
+
+完整原 evaluate_admission仍负责角色/风险/确定性证据准入；V3 closed blind协议核验使用原 blind_protocol helper，V2 bytes/行为保持。新 normal/facts先独立提交，随后原 native import/evaluation/internal-publication和same-slot qualified同事务提交。实际执行若失败，保留新once/已提交阶段与精确诊断；不得重审、改旧UNKNOWN或重新author。547已选择安装，原admission-only动作实际qualified：normal/facts/evaluation/import/native internal-publication/same-slot qualified各1，version8ba4ca51-e8f4-540a-b52a-eaec8a0a6764；`.runtime/p7-committed-admission-20261014/commit-20261013T183819697920Z/result-private.json`保留真实回读。HTTP/provider0且158条账本不变；原phase UNKNOWN与四条历史unsupported争议保持。该单child内部发布不等于完整P7或公开发布。后续实际原get_status仍因ordinary mapping source_or_claim_stale拒绝；已验证的revision-only来源桥接不能成为whole-pack/current许可。原NativeTypeEvidenceOwner current读取还在validation/facts同job/profile投影处拒绝547新模式，报native_exact_original_publication_required；这需要明确原issuer/历史DATA读取分支，而不是删除JOIN条件或重跑付费审核。下一窄范围记录在原任务research/p7-post-publication-current-receivers-plan-20261014.md，未实施。独立检查及实际回滚证据见原任务 research/p7-admission-only-design-check-20261014.md §11。
+
+## 2026-10-14: committed-child review resumes under fresh original authority
+
+The committed child from the October13 revision remains the only author output for this revision. Its old author preparation expired; source continuity remains independently current. The new546 mode uses committed producer DATA and an original bounded same-task/same-slot/same-root review operation, never an expired Prepared, restored author registry or renewed historical deadline.
+
+PersistentPackTaskOwner.prepare_committed_child_recheck returns a fresh process-local frame. Preparation commits before the original run_phase performs full validation, independent blind and six-role review, recheck DATA and normal readmission through the existing full-facts/import/internal-publication chain. Historical producer policy/profile and current operation profile are separately validated. Same-slot version DATA precedes491 adoption; old findings/UNKNOWN and controlled ancestry remain unchanged. No author or investigation branch is entered.
+
+Independent code review, focused static checks and actual populated prepare/validation-prepare/duplicate-denial/DDL-replay rollback passed;546 was selectively installed. The real phase then committed machine_verified validation, passed independent blind, all six approved roles and its v2 recheck receipt (seven completed provider runs). The enclosing phase remains outcome_unknown; normal readmission and admission facts are absent. This is passed review, not admission/publication or P7 completion. Do not repeat these paid reviews or relabel the phase; the operator did not retain the precise exception. Persisted receipts are DATA for a future original-owner unpaid finalization path, not restored process capabilities. Evidence and exact execution identities are retained privately under .runtime/p7-post-revision-20261013/.
+
+
+## 2026-10-13: original revision successor committed across processes
+
+The latest bounded revision succeeded after543/544 source renewal and545 exact source-reference acceptance. The earlier source-expiry, historical-currentness and parent-reference failures remain historical failed/rolled-back attempts; none was relabeled successful. The same task, canonical root `7d4b85ba-a0ec-4348-ac11-3401c6bded47`, parent and committed investigation are retained. The one542 successor is now consumed by preparation `4228be3f-a129-4c06-a531-4d69a37c1d46`.
+
+Original author PID28664 made one configured deepseek-flash request and committed its output plus settlement through541. Separate persistence PID28016 recovered only the database-authorized durable output, then committed artifact/checkpoint and lineage in the original owners. It made no HTTP requests, restored no author capability registry and preserved all old UNKNOWN/known history. Artifact `4e230bc0-dceb-4d39-bd17-bb5b2a41d8a3` is staged; generation/request/receipt match the joined database readback. Known usage: input18839 (cached10496), output2054, total20893; monetary cost remains unknown. The first156 expense records are preserved; only the157th pending event is reconciled to this receipt.
+
+Evidence: `.runtime/p7-source-mapping-successor-20261013/revision-author-20261013T141059565518Z/result-private.json` and `revision-persist-20261013T142128544206Z/result-private.json` under the same runtime directory. Revision generation/persistence/lineage acceptance is complete, not review/admission/publication or full P7 acceptance. No reauthor, investigation replay, old-output import or public release is implied.
+
+**Status:** Current runtime contract, including the approved 2026-10-12 P7 implementation boundary below.
 **Authority:** Current route registration, `aearn/services/api/app`,
 `aearn/apps/desktop`, `aearn/services/worker`, `services/learning/`,
 the manifest-ordered `app/db/schema/` fragments, and their tests.
@@ -1323,3 +1368,99 @@ Main仅两SDK文件prospective修复：verify_identity纯CPU检查enabled/exact�
 真实链完成17个去重original-owner run（不是HTTP计数）：作者/独立盲解/六审/508调查/509新作者修订/新独立盲解/新六审；两原确定性validation均machine_verified。首轮4条material争议与有效4-analysis调查、native509preparation/childartifact/lineage及native510复审preparation/receipt均真实落库。新六审全approved，但4条旧争议均`unsupported/no_clause_specific_adapter`，`historical_finding_resolved=false`；无法因新审通过宣称discharge。parent/child及旧marked祖先仍holdtrue，facts/admission_evaluation/publication0，全E/Git尚未接受。
 
 305表6309旧行与安装后全部schema定义保持，96旧历史文件保持。旧key1未结算reservation/失败/once/UNKNOWN未改；账本145原事件保持，仅追加1条至146。可观察input361315/output82742，聚合cached/reasoning/reported total/CNY及HTTP尝试数UNKNOWN。详见 `.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/real-chain-completion-progress-20261011.md`。下一增量是精确原issuer的逐争议证据适配器及后续版本化解除规则，不重跑旧suite/不刷绿/不撤销现有hold。
+
+
+### 2026-10-11 P7 normal mainline：代码接线与实际验收边界
+正常P7恢复至完整2/2/1供给与P8-P10/E路线；历史争议语义适配器暂缓，但正常调查/实质修订/新独立验证盲解六审有界循环不暂缓。已接原native practice materializer与canonical run私有注册的原terminalprepare/create，独立静态锁顺序与flags问题已修；未另建writer/成绩owner。原catalog function当前返回python.bind，native内容catalog finite.python-kc-binding-v1，230 owner SQL与原KC读取仍存在接收缺口，因此未启动正常付费包，不宣称已实际交付。用户最新确认正常新修订版本完整重验和所有原门禁通过可由原owner重新准入；该规则需要显式版本化Python/PG实现，受控后代hold、旧finding、V3盲解策略、旧once/UNKNOWN保留。完整方案见当前题库任务research/p7-normal-readmission-and-consumer-plan-20261011.md，公开消费者未启用。
+
+
+### 2026-10-11 native consumer current-owner integration checkpoint
+The original per-run native context and exact native candidate builder reach both original context loader and original teaching decision gate. Native ongoing KC actions use a new concrete current-owner mode/action permit; historical creation snapshot is not ongoing capability. Curated behavior unchanged; mandatory native transfer/remediation (including direct-answer) is rejected before receipts/CAS. Main genuinely prepared the existing actual-D course's original LessonDocument/assignment using2 provider attempt receipts (not a template), and actual original teaching/input admission passed rollback preflight. SQL521 installed and safe export/intended isolated-role checks passed; new normal-readmission522/fresh full pack/actual native terminal and action remain pending. P7/P8/E are not complete at this checkpoint.
+
+### 2026-10-12 P7 persistent demand pack (approved implementation; acceptance pending)
+
+P7 now targets one durable demand task with five stable logical slots (two practice,
+two assessment, one guided remediation), not a sequence of time-window replacement
+packs. Qualified current versions remain; unqualified items require substantive
+same-lineage revision followed by complete validation, independent blind solve and
+all six reviewers. Business completion has no fixed total duration or revision
+count. Each actual dispatch still has a finite original-owner lease, profile,
+source/current checks, request bound and cumulative canonical-root accounting.
+Internal expiry does not authorize a new wallet, replacement question, stale
+capability restore or automatic replay of an unknown paid outcome.
+
+The concrete persistent owner is opt-in and shares the original connection,
+NativeTypeEvidenceOwner and NativeExposureOwnerV2. NativeSupplyService may expose
+only its existing four-field learner projection; `preparing` requires a real
+persistent task, not a claimed generator capability. Task/status/journal JSON are
+DATA locators only. A `ready` handoff still requires a fresh original whole-pack
+capability and assessment reservation; an existing reservation is never silently
+swapped. Published shared inventory may be explicitly adopted at initial creation
+only after fresh source/content checks. Historical producer expiry alone is not
+current content invalidity.
+
+PRIVATE enhancement is a separate private authority and revision domain under
+the same demand task, never relabelled public generation or borrowed shared522
+readmission. Private original receipts, eligibility, union exposure and ordinary
+Artifact/KC consumer writes must be verified independently. Whole-base fallback
+requires an explicit real consumer wait/cancel/terminal strategy and fresh whole-
+base/union exposure; internal phase expiry by itself is not a fallback event.
+Reset/delete and epoch fences take precedence over continuation.
+
+The post-completion automatic replenishment/remote coverage campaign is deferred
+under the approved scope. The historical dispute-specific semantic adapters stay
+deferred without discharging old holds or permitting controlled descendants.
+This approval does not establish P7 completion: actual publication, normal repair,
+relationship, pack, PRIVATE and original consumer acceptance remain evidence gates.
+Formal Gate/Attempt/scorer/mastery progression belongs to P8, followed by P9/P10/E;
+no production/public release or Git operation is implied.
+
+### 2026-10-13 explicit successor: prepared in rehearsal, live source gate denied
+
+User authorized continuing through the revision stage. prepare_successor_committed_revision(task, transaction=TOP) now issues one separate bounded original execution on the same task/root/committed investigation, without restoring the consumed539 attempt. An actual rollback-only original preparation/author setup passed, then542 was installed. The Main operator separates one original author plus541 durable-output/settlement commit from a fresh-process persistence-only artifact/checkpoint/lineage operation; the local result file carries an ID, never reconstructed author authority.
+
+The real attempt started at16:02 on2026-10-13 but did not reach author dispatch: NativeRevisionOwner._parent revalidated the original task mapping and received native_mapping_current_required. The TOP transaction rolled back; preparation_committed=false, no successor event committed, investigation revision-preparation count stayed1, no new expense event, no new Aearn model call. The old source_deadlines upper bound was2026-10-13 16:09:16.360356+08:00. A rollback-only original-owner diagnostic at16:17:18+08 observed claim_resolution_denied -> source_or_claim_stale (mapping_bind / mapping_resolve). Evidence: .runtime/p7-revision-successor-20261013/revision-author-20261013T080246484215Z/result-private.json and source-boundary-readback-private.json in its parent directory. The revision stage has NOT passed.
+
+Existing AssessmentReceiptRepository.prepare -> run_source_assessment -> sign_source_assessment -> persist can issue a new proof only within current underlying capture/policy/delegation/period permissions. It does not renew an old receipt. prepare_actual_d does not provide a generic confirmed-D renewal (allow_confirmed=false); registered_course_refresh.issue is an existing bounded historical authorization, not a repeatable blanket refresh. persistent_pack_committed_revision requires the frozen investigation's exact binding_digest/claim_receipt_id/retained_until tuple, and RagSourceAuthority.assert_current requires the original expected proof apart from observation time. Therefore a new source proof cannot simply replace this frozen binding. A lawful source/confirmed-course-mapping successor connection is still required; do not edit old deadlines, remint old sender caps or retry this expired path. This pending source work is distinct from the completed541 durability implementation. Historical UNKNOWNs, the known staged/storage-failed539 result, and156 expense events remain unchanged; no P7/public release/Git completion is claimed.
+
+### 2026-10-13 original generation persistence-only recovery implemented
+
+Normal PUBLIC persistent revision now commits original observed output and author-input DATA alongside usage, before attempting artifact/checkpoint persistence. The original settlement API returns not_applicable/durable/settled_only; the persistent pack caller commits expenses then stops on settled_only. A later original writer also requires a committed output record, so ignoring that outcome does not bypass durability. Post-provider fence failure may retain the observed output as DATA but does not turn its failed returned state into recovery authority.
+
+A new SharedGenerationPipeline instance can call prepare_revision_persistence(preparation_id, source_authority=...) and commit_revision_persistence(cap) in one caller-owned transaction. After committing artifact/checkpoint, persist_revision_lineage(cap) runs in another TOP. If the process ended after artifact commit, the next owner prepares/observes the existing artifact in a read-only TOP and commits it before a later TOP writes lineage. Cap/owner identity, original complete DATA, current source/model/policy/lease and unchanged native SQL gates are enforced; there is no provider invocation, new reservation/settlement or restoration of old author registries. SQL capture_txid and cap-bound artifact/TOP observations avoid the savepoint xmin ambiguity.
+
+541 is installed;13 synthetic/seam tests, scoped Ruff/Mypy and the actual PG DATA/rollback/replay/install checks passed. Main's evidence is .runtime/p7-generation-durability-20261013/541-schema-2ec17d275c32/result.json, with independent review in .trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/p7-generation-durability-check-20261013.md. This increment made no new Aearn provider call and changed no expense history. A real-provider result recovered across an actual process boundary has not yet been exercised. Historical preparation c8593cb3-2360-48c0-a7f8-a3a69c930184 remains missing its original durable binding: no local-output import, retroactive success, P7 completion, publication or Git action is implied.
+
+### 2026-10-13 fresh revision actual outcome and540 repair
+
+The539 fresh execution made exactly one observed original author request (run949c37f5-c537-407a-990b-ebeae333a65d): staged generation, known usage18681 input/1647 output/20328 total tokens, and committed settlement. Generation insertion failed23514 before artifact/checkpoint/lineage persistence. The new expense event is updated with these observed facts; monetary cost remains unknown, old155 expense events and three historical UNKNOWNs remain unchanged. Investigation was not rerun and no second author request was issued.
+
+540 now corrects the legacy generation guard to compare against the frozen child request; actual rollback regression and selected installation passed. It does not authorize importing the captured JSON. The original process ended, settlement commits only ProviderReceiptV2 (without output/source/content hash), and no generation artifact/checkpoint was committed. Existing owner registries/reissuers cannot reconstruct the original run-to-output/author-input binding. Persistence-only cross-process recovery is therefore unsupported; restoring old capabilities, manually inserting captured output or rewriting historical results is not permitted. The one-attempt authorization is consumed. Future work must resolve this specific durable binding/recovery contract or obtain a separately bounded new execution decision, not retry the consumed539 entry. P7, lineage acceptance and public release remain incomplete.
+
+Actual live evidence: .runtime/p7-fresh-revision-20261013/revision-live-20261013T042716508119Z/result-private.json;540 installation: .runtime/p7-fresh-revision-20261013/540-install-20261013T051105381539Z/result.json. Current status is also appended to task metadata, without replacing earlier no-call/expired-window history.
+
+### 2026-10-13 fresh revision execution after a committed investigation
+
+The original core can issue a new revision-only execution window for the exact registered task/root and committed investigation, without rerunning investigation or renewing old lease/preparation/receipt dates. Its fresh original517/P3 parent, immutable PRIVATE once record and current source/epoch checks are distinct from the historical phase evidence. The original revision author/settlement/child/lineage path remains responsible for execution; ordinary phase/run and the old investigation sender are not restored.
+
+A successful original no-network TOP rehearsal is the business preparation gate; selected539 installation reused it only after checking unchanged baseline and final inputs. Live must mint another fresh graph immediately before execution and pass the original committed/provider fences. A new failure stops without an automatic second model call. Child generation alone is not blind/six-review, admission/publication, whole-pack readiness or P7 completion. Actual execution outcome is recorded in the active task metadata and existing implementation handoff.
+
+### 2026-10-13 revision-only continuation: SQL repaired, original window expired
+
+The original owner now has a separate evidence-only continuation for the registered committed investigation; it does not restore any old investigation Prepared/sender/run registry or ordinary phase execution capability. Independent static checks, Ruff and scoped Mypy (--follow-imports=silent) passed; full dependency checks are tracked separately. Actual original TOP preparation then reached the revision INSERT and failed42725 at a previously missed scalar extraction-minus expression; all318 tables/rows/schema and three retained histories were restored, network_attempts=[], ledger155 unchanged.
+
+Append-only538 completed that scalar repair after537's four array-expression repairs; both were actually installed with exact replay/rollback/metadata/row preservation. This is not successful original revision acceptance: no revision author/child/lineage ran. PG at2026-10-13T02:05:44.696605+08 confirmed that original parent lease and investigation preparation/receipt deadline2026-10-13T02:04:29.587559+08 had expired. The later parent_deadline02:44:29 does not override the expired earlier bounds. No old deadline/UNKNOWN or investigation was replayed. Current paid continuation is blocked until a separately valid new execution window/evidence path exists; do not arm the after538 gate or change timestamps to simulate it. Evidence: task research/p7-committed-revision-result-20261013.md. P7 remains incomplete.
+
+### 2026-10-13 explicit release536: one real frame.3, then stop
+
+The human-approved release permitted one new attempt despite retained uncertainty, not reuse of consumed535 or rewriting old UNKNOWN. Actual original TOP rollback/selected installation and the independent51-file gate passed. The original owner freshly issued/committed frame.3 on the same task/root, then called run_phase once at IDLE with original committed pre-provider fences.
+
+Actual phase baa4d9d7-411d-452f-acf3-ed9551c12743 / job b2c4f8cf-3600-4cc0-ab79-efcae56f4dd1 committed a completed investigation report and its UNKNOWN settlement. The report remains pending the revision owner, grants no admission/publication/blocker discharge, and observes only input24742/output4765 tokens; HTTP attempts, full-phase usage and money are not inferred. The next original NativeRevisionOwner.prepare failed at its revision-preparation INSERT with SQLSTATE22P02; no revision preparation committed. Phase outcome_unknown / opaque_stage_outcome_unknown is retained.
+
+Current database persistent_registered_family_revision_matches(jsonb), prosrc8df23b08aee40c277a320efa8df047d279250944d89157342349253aad83026b, still contains unparenthesized JSON extraction-minus expressions. A read-only DATA expression reproduced22P02 and its parenthesized control passed; this is a defect lead, not exact server error-context proof or original revision acceptance. No further migration, retry or frame.4 followed. Both old phase histories/154 expense entries and all51 frozen pins remain unchanged; ledger155 adds only this phase with partial observations. Task stays preparing/relation_required with five qualified slots; P7/public release false. The one-use binding is consumed, not renewed. Evidence: task research/p7-explicit-recovery-live-outcome-20261013.md.
+
+### 2026-10-12 investigation envelope context repair (code-only)
+
+The original investigation owner now supplies its own exact finite_review_context at all three repaired boundaries: persistent sender seal creation, `_issued` payload/envelope verification, and the persistent `_fence` finding/payload SQL argument. Caller ambient context is not a contract, and context supplies only the finite scoring declaration; all original identity/seal/current/once/reservation checks remain. Focused offline scope regressions and independent review pass; this does not establish a live recovered run.
+
+The latest same-task/root frame.2 remains UNKNOWN with committed investigation preparation and stage_started. The consumed535 permit is not reusable; neither absence of a receipt nor stage_started alone determines HTTP count. This code-only repair changes no database/schema/accounting or historical pin manifest and authorizes no retry or P7/public release. Evidence: `.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/p7-envelope-context-repair-check-20261012.md`.

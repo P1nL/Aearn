@@ -41,6 +41,9 @@ from app.services.learning.item_supply.diagnostic_policy import (
 from app.services.learning.item_supply.validation_adapter import CandidateValidationV2
 
 if TYPE_CHECKING:
+    from app.services.learning.item_supply.persistent_pack_committed_admission import IssuedCommittedChildAdmission
+    from app.services.learning.item_supply.shared_admission_facts_contracts import IssuedSharedAdmissionFactsV1
+    from app.services.learning.item_supply.shared_generation_durability import IssuedRevisionGenerationPersistence
     from app.services.learning.item_supply.controlled_counterexample import ControlledCounterexampleOwner
     from app.services.learning.item_supply.native_revision import NativeRevisionOwner, PreparedNativeRevision
     from app.services.learning.item_supply.shared_pipeline_contracts import PreparedSharedGeneration
@@ -277,7 +280,8 @@ class SharedPipelineArtifactRepository:
                          revision_preparation: PreparedNativeRevision | None = None,
                          revision_generation: PreparedSharedGeneration | None = None,
                          controlled_owner: ControlledCounterexampleOwner | None = None,
-                         controlled_generation: PreparedSharedGeneration | None = None) -> dict[str, Any]:
+                         controlled_generation: PreparedSharedGeneration | None = None,
+                         persistence: IssuedRevisionGenerationPersistence | None = None) -> dict[str, Any]:
         original_result = result
         request = checked_model(request, GenerationRequestV2)
         result = checked_model(result, GenerationResultV2)
@@ -294,7 +298,20 @@ class SharedPipelineArtifactRepository:
         elif controlled_owner is not None or controlled_generation is not None:
             raise PipelineRepositoryError("CONTROLLED_FROZEN_PARENT_REQUIRED")
         revision = self.revision_preparation(lease,request)
-        if revision is not None:
+        if persistence is not None:
+            from app.services.learning.item_supply.shared_generation_durability import (
+                IssuedRevisionGenerationPersistence, RevisionGenerationDurability,
+            )
+            if (type(persistence) is not IssuedRevisionGenerationPersistence or revision is None or controlled is not None
+                    or type(persistence.owner) is not RevisionGenerationDurability or persistence.owner.conn is not self.conn
+                    or any(v is not None for v in (revision_owner,revision_preparation,revision_generation,controlled_owner,controlled_generation))
+                    or persistence.owner.generation.artifacts is not self or persistence.request != request
+                    or persistence.result != result or persistence.source_authority is not source_authority):
+                raise PipelineRepositoryError("GENERATION_PERSISTENCE_ISSUER_REQUIRED")
+            output,_,current_lease = persistence.owner.verify(persistence)
+            if output["preparation_id"] != revision["id"] or lease != current_lease:
+                raise PipelineRepositoryError("GENERATION_DURABLE_BINDING_CHANGED")
+        elif revision is not None:
             from app.services.learning.item_supply.native_revision import NativeRevisionOwner
 
             if (type(revision_owner) is not NativeRevisionOwner or revision_owner.conn is not self.conn
@@ -489,3 +506,30 @@ class SharedPipelineArtifactRepository:
     def _key(key: str) -> None:
         if re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,159}", key) is None:
             raise PipelineRepositoryError("PIPELINE_ARTIFACT_KEY_INVALID")
+
+    def store_committed_evaluation(self, frame: IssuedCommittedChildAdmission, *, facts: IssuedSharedAdmissionFactsV1) -> dict[str, Any]:
+        """Explicit current admission action; evidence binding keeps the historical review profile."""
+        from app.services.learning.item_supply.persistent_pack_committed_admission import require
+        require(frame)
+        self.require_owner()
+        if self.conn is not frame.owner.conn or facts.receipt_id != frame.admission_id:
+            raise PipelineRepositoryError("COMMITTED_ADMISSION_EVALUATION_OWNER_REQUIRED")
+        frame.facts_owner.verify(facts,lease=frame.lease)
+        stored = self.conn.execute("SELECT payload_hash,xmin::text::bigint=(txid_current() %% 4294967296) AS same_transaction "
+            "FROM tutor_item_supply_shared_admission_facts WHERE id=%s FOR SHARE",(facts.receipt_id,)).fetchone()
+        if stored is None or stored["same_transaction"] or stored["payload_hash"] != facts.receipt_hash:
+            raise PipelineRepositoryError("COMMITTED_ADMISSION_COMMITTED_FACTS_REQUIRED")
+        data = facts.evaluation.model_dump(mode="json")
+        q,lease = frame.quality,frame.lease
+        if (facts.evaluation.binding != q.bundle.binding or facts.evaluation.publication_enabled
+                or type(facts.evaluation) is not AdmissionEvaluationV3):
+            raise PipelineRepositoryError("COMMITTED_ADMISSION_ORIGINAL_EVALUATION_REQUIRED")
+        row = self.conn.execute("INSERT INTO tutor_item_supply_shared_pipeline_receipts "
+            "(job_id,lease_owner,lease_generation,lease_state_version,generation_artifact_id,item_id,version_id,source_hash,content_hash,"
+            "artifact_key,artifact_kind,schema_version,payload_json,continuation_binding_hash) VALUES("+",".join(["%s"]*14)+") RETURNING *",
+            (lease.job_id,lease.lease_owner,lease.generation,lease.state_version,facts.generation_artifact_id,facts.item_id,facts.version_id,
+            q.source.source_hash,q.source.content_hash,"native_admission."+facts.receipt_id.hex,"admission_evaluation",
+            data["schema_version"],Jsonb(data),None)).fetchone()
+        if row is None or row["receipt_hash"] != canonical_hash(data):
+            raise PipelineRepositoryError("COMMITTED_ADMISSION_EVALUATION_CONFLICT")
+        return row

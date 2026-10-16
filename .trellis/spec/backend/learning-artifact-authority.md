@@ -161,3 +161,61 @@ The correct path validates exact authority and idempotency before the callback, 
 - Recheck run/session/checkpoint/assignment/document/hash/block/citation during the existing atomic teaching terminal commit. Message, checkpoint/action receipt, source Artifact/event and run terminal must roll back together.
 - Associate new sources with the real run and committed checkpoint; source_inspection remains readonly/nonblocking with no Attempt, score, progress or automatic continuation.
 - Preserve old manual/null-turn sources and legacy remediation sources for reads without presenting them as evidence of Tutor-driven generation. Do not rewrite published Skill versions or relax budget/retry limits.
+
+
+## 2026-10-11 native practice per-run terminal接线（代码已静态核验，真实catalog消费者未闭合）
+
+### 1. Scope / trigger
+正常P7完整native包的selected practice进入原Tutor terminal Artifact writer；不是新的writer/评分系统，不涉及历史finding解除或正式Gate成绩写权。代码静态核验与真实交付必须分层。
+
+### 2. Signatures
+- `NativeTeachingPracticeDeliveryContext(exposure_owner, mapping_receipt_id, reservation_key, selected_version_id)`：具体原NativeExposureOwnerV2/type owner，同connection/current namespace。
+- `PostgresTeachingArtifactMaterializer(conn, settings=..., native_practice_delivery=context|None)`：defaultNone保留legacy。
+- `PostgresTutorRepository.register_native_teaching_practice_delivery(run_id=actual_run, context=context)`：仅该repository实例内、该canonical run，供原complete_run的atomic prepare/create使用；无HTTP/JSON注入入口。
+- 原prepared对象可交新materializer.create，但connection/settings/transaction及原对象身份必须一致。
+
+### 3. Contracts
+Native先无锁discovery，原current source→bank锁顺序，bank锁后fresh row/clock/refence；default无context时不增加nativeSQL。既有mapping、完整pack、exposure、selected practice、public/source/content/materialization及user/epoch/track/revision/node/turn/session/checkpoint严格闭合。原prepare_practice_delivery在同一事务先于原writer，后续capture不由helper伪造。nativecreate在入口与最终writer前重验两个Artifact flags，settings对象身份相等不替代flag值。
+原curated来源及catalog equality未放宽；任意registered_author不能只凭标签进入。无private假handle、无publication/grade/progress新权限。
+
+### 4. Validation / errors
+| 条件 | 必须结果 |
+| --- | --- |
+| foreign/cloned/prepared marker-erased、错connection/settings/run/txid | 拒绝，不恢复JSON能力 |
+| wrong selected practice/mapping/user/epoch/goal/content/current source/exposure | 拒绝 |
+| 任一Artifact开关关闭或source锁等待后失效 | writer前拒绝 |
+| 仅reservation/delivery DATA，没有原writer成功 | 不声明Artifact交付 |
+| actual catalog python.bind与native finite.python-kc-binding-v1不等 | 现行Python及230 SQL接收端仍拒绝；ScopedV2 DTO不是越权豁免 |
+
+### 5. Good/base/bad
+Good：具体原owner/current capability→原terminal同事务prepare/create/capture。Base：defaultNone的curated路径保持。Bad：只去掉source_kind/catalog谓词，先提交delivery许可再写Artifact，settingsidentity当开关开启证据。
+
+### 6. Focused verification / remaining gates
+三文件scoped Ruff/Mypy、AST及独立静态P1锁顺序/P2flags修复复核通过；未运行旧suite。实际fresh5成员/真实关系/完整包/原terminal delivery及必要rollback未通过；native catalog original receiver与KC后续action读取尚未接通，见任务research/p7-native-catalog-bridge-gap-20261011.md。未宣称P7/P8/E完成。
+
+### 7. Wrong vs correct
+Wrong：FCO mapping和complete exposure通过即说明所有Artifact/KC/Run接收端支持native。Correct：496/501/502可以分离public内容与private目标身份，但230/220/原KC owner的独立catalog predicate仍须用明确新版原consumer bridge闭合；禁止强贴别名或改写旧confirmed plan。
+
+
+## 2026-10-11 explicit native catalog bridge / original ongoing KC consumer
+
+### 1. Scope / Trigger
+For the explicitly allowlisted finite Python KC native practice in a genuine confirmed private course, bridge different catalog domains at original consumers; do not alias or rewrite frozen D. SQL521 is now selected-installed in B1d, not global/public rollout or live P7 completion.
+
+### 2. Signatures
+Original repository per-run `register_native_teaching_practice_delivery(run_id,context)`; `NativeTeachingArtifactCandidateBuilder(repository,conn=...,settings=...).register_delivery(...)`; inject builder in original learning loader AND `TeachingSessionRepository(...,artifact_candidate_builder=builder.for_run(run_id))` used by the decision gate. Original `LearningItemArtifactOwnerAdapter(native_consumer_owner=NativeArtifactConsumerOwner(conn,settings,type_owner=original_type_owner,enabled=True))` consumes via original `LearningArtifactService.act`. Defaults remain absent/off. SQL521 adds private consumer receipts and artifact bindings and narrowly replaces effective230 original owner receiver.
+
+### 3. Contracts
+Private catalog `python.bind` and public finite catalog `finite.python-kc-binding-v1` each retain identity; concrete current FCO/501/502 owner proves mapping, source, full pack, selected version/materialization and same-TX delivery. Original curated equality is unchanged. Creation authority and later actions are separate: ongoing owner freshly checks current mapping/source/published content/epoch/artifact, never restores old30sec snapshot/JSON capability. Issued consume/cancel permits bind both mode AND exact action; cancel cannot grant hints/answers/respond. Mandatory native remediation/transfer is unsupported before receipt/CAS, including direct-answer; ordinary correct and direct-explanation wrong responses use original scorer. No new Run/Gate/mastery authority.
+
+### 4. Validation & Error Matrix
+No concrete context/current pack/wrong scope/version/owner/epoch => reject; missing native receiver receipts => reject; disabled feature flags => reject at prepare/create/current use; unsupported successor => reject before assistance/response/CAS; native source retired/revoked => deny content without silently swapping active item; cancel remains distinct original ownership action. Same connection must be autocommitFalse for native owner; production interactive dispatcher uses autocommitTrue, so Main's allowlisted composition uses original loop/loader/repo/gate/lifecycle with explicit boundaries and commits before real provider IO, never relaxes native guard.
+
+### 5. Good / Base / Bad Cases
+Good: current exact native mapping + current complete pack + genuine model-selected advertised native handle + original terminal writer + new ongoing native owner reply. Base: curated calls remain original strict equality. Bad: string alias, registered-author blanket admission, reserve=delivery, old receipt JSON restoration, or a cancel token used for respond.
+
+### 6. Tests Required
+Independent final static A PASS, scoped lint/types, Main exact521 compile/replay/rollback/old6707rows-preservation/install, ten installed helper pins and intended isolated-role EXECUTE, missing receipt negative and original safe export passed. Fresh complete five-member pack, original genuine terminal/Artifact/KC action and populated private reset/export acceptance still pending; do not mark P7/E complete from these checks. No new test files/full old suite replay.
+
+### 7. Wrong vs Correct
+Wrong: only loader advertises native but the original decision gate rebuilds curated candidates and rejects the handle; or access `source.private.accepted_answers`. Correct: same per-run concrete builder reaches both original consumers, and post-terminal private-only synthetic QA reads `source.private.content.accepted_answers`, never puts gold into provider/blind inputs or claims learner efficacy.

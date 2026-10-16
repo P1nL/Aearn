@@ -32,7 +32,7 @@ from app.services.learning.item_supply.provider_adapter import OpenAICompatibleG
 from app.services.learning.item_supply.rag_evidence_adapter import RagSourceAuthority
 from app.services.learning.item_supply.repository import ItemSupplyRuntimeRepository
 from app.services.learning.item_supply.shared_pipeline_contracts import (
-    PreparedSharedGeneration, SharedPipelineStageResult, native_request,
+    GenerationSettlementOutcome, PreparedSharedGeneration, SharedPipelineStageResult, native_request,
 )
 from app.services.learning.item_supply.shared_pipeline_repository import (
     SharedPipelineArtifactRepository, generation_resources,
@@ -43,6 +43,7 @@ from app.services.learning.item_supply.native_revision_contracts import (
 )
 
 if TYPE_CHECKING:
+    from app.services.learning.item_supply.shared_generation_durability import IssuedRevisionGenerationPersistence
     from app.services.learning.item_supply.controlled_case_execution import ControlledCaseExecutionOwner, IssuedControlledCaseExecution
     from app.services.learning.item_supply.native_revision import NativeRevisionOwner, PreparedNativeRevision
 
@@ -82,6 +83,9 @@ class SharedGenerationPipeline:
         self._results: dict[UUID, GenerationResultV2] = {}
         self._revision: dict[UUID, tuple[NativeRevisionOwner, PreparedNativeRevision, NativeRevisionAuthorTrace]] = {}
         self._revision_inputs: dict[UUID, tuple[NativeRevisionAuthorInputBindingV1, str]] = {}
+        self._observed_revision_outputs: dict[UUID, tuple[GenerationResultV2, str]] = {}
+        from app.services.learning.item_supply.shared_generation_durability import RevisionGenerationDurability
+        self.persistence = RevisionGenerationDurability(self)
         self.counterexamples = ControlledCounterexampleOwner(self,enabled=controlled_counterexample_enabled)
 
     def prepare_controlled_counterexample(self, *, lease: JobLeaseV1, request: GenerationRequestV2,
@@ -102,6 +106,17 @@ class SharedGenerationPipeline:
     def generation_enabled(self) -> bool:
         return (self.enabled and self.settings.learning_item_supply_enabled
                 and self.settings.learning_item_generation_enabled and self.settings.learning_item_network_enabled)
+
+    def prepare_revision_persistence(self, preparation_id: UUID, *, source_authority: RagSourceAuthority) -> IssuedRevisionGenerationPersistence:
+        """Fresh persistence-only capability from committed original output; no IO permission."""
+        return self.persistence.prepare(preparation_id, source_authority=source_authority)
+
+    def commit_revision_persistence(self, cap: IssuedRevisionGenerationPersistence) -> SharedPipelineStageResult:
+        return self.persistence.commit(cap)
+
+    def persist_revision_lineage(self, cap: IssuedRevisionGenerationPersistence) -> UUID:
+        """Separate TOP transaction AFTER artifact/checkpoint commit."""
+        return self.persistence.lineage(cap)
 
     @staticmethod
     def _seal(prepared: PreparedSharedGeneration) -> str:
@@ -260,6 +275,10 @@ class SharedGenerationPipeline:
             result = generate_candidate(prepared.request, provider=provider,
                 source_authority=_PreparedSources(prepared.sources), enabled=True,
                 supplemental_context=context, revision_trace=revision[2], deadline_at=deadline)
+            if result.state == "staged":
+                observed_result = checked_model(result, GenerationResultV2)
+                self._observed_revision_outputs[prepared.reservation_id] = (
+                    observed_result, canonical_hash(observed_result.model_dump(mode="json")))
             if revision[2].binding is not None:
                 observed = checked_model(revision[2].binding, NativeRevisionAuthorInputBindingV1)
                 self._revision_inputs[prepared.reservation_id] = (observed, canonical_hash(observed.model_dump(mode="json")))
@@ -289,7 +308,7 @@ class SharedGenerationPipeline:
             raise PipelineRepositoryError("GENERATION_SETTLEMENT_IDENTITY_MISMATCH")
         return result
 
-    def settle_generation(self, prepared: PreparedSharedGeneration, result: GenerationResultV2) -> None:
+    def settle_generation(self, prepared: PreparedSharedGeneration, result: GenerationResultV2) -> GenerationSettlementOutcome:
         """Caller commits even if the later lease/source fence fails; unknown stays reserved."""
         self.artifacts.require_owner()
         result = self._result(prepared, result)
@@ -308,6 +327,7 @@ class SharedGenerationPipeline:
             settlement_key=f"generation.{prepared.request.candidate_id.hex}",
             usage_state="known" if actual is not None else "unknown", actual=actual, cost_amount=None,
             receipt_hash=canonical_hash(provider.model_dump(mode="json")) if actual is not None and provider is not None else None)
+        return self.persistence.capture(prepared, result)
 
     def commit_generation(self, prepared: PreparedSharedGeneration, result: GenerationResultV2, *,
                           source_authority: RagSourceAuthority) -> SharedPipelineStageResult:
@@ -340,6 +360,8 @@ class SharedGenerationPipeline:
                 artifact_key=f"generation.{prepared.request.candidate_id.hex}", now=now, source_authority=source_authority)
         else:
             revision[0].generation_context(revision[1],lease=lease,request=prepared.request,committed=True)
+            if self.persistence.required(prepared):
+                self.persistence.committed_output(revision[1].preparation_id)
             row = self.artifacts.store_generation(lease=lease,request=prepared.request,result=original_result,
                 artifact_key=f"generation.{prepared.request.candidate_id.hex}",now=now,source_authority=source_authority,
                 revision_owner=revision[0],revision_preparation=revision[1],revision_generation=prepared)

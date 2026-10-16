@@ -5,6 +5,7 @@ READ COMMITTED transaction, before the original Artifact writer. No Gate effects
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -22,6 +23,13 @@ from app.services.learning.item_supply.native_type_exposure_contracts import (
 from app.services.learning.item_supply.pack_contracts import CompleteExposureV2, NativeExposureV2, PackSnapshotV2
 from app.services.learning.item_supply.repository import server_clock
 from app.services.learning.item_supply.type_evidence import ContentIdentityV2, assessment_clone
+
+
+@dataclass(frozen=True)
+class _ExposureHistory:
+    # Exact original inbox/event rows, including metadata, not just version IDs.
+    manifest: dict[str, Any]
+    contents: dict[UUID, Any]
 
 
 def _ids(values: tuple[UUID, ...], *, maximum: int) -> tuple[UUID, ...]:
@@ -68,28 +76,83 @@ class NativeExposureOwnerV2:
         self.collector.private._check_epoch()
         return server_clock(self.conn, datetime.now(UTC))
 
+    def _history_manifest(self) -> dict[str, Any]:
+        self._lock()
+        rows = self.conn.execute(
+            "SELECT to_jsonb(i) AS inbox,to_jsonb(e) AS event "
+            "FROM tutor_item_supply_native_exposure_inbox i "
+            "LEFT JOIN tutor_item_supply_native_exposure_events e ON e.inbox_id=i.id "
+            "AND e.user_id=i.user_id AND e.epoch=i.epoch "
+            "WHERE i.user_id=%s AND i.epoch=%s ORDER BY i.sequence LIMIT 4097",
+            (self.user_id, self.epoch),
+        ).fetchall()
+        birth = self.conn.execute("SELECT to_jsonb(b) AS birth FROM tutor_item_supply_native_exposure_births b "
+            "WHERE user_id=%s AND epoch=%s", (self.user_id, self.epoch)).fetchall()
+        hooks = self.conn.execute("SELECT item_supply_internal.native_exposure_hooks_current() AS current").fetchone()
+        counts = self.conn.execute("SELECT COALESCE(max(sequence),0) AS watermark,count(*) AS total "
+            "FROM tutor_item_supply_native_exposure_inbox WHERE user_id=%s AND epoch=%s",
+            (self.user_id, self.epoch)).fetchone()
+        if (len(rows) > 4096 or not birth or hooks is None or hooks['current'] is not True
+                or counts is None or counts['total'] != len(rows)
+                or any(r['inbox']['kind'] != 'metadata' and r['event'] is None for r in rows)):
+            raise NativeTypeExposurePending("native_type_exposure_history_mismatch")
+        return {'rows': rows, 'birth': birth, 'hooks': hooks, 'counts': counts}
+
+    def _prepare_history(self) -> _ExposureHistory:
+        self._lock()
+        pending = self.collector.collect()
+        if pending:
+            raise NativeTypeExposurePending(pending)
+        manifest = self._history_manifest()
+        contents = {}
+        for row in manifest['rows']:
+            event = row['event']
+            if event is None:
+                continue
+            resolved = self.type_owner.resolve_content(UUID(event['version_id']), current=False)
+            binding = event['binding_json']
+            if (event['proof_id'] != str(resolved.publication.proof_id)
+                    or binding['proof_hash'] != resolved.publication.proof_hash
+                    or event['binding_hash'] != canonical_hash(binding)
+                    or (binding['item_handle'], binding['content_hash'])
+                    != (resolved.content.item_handle, resolved.content.content_hash)):
+                raise NativeTypeExposurePending("native_type_exposure_content_mismatch")
+            contents[resolved.content.version_id] = resolved
+        return _ExposureHistory(manifest, contents)
+
     def snapshot_v2(self) -> NativeTypeExposureSnapshot:
         self._lock()
+        scoped = self.type_owner._scoped_observation(self)
+        if scoped is not None:
+            return scoped
+        try:
+            history = self._prepare_history()
+        except (NativeTypeExposurePending, NativeTypeEvidencePending) as exc:
+            return NativeTypeExposureSnapshot("pending", str(exc))
+        return self._snapshot_from_history(history)
+
+    def _snapshot_from_history(self, history: _ExposureHistory) -> NativeTypeExposureSnapshot:
+        self._lock()
+        if self._history_manifest() != history.manifest:
+            raise NativeTypeExposurePending("native_type_exposure_history_changed")
         original = self.collector.snapshot()
         if original.exposure is None or original.watermark_id is None:
             return NativeTypeExposureSnapshot("pending", original.safe_reason)
-        rows = self.conn.execute(
-            "SELECT i.id,i.kind,e.version_id,e.binding_json FROM tutor_item_supply_native_exposure_events e "
-            "JOIN tutor_item_supply_native_exposure_inbox i ON i.id=e.inbox_id AND i.user_id=e.user_id AND i.epoch=e.epoch "
-            "WHERE e.user_id=%s AND e.epoch=%s ORDER BY i.sequence", (self.user_id, self.epoch),
-        ).fetchall()
+        # Original collector clocks only after its complete locked collection.
+        # Recheck the complete exact set, never re-stamp a pre-read manifest.
+        if self._history_manifest() != history.manifest:
+            raise NativeTypeExposurePending("native_type_exposure_history_changed")
+        rows = [r for r in history.manifest['rows'] if r['event'] is not None]
         if len(rows) != len(original.exposure.records):
             return NativeTypeExposureSnapshot("pending", "native_type_exposure_history_mismatch")
         records = []
         for row, old in zip(rows, original.exposure.records, strict=True):
-            try:
-                resolved = self.type_owner.resolve_content(UUID(str(row["version_id"])), current=False)
-            except NativeTypeEvidencePending:
-                return NativeTypeExposureSnapshot("pending", "native_type_exposure_origin_unmapped")
+            event, inbox = row['event'], row['inbox']
+            resolved = history.contents[UUID(event['version_id'])]
             content = resolved.content
-            if (UUID(str(row["id"])) != old.event_id or row["kind"] != old.kind
+            if (UUID(inbox["id"]) != old.event_id or inbox["kind"] != old.kind
                     or (content.item_handle, content.content_hash) != (old.item_handle, old.content_hash)
-                    or content.version_id != UUID(str(row["version_id"]))):
+                    or content.version_id != UUID(event["version_id"])):
                 return NativeTypeExposureSnapshot("pending", "native_type_exposure_content_mismatch")
             records.append(NativeExposureV2(**old.model_dump(), content=content))
         manifest = {"original_watermark_id": str(original.watermark_id),
@@ -106,13 +169,35 @@ class NativeExposureOwnerV2:
              exposure.observed_at, exposure.valid_until))
         return NativeTypeExposureSnapshot("complete", "native_type_exposure_current", exposure, snapshot_id, original.watermark_id)
 
+    def _effect_observation(self) -> NativeTypeExposureSnapshot:
+        """Exact scoped DATA for one atomic effect; _pack still fences authority."""
+        self._lock()
+        scoped = self.type_owner._current_pack_data()
+        if scoped is None:
+            return self.snapshot_v2()
+        if (scoped.exposure_owner is not self or scoped.observation is None
+                or scoped.capability is None):
+            raise NativeTypeExposurePending('native_type_pack_exact_scope_required')
+        self.type_owner._guard()
+        return scoped.observation
+
     def _pack(self, *, mapping_receipt_id: UUID, candidate_version_ids: tuple[UUID, ...],
               relation_receipt_ids: tuple[UUID, ...], observation: NativeTypeExposureSnapshot) -> tuple[UUID, PackSnapshotV2]:
         if observation.exposure is None or observation.snapshot_id is None:
             raise NativeTypeExposurePending(observation.safe_reason)
-        capability = self.type_owner.resolve_pack(mapping_receipt_id=mapping_receipt_id,
-            candidate_version_ids=candidate_version_ids, exposure_snapshot_id=observation.snapshot_id,
-            relation_receipt_ids=relation_receipt_ids)
+        scoped = self.type_owner._current_pack_data()
+        if scoped is None:
+            capability = self.type_owner.resolve_pack(mapping_receipt_id=mapping_receipt_id,
+                candidate_version_ids=candidate_version_ids, exposure_snapshot_id=observation.snapshot_id,
+                relation_receipt_ids=relation_receipt_ids)
+        else:
+            self.type_owner._validate_pack_refs(candidate_version_ids, relation_receipt_ids)
+            if (scoped.exposure_owner is not self or scoped.observation is not observation
+                    or scoped.capability is None or mapping_receipt_id != scoped.mapping_id
+                    or set(candidate_version_ids) != set(scoped.versions)
+                    or set(relation_receipt_ids) != set(scoped.relation_ids)):
+                raise NativeTypeExposurePending('native_type_pack_exact_scope_required')
+            capability = scoped.capability
         pack = self.type_owner.require_pack(capability)
         self._lock()
         fence = self.conn.execute("SELECT item_supply_internal.type_exposure_current(%s,%s,%s) AS exposure",
@@ -136,7 +221,7 @@ class NativeExposureOwnerV2:
         key = stable_key(operation_key, label="native type reservation")
         candidates = _ids(candidate_version_ids, maximum=16)
         relations = _ids(relation_receipt_ids, maximum=16)
-        observation = self.snapshot_v2()
+        observation = self._effect_observation()
         eligibility_id, pack = self._pack(mapping_receipt_id=mapping_receipt_id,
             candidate_version_ids=candidates, relation_receipt_ids=relations, observation=observation)
         assert observation.exposure is not None
@@ -167,7 +252,7 @@ class NativeExposureOwnerV2:
         if reserved is None:
             raise NativeTypeExposurePending("native_type_reservation_required")
         request = reserved["request_json"]
-        observation = self.snapshot_v2()
+        observation = self._effect_observation()
         eligibility_id, pack = self._pack(mapping_receipt_id=UUID(request["mapping_receipt_id"]),
             candidate_version_ids=tuple(UUID(v) for v in request["candidate_version_ids"]),
             relation_receipt_ids=tuple(UUID(v) for v in request["relation_receipt_ids"]), observation=observation)

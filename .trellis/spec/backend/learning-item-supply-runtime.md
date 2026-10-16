@@ -68,3 +68,46 @@ Bad: generate a new client key to reset the budget; record unknown cost as free;
 Wrong: P3 tests passed, therefore the real item bank and E are ready; a new profile gets a fresh cost root.
 
 Correct: P3 acceptance proves the internal repository/controller boundaries only. New profiles affect future work but retain canonical accounting; real generation/review/execution/publication and E need their own evidence and authorization.
+
+## PRIVATE development accounting-only scope (SQL551 isolated acceptance installation, 2026-10-15)
+
+- This isolated default-off original owner is model-resource accounting, not source, dispatch, quality or delivery authority. PrivateDevelopmentModelAccountingOwner prepares fresh atomic locator-only batches on the existing same-user/epoch/scope canonical enhancement root, binds an actual unspent first-claim job before any model reservation, and rereads original controls and clocks after locks. PUBLIC517 remains separate.
+- Tagged batch selects exactly its own one PRIVATE window,32 global and8 user nominal-positive cap1 rows; only freshly validated accounting_only mode skips cumulative root/global/user comparisons. Execution/fetch denial, original per-operation profiles/lease/breaker/once and all allocation/UNKNOWN settlement remain. Ordinary PRIVATE/PUBLIC limits and funding exclude development nominal rows but retain normal cumulative gates. Finite64 is never called unlimited.
+- Anonymous SHARED global-limit classification contains no user/epoch/scope/root/job/batch/content mapping and survives PRIVATE purge; otherwise cap1 would become ordinary after deletion of private mappings. New PRIVATE batches/maps have original composite ownership FKs and safe export-compatible id/scope_id/created_at; ordinary mutation denies. Only original permitted epoch+1 maintenance deletes new job maps then batches before original450 targets; no second purger or oldSQL edit.
+- Original private task anchors use the exact immutable task.demand_id ANDscope_id. Equal practice/assessment scope alone is insufficient: unique stored/pack entries plus full demand.scope/blueprint/objective/policy must equal genuine assessment contract; remediation/different/ambiguous anchor denies. Preserve actual task identity and original ensure_private_root verification.
+- New phase/profile parent and stage bounds fit both genuine current SOURCE expiry and accounting deadline; formal request and bounded preparation/claim allowance stay unchanged. Insufficient remaining lifetime denies before enqueue/IO; actual claimed lease/profile deadlines are checked again. Never extend source, historical profile/window, UNKNOWN or consumed once.
+- Main actual selected551 compile/replay and populated original root/firstclaim/reserve2>nominal1/export/permitted purge were proven only in full rollback with0HTTP; these are not installation or fullP7 acceptance. Original privacy/source/quality/enhancement/Artifact acceptance remains separate.
+
+- Subsequent Main selected551-554 compile/replay/full rollback and complete original author preparation/late current fence PASS were followed by isolated installation at2026-10-15 11:48 Beijing. This does not rewrite prior rollback evidence, change ordinary/private cumulative caps, enable public flags or prove actual model/quality/Artifact acceptance. Ordinary funding supplies legacy resource_cap=caps.candidates=5 and preserves disabled execution/fetch caps0; SQL553 allows0 only for those two non-model kinds, keeping all model/candidate/round caps positive.
+
+
+## C18 fixed durable-output persistence phase (2026-10-16; implementation, live acceptance separate)
+
+### 1. Scope / trigger
+An expired author lease does not invalidate a real committed SQL560 output, and does not authorize reauthoring it. C18 is explicitly approved for exactly one new original-owner persistence/quality phase for output f4519c66-4130-4e34-b053-64dba6214dcb. Installed <=561 remains immutable; SQL562 is a selected forward slice. This section does not assert installation or P7 completion; Main's task evidence controls actual status.
+
+### 2. Signatures
+PrivateEnhancementService.generation_persistence_phase_owner() returns the separate PrivateGenerationPersistencePhaseOwner. Its issue(task_ref, output_id) prepares A; persist(cap) writes B; executor.adopt_persisted_phase(cap) and prepare_persistence_phase_review(handoff) prepare C. Original run_initial_recovery_review runs only after C commit and IDLE.
+SQL public-to-Python surface is item_supply_internal.private_generation_persistence_phase_{ready(),first_claim(uuid,uuid,uuid,uuid),bound(uuid,uuid),complete(uuid,uuid,uuid),committed(uuid,uuid)}. Internal completed_data(uuid) proves historical facts, not live work authority. The two new trigger functions enforce closed insert facts and A/B deferred atomicity. Exact signatures, keys and payloads remain in the C18 task wire contract and SQL562.
+
+### 3. Contracts
+Original request/result/profile/source/receipt/known settlement and original558 consume remain unchanged. The new writer profile, lease, accounting batch and slot phase are a distinct authority domain. A has deterministic output binding and caller-owned TOP; B preserves original request.profile while storing the new writer job, then original generating checkpoint and completion. A/B server xid8 markers must differ; released savepoints are not commits. C requires actual committed B and a separate concrete quality cap. No author, author reservation, resettlement, old capability restoration, or automatic second phase/restart API.
+
+### 4. Validation and error matrix
+- Wrong output/ref, copied or nested-mutated cap, changed generation DATA: deny; no new phase rights.
+- Same TOP A/B or B/C: deny with prior-TOP binding/completion requirement.
+- A missing accounting/slot phase or B missing artifact/checkpoint/completion: deferred rejection, whole caller transaction rolls back.
+- Expired/reclaimed/renewed writer or stale source: deny; no extending historical/current deadlines to pass.
+- Historical completed publication/review_failed: exact immutable provenance and full quality predicates remain readable without claiming the writer is current.
+- Original accounting_batch_for_lease returns a projection with batch_id, not a raw table row with id.
+
+### 5. Good / base / bad cases
+Good: committed560 output -> new exact first claim/accounting/phase A commit -> B commit -> C prepare commit -> original quality once. Base: ordinary/C17 profile equality and original expiry denials remain. Bad: substituting a new profile into the historical request, using a local JSON file as an issuer, or relabeling artifact persistence as quality/publication.
+
+### 6. Required focused evidence
+Use C18 Python and schema tests, directly affected C17/C16/C14 regressions, selected migration compile/replay/catalog/history rollback, original A rollback and actual separate B/C gates. These scopes are distinct. A fixture must mirror the real accounting projection; A batch/enqueue test asserts caller transaction depth1 and complete rollback. Clock regressions assert actual frozen-profile clock order and server-owned binding time. Native quality readback joins the exact review preparation/artifact/reservation to the matching native blind payload, not generic pipeline receipt kinds.
+
+### 7. Wrong vs correct: original transaction and clock domains
+Wrong: adding a nested SAVEPOINT around SQL551 prepare_batch. Its installed fresh-global-row receiver checks the original TOP transaction identity. Correct: A preparation remains in the caller's atomic TOP; keep B's intentional savepoint and server complete-TOP proof separately.
+Wrong: compare job.created_at (DEFAULT now()) or control.updated_at (450 trigger forces now()) to a later clock_timestamp() as equal/ordered generation evidence. Correct: compare original server-clock batch.started_at with frozen profile.bound_at; SQL562's binding BEFORE trigger validates the incoming current bounds and writes its own final clock_timestamp(). Never modify450/551, extend a deadline, or use raw xmin as new commit proof.
+PostgreSQL's current date/time documentation was checked for the distinct now()/clock_timestamp() meanings: `https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT`.
