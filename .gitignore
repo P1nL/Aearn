@@ -13,7 +13,12 @@
 .playwright-cli/
 .omc/
 .claude/worktrees/
-docs/.obsidian/
+/.claude/settings.local.json
+/.claude/.credentials.json
+/.codex/auth.json
+/.archify/
+# Vault settings and plugin data can contain credentials at any depth.
+.obsidian/
 
 # Runtime dependencies and build outputs.
 **/node_modules/
@@ -52,6 +57,76 @@ coverage.xml
 *.log
 *.pid
 
+# Private keys and signing/password containers; keep public PEM/CRT/PUB files.
+*.key
+*.private.pem
+*-private.pem
+*_private.pem
+*.key.pem
+*-key.pem
+*_key.pem
+private.pem
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+id_ecdsa_sk
+id_ed25519_sk
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+
+# Local credential files and cloud/container authentication caches.
+.credentials/
+.secrets/
+credentials.json
+credentials.yaml
+credentials.yml
+credentials.local.*
+*.credentials.json
+**/.aws/credentials
+**/.aws/sso/cache/
+**/.aws/cli/cache/
+.azure/
+**/.kube/config
+**/.docker/config.json
+.netrc
+_netrc
+.pypirc
+
+# Browser/session authentication state, not application auth source code.
+.auth/
+.browser-profile/
+storage-state.json
+storageState.json
+storage_state.json
+*.storage-state.json
+auth-state.json
+cookies.json
+cookies.txt
+*.cookies.json
+*.cookies.txt
+
+# Database exports and explicitly local databases; keep SQL and test fixtures.
+*.dump
+*.dump.sql
+*.backup.sql
+*.sql.gz
+*.sql.bz2
+*.sql.xz
+*.sql.zst
+*.local.db
+*.local.sqlite
+*.local.sqlite3
+/*.db
+/*.sqlite
+/*.sqlite3
+/aearn/*.db
+/aearn/*.sqlite
+/aearn/*.sqlite3
+
 # OS files.
 Thumbs.db
 Desktop.ini
@@ -76,10 +151,6 @@ Desktop.ini
 !.trellis/tasks/09-22-multi-agent-item-bank-sandbox/research/native_v3_chain_support_20261006.py
 
 # Local documentation workspace state and temporary material.
-docs/current/.obsidian/
 docs/current/.trash/
 docs/current/semi-overt/
 tmp/
-
-# Local Obsidian settings and installed plugins for the Trellis task vault.
-.trellis/tasks/.obsidian/
