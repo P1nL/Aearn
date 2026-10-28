@@ -4,15 +4,15 @@
   "packageManager": "pnpm@10.8.0",
   "version": "0.1.0",
   "scripts": {
-    "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
-    "dev:restart": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Restart",
-    "dev:stop": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Stop",
-    "dev:status": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Status",
+    "dev": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
+    "dev:restart": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Restart",
+    "dev:stop": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Stop",
+    "dev:status": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -Status",
     "desktop:dev": "pnpm --dir apps/desktop tauri dev",
     "desktop:build": "pnpm --dir apps/desktop tauri build",
     "desktop:check": "pnpm --dir apps/desktop build",
     "executor:dev": "uv --directory ./services/executor run aearn-executor",
     "executor:once": "uv --directory ./services/executor run aearn-executor --once",
-    "dev:no-codex": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -NoCodexWorker"
+    "dev:no-codex": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -NoCodexWorker"
   }
 }

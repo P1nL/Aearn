@@ -1,10 +1,13 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.errors import error_response, request_id_from
+from app.db.completion_baseline import ensure_startup_contract
 from app.routes.courses import router as courses_router
 from app.routes.environment import router as environment_router
 from app.routes.exercise_gates import router as exercise_gates_router
@@ -23,7 +26,15 @@ from app.routes.users import router as users_router
 logger = logging.getLogger(__name__)
 
 
-app = FastAPI(title="Aearn API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Importing the ASGI app must not connect to the database. A failed check
+    # propagates through ASGI startup, before Uvicorn can accept requests.
+    ensure_startup_contract(entrypoint="api")
+    yield
+
+
+app = FastAPI(title="Aearn API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

@@ -7,7 +7,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from aearn_shared.execution import ExecutionAction, SandboxInputV1
@@ -23,6 +23,9 @@ from .contracts import FrozenContract, HANDLE, HASH, LearningMaterialDemand, Rag
 from .material_lifetime import COURSE_MATERIAL_POLICY, LEGACY_MATERIAL_POLICY, MaterialLifetimePolicy, material_lifetime
 from .source_review_repository import CompleteCapture
 from .sqlite_select_automated_review import WHERE_PARAGRAPH, _Parser
+
+if TYPE_CHECKING:
+    from .sqlite_predicate_source_profile import _SQLiteAnalysisData
 
 DOMAIN = b"AEARN-RAG-FRESH-ASSESSMENT-SOURCE-V1\n"
 COURSE_DOMAIN = b"AEARN-RAG-FRESH-COURSE-ASSESSMENT-SOURCE-V2\n"
@@ -115,11 +118,12 @@ class _Units(_Parser):
         self.unit_unsafe = False
 
 
-def analyze_source(capture: CompleteCapture, profile_id: ProfileId) -> tuple[SourceSpan, ...]:
+def analyze_source(capture: CompleteCapture, profile_id: ProfileId, *,
+                   _sqlite_data: _SQLiteAnalysisData | None = None) -> tuple[SourceSpan, ...]:
     if profile_id in ("sqlite-predicate-source-v1", "sqlite-predicate-actual-d-source-v1"):
-        from .sqlite_predicate_source_profile import analyze_sqlite_capture
+        from .sqlite_predicate_source_profile import _analyze_sqlite_capture
 
-        return analyze_sqlite_capture(capture, "select")
+        return _analyze_sqlite_capture(capture, "select", data=_sqlite_data)
     if (type(capture) is not CompleteCapture or capture.lane != "registered"
             or capture.origin != "official" or not 0 < len(capture.body) <= 8_388_608
             or capture.digest != hashlib.sha256(capture.body).hexdigest()

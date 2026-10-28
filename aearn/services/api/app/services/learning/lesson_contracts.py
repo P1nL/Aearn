@@ -248,6 +248,32 @@ LessonBlock: TypeAlias = (
 )
 
 
+LESSON_COMPLETION_VERSION = "lesson_completion_v1"
+LESSON_EVIDENCE_VERSION = "lesson_evidence_units_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class LessonEvidenceUnit:
+    """Exact UTF-8 bytes of one selected chunk, not a display summary."""
+
+    text: str
+    content_hash: str
+    start_byte: int
+    end_byte: int
+
+    def __post_init__(self) -> None:
+        raw = self.text.encode("utf-8")
+        if (not raw or len(raw) > 64_000 or type(self.start_byte) is not int
+                or type(self.end_byte) is not int or self.start_byte != 0
+                or self.end_byte != len(raw)
+                or self.content_hash != hashlib.sha256(raw).hexdigest()):
+            raise ValueError("Lesson evidence unit bytes or hash are invalid")
+
+    def payload(self) -> dict[str, object]:
+        return {"text": self.text, "content_hash": self.content_hash,
+                "start_byte": self.start_byte, "end_byte": self.end_byte}
+
+
 @dataclass(frozen=True, slots=True)
 class LessonSourceSnapshot:
     citation_id: str
@@ -266,6 +292,8 @@ class LessonSourceSnapshot:
     fetched_at: datetime
     snapshotted_at: datetime
     evidence_excerpt: str
+    evidence_schema_version: str | None = None
+    evidence_units: tuple[LessonEvidenceUnit, ...] = ()
 
     def __post_init__(self) -> None:
         if not _CITATION_ID.fullmatch(self.citation_id):
@@ -284,6 +312,13 @@ class LessonSourceSnapshot:
         if not _SHA256.fullmatch(self.document_content_hash) or not _SHA256.fullmatch(self.chunk_content_hash):
             raise ValueError("source snapshot hashes must be SHA-256")
         object.__setattr__(self, "evidence_excerpt", bounded_text(self.evidence_excerpt, label="evidence excerpt", maximum=1200))
+        if self.evidence_schema_version is None:
+            if self.evidence_units:
+                raise ValueError("Legacy Lesson evidence cannot contain versioned units")
+        elif (self.evidence_schema_version != LESSON_EVIDENCE_VERSION
+              or len(self.evidence_units) != 1
+              or self.evidence_units[0].content_hash != self.chunk_content_hash):
+            raise ValueError("Lesson evidence units must bind the complete selected chunk")
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +449,29 @@ def canonical_source_set_hash(snapshots: Sequence[LessonSourceSnapshot]) -> str:
     ]
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def lesson_evidence_identity(snapshots: Sequence[LessonSourceSnapshot]) -> dict[str, object]:
+    """New dependency domain; deliberately leaves the legacy source-set hash alone."""
+    if not snapshots or any(item.evidence_schema_version != LESSON_EVIDENCE_VERSION for item in snapshots):
+        raise ValueError("Completion authoring requires versioned full evidence")
+    return {
+        "schema_version": LESSON_EVIDENCE_VERSION,
+        "legacy_source_set_hash": canonical_source_set_hash(snapshots),
+        "selected_units": [
+            {"citation_id": item.citation_id, "source_id": item.source_id,
+             "grounding_chunk_id": item.grounding_chunk_id,
+             "document_content_hash": item.document_content_hash,
+             "chunk_content_hash": item.chunk_content_hash,
+             "source_version_label": item.source_version_label,
+             "source_version_kind": item.source_version_kind,
+             "canonical_url": item.canonical_url, "section_path": list(item.section_path),
+             "trust_tier": item.trust_tier, "provider": item.provider,
+             "display_name": item.display_name, "source_type": item.source_type,
+             "units": [unit.payload() for unit in item.evidence_units]}
+            for item in sorted(snapshots, key=lambda item: item.citation_id)
+        ],
+    }
 
 
 def calculate_lesson_impact(

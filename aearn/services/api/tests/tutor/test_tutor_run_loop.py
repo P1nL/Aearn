@@ -853,7 +853,12 @@ def test_harness_and_tutor_modules_do_not_depend_on_retired_runtime_or_storage_b
             if path.name == "codex_dispatcher.py"
             else retired_module_prefixes
         )
-        assert not any(marker in source for marker in prohibited_agent_prefixes), path
+        # The approved private durable codec shares only this native DATA DTO;
+        # adapter/client/runtime execution imports remain confined to dispatcher.
+        dependency_source = source.replace(
+            'from app.agents.runtime.contracts import RuntimePlanningStepResult', ''
+        ) if path.name == 'completion_execution.py' else source
+        assert not any(marker in dependency_source for marker in prohibited_agent_prefixes), path
         assert not any(marker in source for marker in forbidden_for_path), path
 
 

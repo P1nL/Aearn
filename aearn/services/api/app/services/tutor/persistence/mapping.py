@@ -2,6 +2,8 @@
 # ruff: noqa: F403, F405
 from __future__ import annotations
 
+from app.agents.harness.contracts import TutorExecutionProfile
+
 from ._dependencies import *
 from .contracts import *
 
@@ -286,6 +288,8 @@ def _snapshot_from_row(row: Mapping[str, object]) -> TutorRunSnapshot:
         context_token_budget=_as_int(policy_data.get("context_token_budget"), 1),
         lease_duration_seconds=_as_int(policy_data.get("lease_duration_seconds"), 1),
         context_budget_policy=_context_budget_policy_from_payload(policy_data.get("context_budget_policy")),
+        execution_profile=(TutorExecutionProfile(str(policy_data["execution_profile"]))
+                           if "execution_profile" in policy_data else None),
     )
     origin = str(row.get("origin") or "")
     if origin not in {"interactive", "proactive"}:
@@ -347,7 +351,7 @@ def _result_from_row(row: Mapping[str, object]) -> TutorRunResult:
 
 
 def _policy_payload(policy: TutorPolicySnapshot) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "deadline": policy.deadline,
         "max_iterations": policy.max_iterations,
         "max_model_calls": policy.max_model_calls,
@@ -361,6 +365,9 @@ def _policy_payload(policy: TutorPolicySnapshot) -> dict[str, object]:
             else None
         ),
     }
+    if policy.execution_profile is not None:
+        payload["execution_profile"] = policy.execution_profile.value
+    return payload
 
 
 def _context_budget_policy_payload(policy: TutorContextBudgetPolicy) -> dict[str, object]:

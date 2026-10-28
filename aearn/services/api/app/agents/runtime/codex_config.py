@@ -17,6 +17,7 @@ from app.core.config import (
     Settings,
 )
 from app.services.llm.llm_urls import normalize_deepseek_base_url
+from app.services.llm.completion_policy import resolve_completion_stage_policy
 
 CODEX_MODEL_PROVIDER = "aearn_deepseek"
 CODEX_WIRE_API = "responses"
@@ -60,6 +61,13 @@ class CodexRuntimeConfig:
     model_max_output_tokens: int = DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS
     model_auto_compact_token_limit: int = DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS
     remote_compaction_supported: bool = False
+    completion_driven_enabled: bool = False
+    completion_turn_timeout_s: float = 900.0
+
+    @property
+    def model_max_output_tokens_wire_enforced(self) -> bool:
+        """The pinned App Server has no verified exact output-token wire cap."""
+        return False
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "CodexRuntimeConfig":
@@ -67,6 +75,7 @@ class CodexRuntimeConfig:
         executable = resolve_codex_executable(configured_path)
         home = settings.codex_runtime_home_path
         allowed = frozenset(item.strip() for item in settings.codex_runtime_allowed_versions.split(",") if item.strip())
+        completion_policy = resolve_completion_stage_policy(settings, "sidecar_turn")
         return cls(
             enabled=settings.codex_runtime_enabled,
             executable_path=executable,
@@ -94,6 +103,8 @@ class CodexRuntimeConfig:
             model_max_output_tokens=settings.tutor_deepseek_v4_flash_max_output_tokens,
             model_auto_compact_token_limit=DEEPSEEK_V4_FLASH_CODEX_AUTO_COMPACT_TOKENS,
             remote_compaction_supported=False,
+            completion_driven_enabled=settings.tutor_completion_driven_enabled,
+            completion_turn_timeout_s=completion_policy.timeout_seconds,
         )
 
 

@@ -1,11 +1,16 @@
+import logging
 import os
 import socket
 from datetime import UTC, datetime
+from functools import cached_property
 from importlib import import_module
 from pathlib import Path
 from uuid import UUID
 
 from celery import Celery  # type: ignore[import-untyped]
+from celery.beat import PersistentScheduler  # type: ignore[import-untyped]
+from celery.loaders.app import AppLoader  # type: ignore[import-untyped]
+from celery.loaders.base import BaseLoader  # type: ignore[import-untyped]
 from celery.signals import worker_shutdown  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 
@@ -13,12 +18,70 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parents[3]
 load_dotenv(ROOT_DIR / ".env")
 
-celery_app = Celery(
+
+class ContractLoader(AppLoader):
+    def init_worker(self) -> None:
+        # WorkController calls this before constructing any worker bootsteps.
+        # Do not use worker_init: Celery Signal.send catches Exception. Check
+        # before the loader marks itself initialized, so failure cannot cache a
+        # successful initialization. Beat also uses this early loader boundary.
+        if not self.worker_initialized:
+            from app.db.completion_baseline import ensure_startup_contract
+
+            ensure_startup_contract(entrypoint="worker")
+        super().init_worker()
+
+
+class ContractScheduler(PersistentScheduler):
+    def setup_schedule(self) -> None:
+        # Also protects directly constructed / embedded beat schedulers, before
+        # opening the schedule store or reaching the first tick/publish.
+        from app.db.completion_baseline import ensure_startup_contract
+
+        ensure_startup_contract(entrypoint="beat")
+        super().setup_schedule()
+        logging.getLogger(__name__).info("aearn beat scheduler startup complete")
+
+
+class ContractCelery(Celery):
+    @cached_property
+    def loader(self) -> BaseLoader:
+        # Preserve the actual CELERY_LOADER/--loader implementation. Install a
+        # call-time gate even when the selector is absent: only the public ABI
+        # knows the DSN actually used by Settings, including dotenv precedence.
+        # Accessing/configuring this loader itself performs no Settings/DB IO.
+        loader = super().loader
+        if isinstance(loader, ContractLoader):
+            return loader
+        initialize = loader.init_worker
+
+        def init_worker() -> None:
+            # Both WorkController and Beat.run enter here before task imports
+            # or scheduler construction, including beat -S/custom schedulers.
+            # Check first so a rejection never marks the loader initialized.
+            if not loader.worker_initialized:
+                from app.db.completion_baseline import ensure_startup_contract
+
+                ensure_startup_contract(entrypoint="worker")
+            initialize()
+
+        loader.init_worker = init_worker
+        return loader
+
+
+# Only the explicit new contract replaces Celery's configured loader/scheduler.
+# Presence (not truthiness) keeps empty/unknown values on the rejecting gate;
+# legacy startup retains CELERY_LOADER/--loader and scheduler configuration.
+_contract_startup_requested = "AEARN_DATABASE_CONTRACT" in os.environ
+celery_app = ContractCelery(
     "aearn-worker",
+    loader=ContractLoader if _contract_startup_requested else None,
     broker=os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0"),
     backend=os.getenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/1"),
 )
 celery_app.conf.update(timezone="Asia/Shanghai", enable_utc=True)
+if _contract_startup_requested:
+    celery_app.conf.beat_scheduler = ContractScheduler
 celery_app.conf.beat_schedule = {
     "tutor-interactive-reconcile": {
         "task": "tutor.interactive.reconcile",

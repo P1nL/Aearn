@@ -16,6 +16,11 @@ from app.services.grounding.autonomous.actual_d_lifecycle import (
 from app.services.repositories.user_repository import get_user, serialize_user
 from app.services.grounding.autonomous.context_repository import DiscoveryContextRepository
 from app.services.tutor.persistence import PostgresTutorRepository
+from app.services.tutor.completion_data import (
+    completion_execution_counts,
+    export_completion_summary,
+    purge_lesson_completion_stages,
+)
 
 
 class _LocalUserRagAuthority:
@@ -203,6 +208,7 @@ def export_user_data(conn: Connection[dict[str, object]], user_id: str) -> dict[
         "model_review_validation_summaries": _export_model_review_validation_summaries(conn, user_id),
         "model_review_publication_summaries": _export_model_review_publication_summaries(conn, user_id),
         "model_review_evidence_summaries": _export_model_review_evidence_summaries(conn, user_id),
+        "completion_execution_summary": export_completion_summary(conn, user_id),
         "redaction": {
             "hidden_tests": "omitted",
             "private_rubrics": "omitted",
@@ -292,6 +298,7 @@ def _summary_user(user: Mapping[str, object]) -> dict[str, object]:
 
 def _summary_counts(conn: Connection[dict[str, object]], user_id: str) -> dict[str, int]:
     return {
+        **completion_execution_counts(conn, user_id),
         "active_plans": _count(conn, "SELECT count(*) AS count FROM learning_plans WHERE user_id = %s AND deleted_at IS NULL AND status = 'active'", user_id),
         "archived_or_deleted_plans": _count(conn, "SELECT count(*) AS count FROM learning_plans WHERE user_id = %s AND (deleted_at IS NOT NULL OR status = 'archived')", user_id),
         "modules": _count(conn, _owned_count_sql("plan_modules"), user_id),
@@ -1682,6 +1689,7 @@ def _delete_learning_track_data(conn: Connection[dict[str, object]], user_id: st
     conn.execute("DELETE FROM tutor_module_diagnostic_items WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_module_diagnostic_sessions WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_gate_bindings WHERE user_id = %s", (user_id,))
+    purge_lesson_completion_stages(conn, user_id)
     conn.execute("DELETE FROM tutor_lesson_authoring_attempt_receipts WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_authoring_runs WHERE user_id = %s", (user_id,))
     conn.execute("DELETE FROM tutor_lesson_assignments WHERE user_id = %s", (user_id,))

@@ -44,6 +44,7 @@ from .source_assessment_profiles import (
     SourceAssessmentPayload, analyze_source, source_proof_hash, source_request, storage_profile_id, verify_source_assessment,
 )
 from .source_review_repository import CompleteCapture, QualityFinding, SourceReviewRepository
+from .sqlite_predicate_source_profile import _SQLiteAnalysisData, _analyze_sqlite_capture
 
 OWNED_DATABASE = "aearn_b1d_sandbox_20261001"
 if TYPE_CHECKING:
@@ -85,11 +86,57 @@ class AssessmentReceiptRepository:
         self.actual_d_private_provenance_enabled = actual_d_private_provenance_enabled
         self.service_keys = dict(service_keys)
         self.provenance = provenance
+        self._sqlite_analysis: tuple[AssessmentReceiptRepository, Connection[dict[str, Any]],
+                                     _SQLiteAnalysisData, _SQLiteAnalysisData | None] | None = None
         if (type(provenance) not in (PostgresCurrentCaptureProvenanceResolver, PinnedCaptureProvenanceComposition)
                 or provenance.conn is not conn or not self.service_keys
                 or any(type(k) is not str or type(v) is not bytes or len(v) != 32
                        for k, v in self.service_keys.items())):
             raise SourceAssessmentDenied("SOURCE_CONFIG_DENIED")
+
+    @contextmanager
+    def _sqlite_analysis_scope(self, *, include_history: bool = False) -> Iterator[None]:
+        """Finite parser DATA for authorize or _fresh; no current-receipt reuse.
+
+        Same-repository/connection lexical children share only parser DATA.
+        P1 has separate historical/current three-role sets; a child owns any
+        historical set it adds. Neither set escapes the outer operation.
+        """
+        parent = self._sqlite_analysis
+        if parent is not None:
+            self._sqlite_analysis_data()  # Reject copied owner or changed conn.
+            current, historical = parent[2], parent[3]
+        else:
+            current, historical = _SQLiteAnalysisData(), None
+        owns_history = include_history and historical is None
+        if owns_history:
+            historical = _SQLiteAnalysisData()
+        self._sqlite_analysis = self, self.conn, current, historical
+        try:
+            yield
+        except BaseException:
+            # Catching a child failure must not revive the parent's warm DATA.
+            current.close()
+            if historical is not None:
+                historical.close()
+            raise
+        finally:
+            if parent is None:
+                current.close()
+            if owns_history and historical is not None:
+                historical.close()
+            self._sqlite_analysis = parent
+
+    def _sqlite_analysis_data(self, *, historical: bool = False) -> _SQLiteAnalysisData | None:
+        scope = self._sqlite_analysis
+        if scope is None:
+            return None
+        if scope[0] is not self or scope[1] is not self.conn:
+            scope[2].close()
+            if scope[3] is not None:
+                scope[3].close()
+            raise SourceAssessmentDenied("SOURCE_ANALYSIS_SCOPE_DENIED")
+        return scope[3] if historical else scope[2]
 
     def require_transaction(self) -> None:
         if (not self.enabled or self.conn.autocommit
@@ -218,8 +265,6 @@ class AssessmentReceiptRepository:
         capture, policy, root, provenance_digest, expiry = self._current_capture(capture_id, demand, now, lifetime_policy)
         companions = []
         if companion_capture_ids is not None:
-            from .sqlite_predicate_source_profile import analyze_sqlite_capture
-
             if len(companion_capture_ids) != 2 or len({capture_id, *companion_capture_ids}) != 3:
                 raise SourceAssessmentDenied("SOURCE_COMPANIONS_REQUIRED")
             roles: tuple[Literal["expression", "corefunc"], ...] = ("expression", "corefunc")
@@ -232,7 +277,8 @@ class AssessmentReceiptRepository:
                     policy_generation=policy_c["policy_generation"],
                     budget=RagBudgetDelegation(root_id=root_c["root_id"], delegation_id=root_c["delegation_id"],
                         generation=root_c["delegation_generation"], expires_at=expiry_c),
-                    storage_receipt_id=policy_c["storage_receipt_id"], spans=analyze_sqlite_capture(c, role),
+                    storage_receipt_id=policy_c["storage_receipt_id"],
+                    spans=_analyze_sqlite_capture(c, role, data=self._sqlite_analysis_data()),
                     authority_expires_at=expiry_c))
                 expiry = min(expiry, expiry_c)
         values = dict(profile_id=profile_id, capture_id=capture_id,
@@ -244,7 +290,8 @@ class AssessmentReceiptRepository:
             budget=RagBudgetDelegation(root_id=root["root_id"], delegation_id=root["delegation_id"],
                 generation=root["delegation_generation"], expires_at=expiry),
             storage_receipt_id=policy["storage_receipt_id"], demand=demand,
-            spans=analyze_source(capture, profile_id), prepared_at=now, authority_expires_at=expiry)
+            spans=analyze_source(capture, profile_id, _sqlite_data=self._sqlite_analysis_data()),
+            prepared_at=now, authority_expires_at=expiry)
         if actual_d is not None:
             if native_sqlite:
                 return PreparedActualDSQLiteSourceAssessment.model_validate({**values, "actual_d": actual_d, "companions": tuple(companions)})
@@ -581,7 +628,9 @@ class AssessmentReceiptRepository:
         ).fetchall()
         repo = CorpusRepository(self.conn)
         for row in rows:
-            version = repo.version(row["id"],for_update=True)
+            # Claim/execution/consume-authority resolution is a current read;
+            # do not upgrade its caller's corpus SHARE lock to UPDATE.
+            version = repo.version(row["id"],for_share=True)
             active = repo.active(version.subject_id)
             if active is not None and active.corpus_id == version.corpus_id and version.state == "published":
                 return

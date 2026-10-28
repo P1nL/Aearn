@@ -572,6 +572,76 @@ class LearningPlanToolService:
             data=context,
         )
 
+    def recover_committed_draft(self) -> LearningPlanAgentToolResult | None:
+        """Read an exact committed result; never append/replay a draft action.
+
+        Recovery still rechecks the current session, facts, language/source policy
+        and catalog mappings. Historical DATA does not restore an old tool fence.
+        """
+        with self._conn.transaction():
+            fenced = self._fence_result()
+            if fenced is not None:
+                return fenced
+            row = self._sessions.draft_for_source(
+                user_id=self._run.user_id, run_id=self._run.run_id,
+                input_revision=self._run.input_revision,
+            )
+            if row is None:
+                return None
+            session = self._sessions.active_session_for_run(
+                user_id=self._run.user_id, run_id=self._run.run_id,
+                input_revision=self._run.input_revision, for_update=True,
+            )
+            values, fingerprint, revision, missing = self._facts.profile_fact_state(
+                user_id=self._run.user_id, session_id=str(session["id"]),
+            )
+            if (
+                missing or str(session.get("current_draft_id")) != str(row["id"])
+                or fingerprint != self._expected.facts_fingerprint
+                or revision != self._expected.facts_revision
+                or str(row.get("facts_fingerprint")) != fingerprint
+                or _integer(row.get("facts_revision")) != revision
+            ):
+                return _result(LearningPlanToolStatus.CONFLICT, "planning_facts_stale")
+            plan = row.get("plan_json")
+            if not isinstance(plan, Mapping) or not isinstance(plan.get("modules"), list):
+                return _result(LearningPlanToolStatus.FATAL, "learning_plan_saved_result_invalid")
+            modules = []
+            for raw in plan["modules"]:
+                if not isinstance(raw, Mapping) or not isinstance(raw.get("nodes"), list):
+                    return _result(LearningPlanToolStatus.FATAL, "learning_plan_saved_result_invalid")
+                modules.append(CompactPlanModule.model_validate({
+                    **{key: raw[key] for key in CompactPlanModule.model_fields if key in raw and key != "nodes"},
+                    "nodes": [
+                        {key: node[key] for key in CompactPlanNode.model_fields if key in node}
+                        if isinstance(node, Mapping) else node
+                        for node in raw["nodes"]
+                    ],
+                }))
+            artifact = build_validated_learning_plan_artifact(
+                session=session, profile=_profile_from_facts(values),
+                modules=tuple(modules), change_reason=str(row["change_reason"]),
+            )
+            validate_planning_catalog_mappings(
+                self._conn, language_id=artifact.profile.language_id, nodes=artifact.plan.nodes,
+            )
+            if artifact.content_hash != str(row["content_hash"]):
+                return _result(LearningPlanToolStatus.CONFLICT, "learning_plan_saved_result_stale")
+            fenced = self._fence_result()
+            if fenced is not None:
+                return fenced
+            return _result(
+                LearningPlanToolStatus.COMPLETED, "learning_plan_draft_completed",
+                data={
+                    "draft_id": str(row["id"]), "draft_version": _integer(row.get("draft_version")),
+                    "content_hash": str(row["content_hash"]),
+                    "module_count": len(artifact.plan.modules), "node_count": len(artifact.plan.nodes),
+                    "receipt": hashlib.sha256(
+                        f"{self._run.run_id}:{self._run.input_revision}:{row['content_hash']}".encode("utf-8")
+                    ).hexdigest(),
+                }, replayed=True,
+            )
+
     def draft(self, tool_input: LearningPlanDraftToolInput) -> LearningPlanAgentToolResult:
         fenced = self._fence_result()
         if fenced is not None:

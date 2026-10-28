@@ -267,3 +267,59 @@ Wrong: widen redirects or alter frozen expiry until a page works. Correct: retai
 ## Course material lifetime and exact renewal
 
 For new7d versioned proofs, bounded498 refresh and the actual-D private-lifecycle gate, read [Course Material Lifetime and Exact Renewal](./grounding-course-material-lifetime.md).
+
+## 2026-10-25 explicit shared consumption reads
+
+### 1. Scope / Trigger
+Original C-backed current consumers reading a committed corpus, including CurrentAuthorization, EvidenceSelection and the PUBLIC/actual-D assessment material factories. This is an A consumption-lock change, not teaching-purpose authorization, D-S, a second active pointer or a source-quality bypass.
+
+### 2. Signatures
+- `CorpusRepository.version(corpus_id, *, for_update=False, for_share=False)` uses an explicit SHARE lock for consumption. Both lock flags together raise ValueError before querying. Existing mutation callers retain `for_update=True` and the default bare inspection API is unchanged.
+- `CorpusGovernance._rows(..., consumption_read=False)`, `_audit(..., consumption_read=False)`, `_verified(..., consumption_read=False)` propagate the explicit shared mode through every version reread. `_rows(lock=False, consumption_read=True)` denies with CONSUMPTION_LOCK_REQUIRED.
+
+### 3. Contracts
+Consumer SHARE locks protect the exact version and existing SHARE-locked links/documents/reviews/admissions/validation/source rows through caller TOP completion. Active-pointer and fresh DB-clock/source/final-fence checks remain at their original points. No current authorization is cached. Import/validate/activate/rollback retain exclusive version locking. PRIVATE namespace, source-purpose, retention, claim, old epoch and consumer-request rules do not change. Do not weaken mutation locks to avoid a read-to-write upgrade conflict: writers must enter the original mutation path.
+
+The original `AssessmentReceiptRepository._lock_active_corpus` PUBLIC claim/execution/consume-authority path is also pure consumption and must retain SHARE, not reacquire UPDATE under an outer SHARE. Actual-D provenance is different: use only an unlocked association-identity hint before the version lock; an existing association uses SHARE but must still pass every original proof/source/chunk/exact stored-row/final-clock check. If that hinted row is missing at its later locked reread, deny SOURCE_PRIVATE_PROVENANCE_STALE instead of recreating it on the read path. An absent initial association retains original UPDATE and first INSERT/materialization; that mutation may serialize and is not advertised as a pure parallel read. The identity hint never grants current authority.
+
+### 4. Validation / Error Matrix
+Two independent consumption readers may hold SHARE on the same version. A concurrent FOR UPDATE NOWAIT writer is rejected with SQLSTATE55P03; after both readers roll back, the original UPDATE lock succeeds. False consumption lock selection, unknown source, stale summary/epoch/retention or original authorization denial must not become an unlocked successful read.
+
+### 5. Good / Base / Bad Cases
+Good: explicit consumption_read flows from the real consumer through _verified -> _audit -> _rows with SHARE, retaining final current checks. Base: governance mutation defaults still use UPDATE. Bad: change for_update to False and claim concurrency while omitting a lock, or optimize only the outer read and silently reacquire UPDATE inside _audit.
+
+### 6. Focused Tests / Evidence
+`tests/grounding/test_corpus_consumption_lock_mode.py` checks query modes, conflicting flags and _rows/_verified propagation; it is a protocol double, not source-quality acceptance. Keep relevant D authorization/public-binding regressions. Main2026-10-25 16:35:54+08 actual original isolated PG used three distinct connections: two original repository SHARE reads succeeded, NOWAIT writer denied55P03, writer acquired UPDATE after reader rollbacks; epoch5 pointer unchanged, all TOPs rolled back, no DML/DDL. This evidence proves that lock guarantee only, not two-slot business, teaching current or M03 L.
+
+After the independent checker found the nested resolver upgrade, Main2026-10-25 17:25:45+08 used two fresh original-PG connections with real externally pinned provenance, the concrete assessment receipt repository/composition and saved PUBLIC material DATA. Both complete `RagSourceAuthority.authorize` plus final `assert_current` returned current_authority/epoch5 while the third UPDATE NOWAIT writer was rejected55P03. All TOPs rolled back; no model/sealed/GET/DML/DDL. This covers the nested PUBLIC assessment current path, not actual-D first materialization, teaching-purpose admission or real two-slot work.
+
+### 7. Wrong vs Correct
+Wrong: ordinary v1 consumer reads use SHARE but the assessment factories or governance inner audit still take UPDATE. Correct: every pure consumer version read explicitly propagates the mode, while final source/active/expiry checks and all mutation locks remain intact.
+
+## 2026-10-26：有限操作内的 SQLite 纯解析 DATA 复用
+
+### 1. Scope / Trigger
+已有 confirmed reader 与 AssessmentReceiptRepository 同次原 owner 操作对同一完整 capture 重复执行 HTML/有限断言解析。此优化不缓存来源许可、current 判断、签名验证或数据库读取结果；本次提交不纳入独立 M03/P1 业务接线。
+
+### 2. Signatures
+- `sqlite_predicate_source_profile._SQLiteAnalysisData.analyze(capture, role) -> tuple[SourceSpan, ...]`，最多保存三个 capture-role slot；`close()` 清空并永久关闭该对象。
+- `_analyze_sqlite_capture(capture, role, *, data=None)` 没有 DATA 时直接调用原冷验证器。
+- `AssessmentReceiptRepository._sqlite_analysis_scope(*, include_history=False)` 仅在同 repository、同 connection 的词法范围复用；显式 history 与当前 capture 使用不同 DATA 集，这个内部参数不表示已接入 P1 业务。
+
+### 3. Contracts
+命中身份包括实际完整 bytes、capture metadata、role 与当前有限解析规则，不仅是对象 ID 或调用者提供的 digest。缓存值只保存 primitive byte spans，每次返回新建 `SourceSpan`。同 slot 内容/依赖变化必须冷验；解析异常清空 DATA。合法同实例/连接嵌套共享纯 DATA，子 scope 只关闭自己增加的 history 集，退出恢复父 scope；异常使父 DATA 冷化，不能在捕获异常后继续暖命中。对象不得跨原操作、连接或 TOP 传递，原 provenance、actor、SQL witness、当前时钟和最终 fence 仍逐次执行。
+
+### 4. Validation / Error Matrix
+- 同 ID 但 bytes、metadata 或规则变化：冷验证，不沿用先前 spans。
+- 复制 repository 或替换 connection：拒绝共享原 scope。
+- 已 close、错误输入形状或解析失败：退回原冷验证语义，不产出授权快捷路径。
+- 来源过期/撤销或 current 检查失败：原错误保持；解析命中不能覆盖该错误。
+
+### 5. Good / Base / Bad Cases
+Good：同一 owner 操作重复解析同三份 exact capture，后续仍执行原 current 与 final fence。Base：不提供 DATA 的公开 analyzer 行为不变。Bad：缓存 `verified=True`、receipt、Prepared/cap，或把解析命中当作生产 current/性能验收。
+
+### 6. Tests Required
+`test_sqlite_analysis_data_reuse.py` 的纯 DATA/confirmed 用例与 `test_corpus_consumption_lock_mode.py` 覆盖冷/暖等价、解析次数、内容和规则改变、同连接嵌套、异常冷化、复制 repo/换连接拒绝、消费锁及 current 检查保持。M03/P1 专用调用方与测试不在本次提交包。离线显式进入父 scope 不等于生产调用图自然发生嵌套；真实来源与自然业务计时独立报告。
+
+### 7. Wrong vs Correct
+Wrong：按 capture ID 保存已验证 receipt 并跳过 `_fresh`。Correct：`with repository._sqlite_analysis_scope(): ...` 只让内部 analyzer 复用 exact DATA，原 `_fresh`/provenance/数据库与最终 current 校验照常执行。

@@ -52,7 +52,7 @@ def create_public_course_material(conn: Connection[dict[str, Any]], *,
     ).fetchall()
     current_corpus = None
     for row in header:
-        version = authority._current.governance.repo.version(row["id"],for_update=True)
+        version = authority._current.governance.repo.version(row["id"],for_share=True)
         pointer = authority._current.governance.repo.active(version.subject_id)
         if pointer is not None and pointer.corpus_id == version.corpus_id:
             current_corpus = version
@@ -60,7 +60,7 @@ def create_public_course_material(conn: Connection[dict[str, Any]], *,
     if current_corpus is None or current_corpus.state != "published" or not current_corpus.summary_hash:
         raise SourceAssessmentDenied("SOURCE_CORPUS_STALE")
     authority._current.governance._verified(current_corpus.corpus_id,
-        summary_hash=current_corpus.summary_hash,purpose="assessment_evidence")
+        summary_hash=current_corpus.summary_hash,purpose="assessment_evidence",consumption_read=True)
     p,capture,_ = receipts._find(claim_receipt_id)
     q = p.prepared
     if (q.demand != demand or q.consume_actor != PUBLIC_COURSE_ACTOR

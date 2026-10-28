@@ -179,13 +179,13 @@ class CurrentAuthorization:
         corpus_id = UUID(next(iter(corpus_ids)))
         try:
             # C's version -> links/docs/review/admission -> policy/capture/grant/root lock order.
-            version = self.governance.repo.version(corpus_id, for_update=True)
+            version = self.governance.repo.version(corpus_id, for_share=True)
             if (version.summary_hash is None or version.state != "published"
                     or version.subject_id != request.scope.subject_id
                     or version.subject_version != request.scope.subject_version):
                 raise EvidenceDenied("CORPUS_GENERATION_STALE")
             self.governance._verified(corpus_id, summary_hash=version.summary_hash,
-                                      purpose=purpose)
+                                      purpose=purpose, consumption_read=True)
             rows = self.conn.execute(
                 """SELECT c.chunk_id,c.chunk_hash,c.content,c.facets_json,c.document_id,
                           d.document_hash,l.admission_id,r.id AS review_id,
@@ -286,7 +286,7 @@ class CurrentAuthorization:
             # A fresh DB clock after all waits, not transaction_timestamp() or Python time.
             checked_at = self._clock()
             self.governance._verified(corpus_id, summary_hash=version.summary_hash,
-                                      purpose=purpose)
+                                      purpose=purpose, consumption_read=True)
             for coord in coords:
                 source = self._source_view(
                     coord.binding.source_handle, coord.binding.document_handle,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import math
 import socket
 import time
 import urllib.error
@@ -13,9 +14,17 @@ from enum import Enum
 from typing import Literal, Protocol, TypeVar, cast, get_args
 
 from app.core.config import DEEPSEEK_V4_FLASH_MODEL, Settings, get_settings
+from app.agents.harness.contracts import TutorContextError, TutorExecutionProfile
+from app.services.llm.completion_policy import (
+    CompletionStagePolicy, estimate_completion_request_tokens, resolve_completion_stage_policy,
+)
 from app.services.llm.contracts import (
     LLMIncompleteReason, LLMReasoningEffort, LLMResponseDiagnostics,
     LLMResponseStatus, LLMUsage,
+)
+from app.services.llm.http_execution import (
+    LLMHTTPExecutionError,
+    current_http_execution,
 )
 from app.services.llm.llm_urls import deepseek_chat_completions_url, deepseek_responses_url, responses_url
 from app.services.llm.provider_diagnostics import (
@@ -194,10 +203,34 @@ class OpenAICompatibleClient:
         reasoning_effort: Literal["low", "high", "max"] | None = None,
         capture_provider_body: bool = False,
         visible_output_observer: LLMVisibleOutputObserver | None = None,
+        completion_stage: str | None = None,
     ) -> LLMJsonResponse:
         """Return one strict JSON object through the exact selected provider protocol."""
 
         protocol = select_llm_protocol(self._settings)
+        completion_policy = None
+        if completion_stage is not None:
+            if not self._settings.tutor_completion_driven_enabled:
+                raise ValueError("Completion-driven requests are disabled")
+            completion_policy = resolve_completion_stage_policy(self._settings, completion_stage)
+            if completion_policy.max_output_tokens is None:
+                raise ValueError("Sidecar is not an ordinary HTTP completion stage")
+            if max_tokens is not None and max_tokens != completion_policy.max_output_tokens:
+                raise ValueError("max_tokens must match the completion stage output policy")
+            max_tokens = completion_policy.max_output_tokens
+            if timeout_seconds is not None and (not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+                raise ValueError("timeout_seconds must be finite and positive")
+            timeout_seconds = min(
+                completion_policy.timeout_seconds,
+                timeout_seconds if timeout_seconds is not None else completion_policy.timeout_seconds,
+            )
+            if completion_policy.thinking_mode is not None:
+                if thinking_mode not in (None, completion_policy.thinking_mode):
+                    raise ValueError("thinking_mode conflicts with the completion stage policy")
+                thinking_mode = completion_policy.thinking_mode
+            execution = current_http_execution()
+            if execution is None or execution.execution_profile is not TutorExecutionProfile.COMPLETION_DRIVEN_V1:
+                raise ValueError("Completion-driven requests require their explicit HTTP execution scope")
         # DeepSeek's explicit effort applies only to enabled thinking. Preserve
         # all historical/default requests when no effort is supplied.
         if reasoning_effort is not None:
@@ -224,6 +257,7 @@ class OpenAICompatibleClient:
                     diagnostic_capture=diagnostic_capture,
                     thinking_mode=thinking_mode,
                     reasoning_effort=reasoning_effort,
+                    completion_policy=completion_policy,
                 )
 
             url = (
@@ -247,8 +281,9 @@ class OpenAICompatibleClient:
                 thinking_mode=thinking_mode,
                 reasoning_effort=reasoning_effort,
                 visible_output_observer=visible_output_observer,
+                completion_policy=completion_policy,
             )
-        except (LLMCallError, LLMInvalidResponseError) as exc:
+        except (LLMCallError, LLMInvalidResponseError, LLMHTTPExecutionError) as exc:
             exc.attach_diagnostic_capture(diagnostic_capture)
             raise
 
@@ -383,31 +418,14 @@ class OpenAICompatibleClient:
         thinking_mode: Literal["enabled", "disabled"] | None,
         reasoning_effort: Literal["low", "high", "max"] | None,
         visible_output_observer: LLMVisibleOutputObserver | None,
+        completion_policy: CompletionStagePolicy | None = None,
     ) -> LLMJsonResponse:
-        instructions, input_text = _messages_to_responses_input(messages)
-        text_format: dict[str, object] = {"type": "json_object"}
-        if output_schema is not None and use_json_schema:
-            text_format = {
-                "type": "json_schema",
-                "name": schema_name or "structured_output",
-                "schema": dict(output_schema),
-                "strict": True,
-            }
-        payload: dict[str, object] = {
-            "model": self.model,
-            "input": _ensure_json_mode_hint(input_text),
-            "stream": True,
-            "text": {"format": text_format},
-        }
-        if instructions is not None:
-            payload["instructions"] = instructions
-        if thinking_mode is not None and self._settings.llm_provider_type == "deepseek":
-            payload["reasoning"] = {"effort": "none" if thinking_mode == "disabled" else (reasoning_effort or "high")}
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_output_tokens"] = max_tokens
-        _enforce_request_input_limit(settings=self._settings, payload=payload)
+        payload = build_json_request_payload(
+            self._settings, messages, temperature=temperature, max_tokens=max_tokens,
+            output_schema=output_schema if use_json_schema else None, schema_name=schema_name,
+            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
+        )
+        _enforce_request_input_limit(settings=self._settings, payload=payload, completion_policy=completion_policy)
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
@@ -426,6 +444,12 @@ class OpenAICompatibleClient:
             diagnostics = exc.response_diagnostics or LLMResponseDiagnostics()
             exc.response_diagnostics = _with_request_diagnostics(diagnostics, payload)
             exc.attach_response_metadata(usage=None, model=self.model)
+            raise
+        except LLMHTTPExecutionError as exc:
+            if exc.response_diagnostics is not None:
+                exc.response_diagnostics = _with_request_diagnostics(exc.response_diagnostics, payload)
+            if exc.model is None:
+                exc.model = self.model
             raise
         response_diagnostics = _with_request_diagnostics(
             _extract_response_diagnostics(provider_response), payload,
@@ -459,6 +483,18 @@ class OpenAICompatibleClient:
         diagnostic_capture: ProviderBodyCapture | None = None,
         visible_output_observer: LLMVisibleOutputObserver | None = None,
     ) -> Mapping[str, object]:
+        if (execution := current_http_execution()) is not None:
+            if self._transport is not None:
+                raise LLMHTTPExecutionError(
+                    "custom_transport_unsupported", outcome_unknown=False,
+                    physical_attempts=execution.physical_attempts,
+                )
+            return _post_json_stream(
+                url, headers, payload,
+                float(timeout_seconds if timeout_seconds is not None else self._settings.llm_timeout_seconds),
+                diagnostic_capture=diagnostic_capture,
+                visible_output_observer=visible_output_observer,
+            )
         timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
         if self._transport is not None:
             if visible_output_observer is not None:
@@ -509,28 +545,30 @@ class OpenAICompatibleClient:
         diagnostic_capture: ProviderBodyCapture | None,
         thinking_mode: Literal["enabled", "disabled"] | None,
         reasoning_effort: Literal["low", "high", "max"] | None,
+        completion_policy: CompletionStagePolicy | None = None,
     ) -> LLMJsonResponse:
-        payload: dict[str, object] = {
-            "model": self.model,
-            "messages": _messages_to_chat_completions(messages, require_json_hint=True),
-            "response_format": {"type": "json_object"},
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if thinking_mode is not None:
-            payload["thinking"] = {"type": thinking_mode}
-        if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        _enforce_request_input_limit(settings=self._settings, payload=payload)
+        payload = build_json_request_payload(
+            self._settings, messages, temperature=temperature, max_tokens=max_tokens,
+            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
+        )
+        _enforce_request_input_limit(settings=self._settings, payload=payload, completion_policy=completion_policy)
         headers = {
             "Authorization": f"Bearer {self._settings.llm_api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
         url = deepseek_chat_completions_url(str(self._settings.llm_base_url))
-        timeout = _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
+        execution = current_http_execution()
+        timeout = (
+            float(timeout_seconds if timeout_seconds is not None else self._settings.llm_timeout_seconds)
+            if execution is not None
+            else _resolve_timeout_seconds(self._settings.llm_timeout_seconds, timeout_seconds)
+        )
+        if execution is not None and self._transport is not None:
+            raise LLMHTTPExecutionError(
+                "custom_transport_unsupported", outcome_unknown=False,
+                physical_attempts=execution.physical_attempts,
+            )
         if self._transport is not None:
             try:
                 provider_response = _require_provider_response_object(
@@ -595,6 +633,38 @@ def _post_json_stream(
     visible_output_observer: LLMVisibleOutputObserver | None = None,
     max_attempts: int = LLM_PROVIDER_RETRY_ATTEMPTS,
 ) -> Mapping[str, object]:
+    if (execution := current_http_execution()) is not None:
+        def started(restart: bool) -> None:
+            if visible_output_observer is not None:
+                if restart:
+                    visible_output_observer.on_stream_restart()
+                visible_output_observer.on_stream_start()
+
+        def consume(lines: Iterable[bytes]) -> Mapping[str, object]:
+            try:
+                return _parse_responses_stream(
+                    lines, diagnostic_capture=diagnostic_capture,
+                    visible_output_observer=visible_output_observer,
+                )
+            except LLMInvalidResponseError as exc:
+                if (exc.response_diagnostics is not None
+                        and exc.response_diagnostics.response_status == "missing_terminal"):
+                    error = LLMHTTPExecutionError(
+                        "transport_unknown", outcome_unknown=True,
+                        physical_attempts=execution.physical_attempts,
+                    )
+                    error.usage, error.model = exc.usage, exc.model
+                    error.response_diagnostics = exc.response_diagnostics
+                    raise error from exc
+                raise
+
+        parsed = execution.post(
+            url, headers, payload, timeout, consume, on_start=started,
+            capture=diagnostic_capture,
+        )
+        if visible_output_observer is not None:
+            visible_output_observer.on_stream_complete()
+        return parsed
     request_count = 0
 
     def request_once() -> Mapping[str, object]:
@@ -632,6 +702,23 @@ def _post_json(
     diagnostic_capture: ProviderBodyCapture | None = None,
     max_attempts: int = LLM_PROVIDER_RETRY_ATTEMPTS,
 ) -> Mapping[str, object]:
+    if (execution := current_http_execution()) is not None:
+        def consume(lines: Iterable[bytes]) -> Mapping[str, object]:
+            raw_body = b"".join(lines)
+            if diagnostic_capture is not None:
+                diagnostic_capture.append(raw_body)
+            try:
+                parsed = json.loads(raw_body)
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise LLMInvalidResponseError(
+                    "LLM provider returned invalid JSON",
+                    kind=LLMInvalidResponseKind.ENVELOPE_INVALID,
+                ) from exc
+            return _require_provider_response_object(parsed)
+
+        return execution.post(
+            url, headers, payload, timeout, consume, capture=diagnostic_capture,
+        )
     def request_once() -> str:
         request = _provider_request(url, headers, payload)
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -701,9 +788,17 @@ def _enforce_request_input_limit(
     *,
     settings: Settings,
     payload: Mapping[str, object],
+    completion_policy: CompletionStagePolicy | None = None,
 ) -> None:
     """Reject oversized exact-model input before any provider transport."""
 
+    if completion_policy is not None:
+        capability = completion_policy.context_capability
+        if capability is None:
+            raise ValueError("Completion stage has no ordinary HTTP context capability")
+        if estimate_completion_request_tokens(payload, capability=capability) > capability.input_hard_limit:
+            raise TutorContextError("TUTOR_CONTEXT_REQUEST_OVERFLOW")
+        return
     if not settings.uses_deepseek_v4_flash_responses:
         return
     input_payload = {
@@ -719,6 +814,58 @@ def _enforce_request_input_limit(
     estimated_tokens = max(1, (len(encoded) + 3) // 4)
     if estimated_tokens > settings.tutor_deepseek_v4_flash_input_limit_tokens:
         raise ValueError("LLM request input exceeds the configured DeepSeek Flash maximum")
+
+
+def build_json_request_payload(
+    settings: Settings, messages: Sequence[Mapping[str, str]], *,
+    temperature: float | None = None, max_tokens: int | None = None,
+    output_schema: Mapping[str, object] | None = None, schema_name: str | None = None,
+    thinking_mode: Literal["enabled", "disabled"] | None = None,
+    reasoning_effort: Literal["low", "high", "max"] | None = None,
+) -> dict[str, object]:
+    """Pure request representation shared by planning and the final transport.
+
+    Includes JSON hints, role conversion, schemas and all protocol wrappers.
+    Callers must still apply the stage/legacy policy and final input guard.
+    """
+    protocol = select_llm_protocol(settings)
+    if protocol is LLMProtocol.DEEPSEEK_CHAT_COMPLETIONS:
+        payload: dict[str, object] = {
+            "model": str(settings.llm_model or ""),
+            "messages": _messages_to_chat_completions(messages, require_json_hint=True),
+            "response_format": {"type": "json_object"},
+        }
+        if thinking_mode is not None:
+            payload["thinking"] = {"type": thinking_mode}
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+    else:
+        instructions, input_text = _messages_to_responses_input(messages)
+        text_format: dict[str, object] = {"type": "json_object"}
+        if output_schema is not None and (
+            protocol is not LLMProtocol.DEEPSEEK_RESPONSES
+            or settings.tutor_deepseek_responses_json_schema_enabled
+        ):
+            text_format = {
+                "type": "json_schema", "name": schema_name or "structured_output",
+                "schema": dict(output_schema), "strict": True,
+            }
+        payload = {
+            "model": str(settings.llm_model or ""),
+            "input": _ensure_json_mode_hint(input_text), "stream": True,
+            "text": {"format": text_format},
+        }
+        if instructions is not None:
+            payload["instructions"] = instructions
+        if thinking_mode is not None and settings.llm_provider_type == "deepseek":
+            payload["reasoning"] = {"effort": "none" if thinking_mode == "disabled" else (reasoning_effort or "high")}
+        if max_tokens is not None:
+            payload["max_output_tokens"] = max_tokens
+    if temperature is not None:
+        payload["temperature"] = temperature
+    return payload
 
 
 def _post_text_stream(
@@ -982,6 +1129,13 @@ def _parse_responses_stream(
                 continue
 
         flush_frame()
+    except LLMHTTPExecutionError as exc:
+        exc.usage = _extract_llm_usage(observed_response, protocol=LLMProtocol.RESPONSES)
+        exc.model = _response_model(observed_response) or None
+        exc.response_diagnostics = _extract_response_diagnostics(
+            observed_response, status_override="missing_terminal", visible_text=latest_text,
+        )
+        raise
     except LLMInvalidResponseError as exc:
         exc.attach_response_metadata(
             usage=_extract_llm_usage(observed_response, protocol=LLMProtocol.RESPONSES),

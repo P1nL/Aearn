@@ -10,6 +10,10 @@ class _UserRows:
     def fetchone(self):
         return {}
 
+    def fetchall(self):
+        # This fixture models an installation without completion migrations.
+        return []
+
 
 class _InventoryConnection:
     def __init__(self):

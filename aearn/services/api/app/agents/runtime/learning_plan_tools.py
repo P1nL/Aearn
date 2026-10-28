@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, replace
+from typing import Protocol, cast
 
 from psycopg import Connection
 from pydantic import ValidationError
@@ -26,6 +26,7 @@ from app.services.learning.plan_tools import (
 )
 
 from .contracts import (
+    RuntimePlanningStepResult,
     RuntimeToolCall,
     RuntimeToolDefinition,
     RuntimeToolRegistry,
@@ -59,7 +60,7 @@ class LearningPlanToolBudget:
             raise ValueError("learning plan tool max_conflicts must be within 0..4")
         if not 1_024 <= self.max_payload_bytes <= 128_000:
             raise ValueError("learning plan tool max_payload_bytes is invalid")
-        if not 0.1 <= self.max_wall_seconds <= 600:
+        if not 0.1 <= self.max_wall_seconds <= 2_400:
             raise ValueError("learning plan tool max_wall_seconds is invalid")
         if not 1_000 <= self.max_output_bytes <= 8_000:
             raise ValueError("learning plan tool max_output_bytes is invalid")
@@ -82,6 +83,8 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         self._calls = 0
         self._repairs = 0
         self._conflicts = 0
+        self._calls_before_turn = 0
+        self._repairs_before_turn = 0
         self._primed_context_result: LearningPlanAgentToolResult | None = None
         self._planning_context_result: LearningPlanAgentToolResult | None = None
         self._planning_intent_hint: dict[str, object] | None = None
@@ -91,6 +94,7 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         self._direction_protocol_invalid = False
         self._intake_mode = False
         self._draft_completed = False
+        self._saved_draft_result: LearningPlanAgentToolResult | None = None
         self._order_repair_used = False
         self.results: list[LearningPlanAgentToolResult] = []
 
@@ -105,6 +109,8 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         policy_allowed: Callable[[], bool] = lambda: True,
         budget: LearningPlanToolBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
+        committed_state: Mapping[str, object] | None = None,
+        recover_committed_draft: bool = False,
     ) -> "LearningPlanRuntimeToolRegistry":
         expected = build_expected_learning_plan_tool_fence(
             conn,
@@ -117,10 +123,107 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
             runtime_generation=runtime_generation_reader,
             policy_allowed=policy_allowed,
         )
-        return cls(
-            LearningPlanToolService(conn, run=run, expected_fence=expected, fence=fence),
+        service = LearningPlanToolService(conn, run=run, expected_fence=expected, fence=fence)
+        registry = cls(
+            service,
             budget=budget,
             clock=clock,
+        )
+        if committed_state is not None or recover_committed_draft:
+            registry.prime_context()
+        if committed_state is not None:
+            registry.restore_committed_direction(committed_state)
+            registry._direction_protocol_invalid = committed_state.get("direction_protocol_invalid") is True
+            counters = tuple(committed_state.get(key, 0) for key in (
+                "tool_call_count", "tool_repair_count", "tool_conflict_count",
+            ))
+            if any(type(value) is not int or value < 0 for value in counters):
+                raise ValueError("planning_committed_tool_counters_invalid")
+            registry._calls, registry._repairs, registry._conflicts = (cast(int, value) for value in counters)
+            registry._calls_before_turn = registry._calls
+            registry._repairs_before_turn = registry._repairs
+        if recover_committed_draft:
+            saved = service.recover_committed_draft()
+            expected_hash = committed_state.get("draft_content_hash") if committed_state is not None else None
+            if expected_hash is not None and (
+                saved is None or saved.data.get("content_hash") != expected_hash
+            ):
+                raise ValueError("learning_plan_saved_result_stale")
+            if saved is not None:
+                if saved.status is not LearningPlanToolStatus.COMPLETED or saved.code != "learning_plan_draft_completed":
+                    raise ValueError(saved.code)
+                if registry._accepted_direction_action is not PlanningDirectionAction.CONTINUE_MAINLINE:
+                    raise ValueError("learning_plan_saved_direction_missing")
+                registry._saved_draft_result = saved
+                registry._draft_completed = True
+        return registry
+
+    @property
+    def continuation_state(self) -> Mapping[str, object]:
+        """Dependency-bound DATA to record in the durable step result, not a cap."""
+        context = self._planning_context_result or self._primed_context_result
+        draft = self._saved_draft_result or next((
+            result for result in reversed(self.results)
+            if result.status is LearningPlanToolStatus.COMPLETED and result.code == "learning_plan_draft_completed"
+        ), None)
+        return {
+            "schema_version": "learning-plan-runtime-checkpoint-v1",
+            "facts_fingerprint": context.data.get("facts_fingerprint") if context else None,
+            "facts_revision": context.data.get("facts_revision") if context else None,
+            "direction_action": self._accepted_direction_action.value if self._accepted_direction_action else None,
+            "direction_protocol_invalid": self._direction_protocol_invalid,
+            "planning_intent_hint": self._planning_intent_hint,
+            "draft_content_hash": draft.data.get("content_hash") if draft else None,
+            "tool_call_count": self._calls,
+            "tool_repair_count": self._repairs,
+            "tool_conflict_count": self._conflicts,
+        }
+
+    def configure_work_deadline(self, seconds: float) -> None:
+        self._budget = replace(self._budget, max_wall_seconds=min(self._budget.max_wall_seconds, seconds))
+        self._started_at = self._clock()
+
+    def restore_recorded_tool_results(self, saved: RuntimePlanningStepResult) -> None:
+        """Restore counters/status DATA only after reading the exact owner result."""
+        self.results = [LearningPlanAgentToolResult.model_validate(item) for item in saved.tool_results]
+        # The checkpoint contains cumulative guards, whereas the DTO counters
+        # charge only this native step. Do not reset guards or double-charge a
+        # recovered step during original-owner acceptance.
+        self._calls_before_turn = self._calls - saved.tool_call_count
+        self._repairs_before_turn = self._repairs - saved.tool_repair_count
+        if self._calls_before_turn < 0 or self._repairs_before_turn < 0:
+            raise ValueError("planning_committed_tool_counters_invalid")
+
+    def restore_committed_direction(self, state: Mapping[str, object]) -> None:
+        """Revalidate owner-loaded committed DATA against this fresh registry."""
+        context = self.prime_context()
+        if (
+            state.get("schema_version") != "learning-plan-runtime-checkpoint-v1"
+            or context.status not in {LearningPlanToolStatus.COMPLETED, LearningPlanToolStatus.AWAITING_USER}
+            or state.get("facts_fingerprint") != context.data.get("facts_fingerprint")
+            or state.get("facts_revision") != context.data.get("facts_revision")
+            or not state.get("facts_fingerprint")
+        ):
+            raise ValueError("planning_committed_direction_stale")
+        if state.get("direction_action") is None:
+            return
+        tool_input = PlanningContextReadInput.model_validate({
+            "direction_action": state["direction_action"],
+            "planning_intent_hint": state.get("planning_intent_hint"),
+        })
+        action = tool_input.direction_action
+        if action is None:
+            raise ValueError("planning_committed_direction_missing")
+        result = self._service.read_context(tool_input)
+        if not _direction_result_is_accepted(action, result):
+            raise ValueError("planning_committed_direction_stale")
+        self._model_context_read = True
+        self._accepted_direction_action = action
+        self._accepted_direction_result = result
+        self._planning_context_result = result
+        self._planning_intent_hint = (
+            tool_input.planning_intent_hint.model_dump(mode="json")
+            if tool_input.planning_intent_hint else None
         )
 
     @property
@@ -226,11 +329,11 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
 
     @property
     def call_count(self) -> int:
-        return self._calls
+        return self._calls - self._calls_before_turn
 
     @property
     def repair_count(self) -> int:
-        return self._repairs
+        return self._repairs - self._repairs_before_turn
 
     async def invoke(self, call: RuntimeToolCall) -> RuntimeToolResult:
         if (
@@ -380,6 +483,16 @@ class LearningPlanRuntimeToolRegistry(RuntimeToolRegistry):
         if self._intake_mode:
             self._direction_protocol_invalid = True
             return _fatal("planning_direction_intake_draft_forbidden")
+        if self._saved_draft_result is not None:
+            # Recovery DATA is not a lease/input/source capability. Re-read the
+            # original owner on each callback, just as a non-recovered tool does.
+            saved = cast(LearningPlanToolService, self._service).recover_committed_draft()
+            if saved is None or (
+                saved.status is LearningPlanToolStatus.COMPLETED
+                and saved.data.get("content_hash") != self._saved_draft_result.data.get("content_hash")
+            ):
+                return _fatal("learning_plan_saved_result_stale")
+            return saved
         try:
             draft_input = LearningPlanDraftToolInput.model_validate(dict(call.arguments))
         except ValidationError as exc:

@@ -143,7 +143,16 @@ def _reconstruct(repo: AssessmentReceiptRepository, handle: str, *, execution: b
     if len(candidates) != 1:
         raise SourceAssessmentDenied("SOURCE_PRIVATE_PUBLIC_CARRIER_MISSING")
     candidate = candidates[0]
-    corpus = CorpusRepository(repo.conn).version(candidate["corpus_id"], for_update=True)
+    # Identity-only hint before the version lock, never current authority. A
+    # stored association is immutable and is fully reread/compared below.
+    # First materialization remains a mutation with the original UPDATE lock.
+    existing = repo.conn.execute(
+        "SELECT private_evidence_id FROM rag_actual_d_private_provenance WHERE private_evidence_id=%s",
+        (head["id"],),
+    ).fetchone()
+    corpus_repo = CorpusRepository(repo.conn)
+    corpus = (corpus_repo.version(candidate["corpus_id"], for_share=True) if existing is not None
+              else corpus_repo.version(candidate["corpus_id"], for_update=True))
     private, capture, private_row = repo._load(head["id"])
     aq = private.prepared
     assert isinstance(aq, (PreparedActualDSourceAssessment, PreparedActualDSQLiteSourceAssessment))
@@ -186,6 +195,10 @@ def _reconstruct(repo: AssessmentReceiptRepository, handle: str, *, execution: b
     stored = repo.conn.execute("SELECT * FROM rag_actual_d_private_provenance WHERE private_evidence_id=%s FOR SHARE",
                               (private.evidence_id,)).fetchone()
     if stored is None:
+        if existing is not None:
+            # A concurrently removed association cannot be recreated on a
+            # consumption path (including an original private purge boundary).
+            raise SourceAssessmentDenied("SOURCE_PRIVATE_PROVENANCE_STALE")
         repo.conn.execute("""INSERT INTO rag_actual_d_private_provenance
             (private_evidence_id,user_id,epoch,draft_id,node_id,goal_hash,target_id,public_evidence_id,corpus_id,
              generation,document_id,document_hash,private_proof_hash,public_proof_hash,chunks_json)

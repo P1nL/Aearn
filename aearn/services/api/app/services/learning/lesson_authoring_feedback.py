@@ -50,6 +50,7 @@ CONSTRAINTS = {
     "LESSON_SOURCE_HASH_SEMANTICS_INVALID": "Source integrity validation failed.",
     "LESSON_STANDARD_LINEAGE_REQUIRED": "Standard lineage validation failed.",
     "LESSON_STANDARD_LINEAGE_INVALID": "Standard lineage validation failed.",
+    "LESSON_PERSONALIZED_UNAFFECTED_CHANGED": "Preserve document metadata, block type/order, coverage and citations; change only content inside editable_block_ids.",
 }
 REPAIRABLE = frozenset({
     "LESSON_PROVIDER_ENVELOPE_INVALID", "LESSON_PROVIDER_CONTENT_MISSING",
@@ -63,6 +64,7 @@ REPAIRABLE = frozenset({
     "LESSON_GATE_DUPLICATE", "LESSON_COVERAGE_INCOMPLETE", "LESSON_SENSITIVE_CONTENT_FORBIDDEN",
     "LESSON_PERSONALIZED_SCOPE_MISMATCH", "LESSON_PERSONALIZED_COVERAGE_REDUCED",
     "LESSON_PERSONALIZED_GATE_CHANGED",
+    "LESSON_PERSONALIZED_UNAFFECTED_CHANGED",
 })
 STAGES = frozenset({"provider_response", "candidate_shape", "candidate_contract", "candidate_identity", "quality_gate"})
 _LOCATION = re.compile(r"(?:document|blocks(?:\[(?:[0-9]|[1-5][0-9]|6[0-3])\])?(?:\.(?:citation_ids|type|order_index|block_id|title|subtitle|items|coverage_keys|paragraphs|statement|language_id|code|explanation|execution_claim|columns|rows|conclusion|steps|gate_key|gate_kind|assessment_contract_version|required_capabilities|learner_prompt|points))?|language_id|knowledge_key)")
@@ -87,11 +89,15 @@ class LessonAuthorFeedback:
     failed_stage: str
     previous_attempt_index: int
     issues: tuple[LessonFeedbackIssue, ...]
+    schema_version: str = "lesson_author_feedback_v1"
 
     def __post_init__(self) -> None:
         if self.document_kind not in {"standard", "personalized"} or self.failed_stage not in STAGES:
             raise ValueError("Invalid Lesson feedback scope")
-        if type(self.previous_attempt_index) is not int or self.previous_attempt_index not in {1, 2}:
+        if self.schema_version not in {"lesson_author_feedback_v1", "lesson_author_feedback_v2"}:
+            raise ValueError("Invalid Lesson feedback version")
+        if (type(self.previous_attempt_index) is not int or self.previous_attempt_index < 1
+                or (self.schema_version == "lesson_author_feedback_v1" and self.previous_attempt_index not in {1, 2})):
             raise ValueError("Invalid Lesson feedback attempt")
         if not 1 <= len(self.issues) <= 12:
             raise ValueError("Lesson feedback requires 1..12 issues")
@@ -101,7 +107,7 @@ class LessonAuthorFeedback:
         return all(issue.code in REPAIRABLE for issue in self.issues)
 
     def payload(self) -> dict[str, object]:
-        return {"schema_version": "lesson_author_feedback_v1", "document_kind": self.document_kind,
+        return {"schema_version": self.schema_version, "document_kind": self.document_kind,
                 "failed_stage": self.failed_stage, "previous_attempt_index": self.previous_attempt_index,
                 "issues": [issue.payload() for issue in self.issues]}
 
@@ -114,6 +120,7 @@ class LessonAuthorFeedback:
 def attempt_diagnostic(
     document_kind: str, attempt: int, feedback: LessonAuthorFeedback | None = None, *,
     response_diagnostics: LLMResponseDiagnostics | None = None, usage: LLMUsage | None = None,
+    completion_driven: bool = False,
 ) -> dict[str, object]:
     value: dict[str, object] = {
         "schema_version": "lesson_author_attempt_diagnostic_v1", "document_kind": document_kind,
@@ -122,10 +129,12 @@ def attempt_diagnostic(
         "issue_locations": [issue.location for issue in feedback.issues] if feedback else [],
         "feedback_hash": feedback.content_hash if feedback else None,
     }
-    if response_diagnostics is not None or (usage is not None and usage.reasoning_tokens is not None):
+    if completion_driven or response_diagnostics is not None or (usage is not None and usage.reasoning_tokens is not None):
         value["schema_version"] = "lesson_author_attempt_diagnostic_v2"
         value["provider_response"] = asdict(response_diagnostics) if response_diagnostics is not None else None
         value["reasoning_tokens"] = usage.reasoning_tokens if usage is not None else None
+    if completion_driven:
+        value["schema_version"] = "lesson_author_attempt_diagnostic_v3"
     return validate_attempt_diagnostic(value)
 
 
@@ -134,12 +143,14 @@ def validate_attempt_diagnostic(value: Mapping[str, object]) -> dict[str, object
         return {}
     expected = {"schema_version", "document_kind", "document_attempt_index", "failure_stage", "issue_codes", "issue_locations", "feedback_hash"}
     version = value.get("schema_version")
-    if version == "lesson_author_attempt_diagnostic_v2":
+    if version in {"lesson_author_attempt_diagnostic_v2", "lesson_author_attempt_diagnostic_v3"}:
         expected |= {"provider_response", "reasoning_tokens"}
         _validate_provider_diagnostic(value)
-    if set(value) != expected or version not in ("lesson_author_attempt_diagnostic_v1", "lesson_author_attempt_diagnostic_v2"):
+    if set(value) != expected or version not in ("lesson_author_attempt_diagnostic_v1", "lesson_author_attempt_diagnostic_v2", "lesson_author_attempt_diagnostic_v3"):
         raise ValueError("Invalid Lesson diagnostic shape")
-    if value["document_kind"] not in ("standard", "personalized") or type(value["document_attempt_index"]) is not int or value["document_attempt_index"] not in (1, 2):
+    attempt = value["document_attempt_index"]
+    if (value["document_kind"] not in ("standard", "personalized") or type(attempt) is not int
+            or attempt < 1 or (version != "lesson_author_attempt_diagnostic_v3" and attempt not in (1, 2))):
         raise ValueError("Invalid Lesson diagnostic scope")
     codes, locations = value["issue_codes"], value["issue_locations"]
     if not isinstance(codes, list) or not isinstance(locations, list) or len(codes) != len(locations) or len(codes) > 12:

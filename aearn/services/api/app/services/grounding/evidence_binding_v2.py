@@ -96,14 +96,14 @@ class EvidenceSelection(CurrentAuthorization):
             active = self.governance.repo.active(demand.scope.subject_id)
             if active is None:
                 return MaterialSelectionEntry.model_validate({**key, "status": "gap", "gaps": ("missing_material",)})
-            version = self.governance.repo.version(active.corpus_id, for_update=True)
+            version = self.governance.repo.version(active.corpus_id, for_share=True)
             if (version.state != "published" or version.summary_hash is None
                     or version.subject_id != demand.scope.subject_id
                     or version.subject_version != demand.scope.subject_version):
                 return MaterialSelectionEntry.model_validate({**key, "status": "gap", "gaps": ("source_stale",)})
             self.governance._verified(active.corpus_id, summary_hash=version.summary_hash,
-                                      purpose=demand.purpose)
-            _, rows = self.governance._rows(active.corpus_id)
+                                      purpose=demand.purpose, consumption_read=True)
+            _, rows = self.governance._rows(active.corpus_id, consumption_read=True)
             chunks = self.conn.execute(
                 "SELECT chunk_id,chunk_hash,content,facets_json,document_id FROM grounding_corpus_chunks "
                 "WHERE corpus_version_id=%s ORDER BY document_id,chunk_id FOR SHARE",
@@ -171,7 +171,7 @@ class EvidenceSelection(CurrentAuthorization):
                     ))
             # Final C current-use/expiry check after any pointer wait.
             self.governance._verified(active.corpus_id, summary_hash=version.summary_hash,
-                                      purpose=demand.purpose)
+                                      purpose=demand.purpose, consumption_read=True)
             selected = tuple(current[:12])
             selected_ids = {coord.chunk_id for coord in selected}
             selected_facets = project_covered_facets(

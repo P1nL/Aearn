@@ -2,6 +2,8 @@
 # ruff: noqa: F403, F405
 from __future__ import annotations
 
+from app.agents.harness.contracts import TutorExecutionProfile
+
 from ._namespace import *
 from ._mixin import PersistenceMixin
 
@@ -30,6 +32,18 @@ class RunPersistenceMixin(PersistenceMixin):
         if origin not in {"interactive", "proactive"}:
             raise ValueError("Tutor run origin is invalid")
         protocol_version = TutorInteractionProtocolVersion(str(interaction_protocol_version))
+        if policy.execution_profile is TutorExecutionProfile.COMPLETION_DRIVEN_V1:
+            from app.services.tutor.completion_execution import COMPLETION_POLICY_VERSION
+
+            # First/normal interactive admission supplies this historical default
+            # label even for an explicitly new completion-profile snapshot.
+            # Retry, queued and response policies are not aliases of this path.
+            normal_interactive_admission = (
+                origin == "interactive" and policy_version == "tutor_interactive_policy_v1"
+            )
+            if policy_version not in ('tutor_policy_v1', COMPLETION_POLICY_VERSION) and not normal_interactive_admission:
+                raise ValueError('completion admission policy version mismatch')
+            policy_version = COMPLETION_POLICY_VERSION
         if retry_of_turn_id is None and retry_root_turn_id is not None:
             raise ValueError("retry root requires retry predecessor")
         _safe_key(policy_version, label="policy version")
@@ -134,6 +148,11 @@ class RunPersistenceMixin(PersistenceMixin):
             raise ValueError("lease duration must be positive")
         with self._conn.transaction():
             run = self._lock_run(user_id=user_id, run_id=run_id)
+            if _as_mapping(run.get('policy_json')).get('execution_profile') == 'completion_driven_v1':
+                clock_row = self._conn.execute('SELECT clock_timestamp() AS now').fetchone()
+                if clock_row is None:
+                    return None
+                now = cast(datetime, clock_row['now'])
             if _is_terminal(run) or run.get("cancelled_at") is not None or run.get("superseded_by_run_id") is not None:
                 return None
             expires_at = _as_datetime(run.get("active_lease_expires_at"))
@@ -173,6 +192,16 @@ class RunPersistenceMixin(PersistenceMixin):
             raise ValueError("lease duration must be positive")
         new_expiry = now + timedelta(seconds=duration_seconds)
         with self._conn.transaction():
+            current = self._lock_run(user_id=user_id, run_id=lease.run_id)
+            if _as_mapping(current.get('policy_json')).get('execution_profile') == 'completion_driven_v1':
+                clock_row = self._conn.execute('SELECT clock_timestamp() AS now').fetchone()
+                if clock_row is None:
+                    return None
+                fresh = cast(datetime, clock_row['now'])
+                expiry = _as_datetime(current.get('active_lease_expires_at'))
+                if expiry is None or expiry <= fresh:
+                    return None
+                new_expiry = fresh + timedelta(seconds=duration_seconds)
             # Permit a late heartbeat only while the exact owner/generation CAS
             # still matches. A replacement claim increments the generation, so
             # an obsolete worker can never renew after another owner takes over.

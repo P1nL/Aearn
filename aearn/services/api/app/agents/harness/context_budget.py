@@ -16,12 +16,18 @@ from app.agents.harness.contracts import (
     TutorContextError,
     TutorContextInput,
     TutorContextSelection,
+    TutorExecutionProfile,
     TutorProviderContextCapability,
     TutorRunSnapshot,
     build_compaction_request,
 )
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
+from app.services.llm.completion_policy import (
+    estimate_completion_request_tokens, resolve_completion_stage_policy,
+)
 from app.services.llm.contracts import LLMUsage
+from app.services.llm.llm_client import build_json_request_payload
+from app.services.tutor.decision_protocol import TUTOR_PROVIDER_ITEMS_SCHEMA_NAME, tutor_provider_output_schema
 
 from app.agents.harness.provider_request import TutorProviderRequestSerializer
 
@@ -76,14 +82,22 @@ def resolve_tutor_provider_context_capability(
     )
 
 
-def build_tutor_context_budget_policy(settings: Settings) -> TutorContextBudgetPolicy:
+def build_tutor_context_budget_policy(
+    settings: Settings, *, completion_stage: str | None = None,
+) -> TutorContextBudgetPolicy:
     fixed_mode = (
         TutorContextBudgetMode(settings.tutor_context_fixed_mode)
         if settings.tutor_context_fixed_mode is not None
         else None
     )
+    capability = resolve_tutor_provider_context_capability(settings)
+    if completion_stage is not None:
+        completion_capability = resolve_completion_stage_policy(settings, completion_stage).context_capability
+        if completion_capability is None:
+            raise ValueError("Sidecar has no ordinary HTTP context budget policy")
+        capability = completion_capability
     return TutorContextBudgetPolicy(
-        capability=resolve_tutor_provider_context_capability(settings),
+        capability=capability,
         mode_targets=(
             (TutorContextBudgetMode.COMPACT, settings.tutor_context_compact_target_tokens),
             (TutorContextBudgetMode.NORMAL, settings.tutor_context_normal_target_tokens),
@@ -94,7 +108,7 @@ def build_tutor_context_budget_policy(settings: Settings) -> TutorContextBudgetP
         critical_ratio=settings.tutor_context_critical_ratio,
         max_expansions=settings.tutor_context_max_expansions,
         estimator_version="utf8_bytes_v1",
-        policy_version="tutor_context_budget_v1",
+        policy_version="tutor_completion_context_budget_v1" if completion_stage is not None else "tutor_context_budget_v1",
         fixed_mode=fixed_mode,
     )
 
@@ -107,9 +121,11 @@ class TutorContextBudgetPlanner:
         *,
         estimator: TokenEstimator | None = None,
         serializer: TutorProviderRequestSerializer | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self._estimator = estimator or Utf8ByteTokenEstimator()
         self._serializer = serializer or TutorProviderRequestSerializer()
+        self._settings = settings
 
     def build_context(
         self,
@@ -131,6 +147,7 @@ class TutorContextBudgetPlanner:
             context_input,
             token_budget=capability.input_hard_limit,
             optional_token_budget=0,
+            preserve_required_content=run.policy.execution_profile is TutorExecutionProfile.COMPLETION_DRIVEN_V1,
         )
         mode = self._mode_for(
             policy=policy,
@@ -208,6 +225,7 @@ class TutorContextBudgetPlanner:
                 token_budget=selection_budget,
                 optional_token_budget=optional_budget,
                 budget_plan=replace(plan, optional_token_budget=optional_budget),
+                preserve_required_content=run.policy.execution_profile is TutorExecutionProfile.COMPLETION_DRIVEN_V1,
             )
             candidate, estimate = self._stabilize_estimate(
                 run=run,
@@ -334,11 +352,15 @@ class TutorContextBudgetPlanner:
         capability: TutorProviderContextCapability,
     ) -> int:
         messages = self._serializer.build_messages(run=run, context=context)
-        serialized = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
-        return (
-            max(1, self._estimator.estimate_tokens(serialized))
-            + capability.protocol_reserve_tokens
-            + capability.safety_margin_tokens
+        request: object = messages
+        if run.policy.execution_profile is TutorExecutionProfile.COMPLETION_DRIVEN_V1:
+            settings = self._settings or get_settings()
+            request = build_json_request_payload(
+                settings, messages, max_tokens=capability.max_output_reserve_tokens,
+                output_schema=tutor_provider_output_schema(), schema_name=TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
+            )
+        return estimate_completion_request_tokens(
+            request, capability=capability, estimator=self._estimator,
         )
 
     def _stabilize_estimate(

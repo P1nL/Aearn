@@ -143,6 +143,8 @@ class CodexAppServerRuntime(AgentRuntimePort):
             raise RuntimeBusyError("runtime_writer_busy")
         async with self._turn_lock:
             self._require_reusable()
+            if request.completion_driven and not self.supervisor.config.completion_driven_enabled:
+                raise RuntimeUnavailableError("runtime_completion_profile_disabled")
             self.supervisor.require_connection(request.thread.generation)
             guarded_tools = _TurnToolGuard(request.tools)
             self.supervisor.prepare_turn(
@@ -168,6 +170,8 @@ class CodexAppServerRuntime(AgentRuntimePort):
             loop = asyncio.get_running_loop()
             started_at = loop.time()
             turn_timeout = self.supervisor.config.turn_timeout_s
+            if request.completion_driven:
+                turn_timeout = self.supervisor.config.completion_turn_timeout_s
             if request.timeout_seconds is not None:
                 turn_timeout = min(turn_timeout, request.timeout_seconds)
             turn_deadline = started_at + turn_timeout

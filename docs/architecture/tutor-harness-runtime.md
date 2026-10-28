@@ -1,5 +1,35 @@
 # Tutor Harness Runtime Architecture
 
+## 2026-10-26：完成驱动新运行（代码复核通过，默认关闭）
+
+独立 B 组以 `completion_driven_v1` 接入新显式运行，`tutor_completion_driven_enabled` 默认关闭。只有 feature flag 与当前合法 execution scope 同时满足才使用阶段策略；旧 MVP/legacy 运行、历史结果及累计费用不迁移、不重放。三个持久化合同见 [数据库契约](database-schema.md)，它们不是通用恢复平台。
+
+| 新合同阶段 | 输出预留 | 单次等待上限 | 当前接线边界 |
+| --- | ---: | ---: | --- |
+| Tutor decision | 16384 tokens | 300s | 显式 Tutor 批次与步骤 |
+| Material semantic review | 256 tokens | 90s | 已处于新 HTTP execution scope 的材料校验，非 thinking |
+| Lesson authoring | 12000 tokens | 600s | 新版标准稿/个性化阶段 |
+| Model-review authoring policy | 6000 tokens | 90s | 策略已定义；独立 practice authoring 尚无前置新合同准入，仍走 legacy |
+| Sidecar work turn | 不支持精确 wire 控制 | 900s | 独立工作期限，不扩大 startup/control 的短等待 |
+
+上表是配置与合同，不是驻留进程已加载或真实通道已验收的证明。独立 practice grading 仍为 legacy 的 256 tokens/20s；其 prepare/review/finalize 入口没有新合同 scope，不能由全局开关或之后创建的 run 倒推之前 HTTP 的执行权限。
+
+最终请求按真实序列化 payload（含 schema、协议字段和 repair messages）计算输入，预留本阶段输出及协议空间，并加 `max(4096, 5%估算)` 余量。未验证通道容量时保留原应用输入包络，不把模型物理 1M 窗口直接当作可用输入；必要完整依据不能被静默摘要或裁剪。sidecar 的 output/context capability 保持未知/不可控，不新增代理或修改 Codex 二进制来假造支持。
+
+Tutor 新批次上限为 2400s、8 个逻辑决策、16 个可观察 HTTP，结果记录预留 60s；阶段耗尽后的合法剩余工作由原 owner 取得有界后继，不增加 effect 或工具权限。意图先提交，IO 在事务外，真实结果先短事务提交，再由 fresh owner 接受并落业务效果；恢复不得重复模型派发或已提交动作。Tutor 30s/约10s 心跳及 Lesson 120s/约40s 心跳分别维护，不能以统一放大 timeout 取代续行协议。
+
+当前 v1 的四个批次参数是固定合同，非默认覆盖值显式拒绝，不接受“配置可调但 owner 忽略”的假接线。sidecar 冷恢复保存累计工具/修复/冲突 guards，步骤 DTO 只记录本步增量；回读已提交草案仍需原 service 的 fresh 校验和 session 锁，不能凭缓存成功恢复写权。
+
+2026-10-27：具名非B1d完整前向合同已在开发、原runtime TEST和隔离验证域分别安装并独立COMPLETE，SQL≤602冻结；原legacy 163项、B1d门禁及不可执行531保留。8个真实角色存储场景以7+1通过，最终172项目录/loader/manifest CPU通过。此前缺关系、birth事务模式、正常interactive标签和规划目录读取权限的失败身份/日志均保留，仅修各自调用者或新增前向SQL，不重放旧尝试。
+
+HTTP main03于07:44实际完成1 logical/physical HTTP与1 transport worker：intent先提交、typed result独立提交后accepted、原terminal/job闭合，usage input2366/output87/total2453/reasoning8，金额未知。sidecar新r2于10:31使用原0.153.4 binary完成1 native step、3工具调用，保存2模块2节点待确认计划草案，step accepted、run/公开终态completed并确认native退出；内部HTTP总数、usage和金额仍unknown，observable_http_count=0不代表实际HTTP为零。未修改二进制、建设proxy或伪造输出/context capability。
+
+两个通道分别通过后，开发`.env`于10:36将completion设为true，新验证进程从真实文件加载runtime登录/selector/flag并通过完整只读检查；代码默认仍false。此前真实API/两类worker/beat启动检查后均已停止，不把该配置回读说成驻留服务已加载。
+
+12:13:25–35补充真实Lesson受控闭环通过：新合成用户的独立单节点计划由原track owner准备（不是模型规划或旧sidecar草案确认），原Lesson prepare提交后调用默认真实PrimaryLessonDocumentAuthor/dispatcher。standard及personalized各1 physical request、各自结果独立提交并accepted；个性化引用本次标准阶段，原最终owner原子提交两稿/assignment/run完成，独立service公开投影一致。input4825/output1768/total6593，cached768已包含input、reasoning0，金额unknown。唯一retained Python introduction、完整依据/current、原质量检查及12000/600期限不改，无新GET或额外outer retry。
+
+至此原批准§14.4具名B实施切片与该真实Lesson补充验收收口；冷恢复、复用、并发/隔离等既有PG成功证据不重跑。该完成不是所有B愿景、独立practice legacy迁移、Desktop或HTTP/SSE E2E，也不新增sidecar不支持的wire能力；原G、assessment-2、P8、历史UNKNOWN和旧M03来源期限不变。
+
 ## 2026-10-14：550已安装、原四角色关系已commit；整包current受30秒曝光时序阻塞
 
 550仅修原native relation receiver两处query-local c别名与PLpgSQL变量歧义，原root/phase/lease/author separation/request hash等条件未改。实际compile/replay与完整原prepare rollback通过后selected安装，冻结文件SHA f63b7014e5818dc5c6e126ca9ed3ef59be85e37eee4213378369f9bf3483a80a，receiver body70194b777ae1860df750c87e62b278360601842d98c6c9a4011defeba02dbb51，pipeline及producer两处pin同步；原OID/owner/ACL等保全。schema manifest550已登记，<=549冻结。

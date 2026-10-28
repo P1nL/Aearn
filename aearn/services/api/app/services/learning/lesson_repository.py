@@ -18,6 +18,9 @@ from app.services.learning.lesson_contracts import (
     LessonDocumentDraft,
     LessonImpact,
     LessonSourceSnapshot,
+    LessonEvidenceUnit,
+    LESSON_COMPLETION_VERSION,
+    LESSON_EVIDENCE_VERSION,
     lesson_block_payload,
     parse_lesson_document_candidate,
 )
@@ -91,6 +94,7 @@ class LessonAuthoringRunRecord:
     created_at: datetime
     updated_at: datetime
     terminal_at: datetime | None
+    completion_contract_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +173,10 @@ class PostgresLessonDocumentRepository:
     def create_or_replay_authoring_run(
         self, *, scope: LessonScopeRecord, run_kind: str, idempotency_key: str,
         request_hash: str, profile_hash: str,
+        completion_contract_version: str | None = None,
     ) -> tuple[LessonAuthoringRunRecord, bool]:
+        if completion_contract_version not in {None, LESSON_COMPLETION_VERSION}:
+            raise ValueError("Unsupported Lesson completion contract")
         existing = self._conn.execute(
             "SELECT * FROM tutor_lesson_authoring_runs WHERE user_id = %s AND run_kind = %s AND idempotency_key = %s FOR UPDATE",
             (scope.user_id, run_kind, idempotency_key),
@@ -178,22 +185,39 @@ class PostgresLessonDocumentRepository:
             if str(existing["request_hash"]) != request_hash:
                 raise LessonIdempotencyConflict("Lesson authoring idempotency request conflicts")
             return _run_from_row(existing), True
+        version_column = ", completion_contract_version" if completion_contract_version else ""
+        version_value = ", %s" if completion_contract_version else ""
         row = self._conn.execute(
-            """
+            f"""
             INSERT INTO tutor_lesson_authoring_runs (
               id, user_id, track_id, knowledge_key, run_kind, state, idempotency_key,
               request_hash, expected_track_version, expected_progress_version,
-              active_plan_revision_id, profile_hash
-            ) VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s)
+              active_plan_revision_id, profile_hash{version_column}
+            ) VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s{version_value})
             RETURNING *
             """,
             (str(uuid4()), scope.user_id, scope.track_id, scope.knowledge_key, run_kind,
              idempotency_key, request_hash, scope.track_version, scope.progress_version,
-             scope.active_plan_revision_id, profile_hash),
+             scope.active_plan_revision_id, profile_hash)
+            + ((completion_contract_version,) if completion_contract_version else ()),
         ).fetchone()
         if row is None:
             raise RuntimeError("Lesson authoring run insert returned no row")
         return _run_from_row(row), False
+
+    def read_personalization_context(self, scope: LessonScopeRecord) -> dict[str, object]:
+        user = self._conn.execute(
+            "SELECT learning_style, teaching_preference, encouragement_preference FROM users WHERE id = %s AND deleted_at IS NULL",
+            (scope.user_id,),
+        ).fetchone()
+        if user is None:
+            raise LessonNotFound("Lesson user was not found")
+        return {
+            "goal_text": scope.goal_text[:1200], "target_level": scope.target_level,
+            "mastery_level": scope.mastery_level, "mastery_confidence": round(scope.mastery_confidence, 4),
+            **{key: (str(user[key]).strip()[:240] or None) if user.get(key) is not None else None
+               for key in ("learning_style", "teaching_preference", "encouragement_preference")},
+        }
 
     def read_authoring_run(self, *, run_id: str, user_id: str | None = None, for_update: bool = False) -> LessonAuthoringRunRecord:
         user_clause = " AND user_id = %s" if user_id is not None else ""
@@ -210,6 +234,24 @@ class PostgresLessonDocumentRepository:
         expires = _optional_datetime(row.get("lease_expires_at"))
         if str(row["state"]) in {"claimed", "running"} and expires is not None and expires > now:
             return None
+        if row.get("completion_contract_version") == LESSON_COMPLETION_VERSION:
+            # Expiry is not execution closure. An intent may already have reached
+            # the provider; neither a new lease nor a new idempotency key replays it.
+            unresolved = self._conn.execute(
+                "SELECT id FROM tutor_lesson_authoring_stage_attempts WHERE run_id = %s AND state IN ('intent', 'outcome_unknown') LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if unresolved is not None:
+                return None
+            state = "running" if row["state"] == "running" else "claimed"
+            claimed = self._conn.execute(
+                """UPDATE tutor_lesson_authoring_runs
+                   SET state = %s, lease_generation = lease_generation + 1,
+                       lease_owner = %s, lease_expires_at = %s
+                   WHERE id = %s AND lease_generation = %s AND state = %s RETURNING *""",
+                (state, owner, now + timedelta(seconds=120), run_id, row["lease_generation"], row["state"]),
+            ).fetchone()
+            return _run_from_row(claimed) if claimed is not None else None
         claimed = self._conn.execute(
             """
             UPDATE tutor_lesson_authoring_runs
@@ -239,15 +281,141 @@ class PostgresLessonDocumentRepository:
         if row is None:
             raise LessonVersionConflict("Lesson authoring lease changed")
 
-    def assert_authoring_current(self, *, run: LessonAuthoringRunRecord) -> None:
+    def assert_authoring_current(self, *, run: LessonAuthoringRunRecord, now: datetime | None = None) -> None:
         current = self.read_authoring_run(run_id=run.run_id, for_update=True)
         if current.state != "running" or current.lease_generation != run.lease_generation:
             raise LessonVersionConflict("Lesson authoring lease changed")
+        if run.completion_contract_version == LESSON_COMPLETION_VERSION:
+            from datetime import UTC
+            at = now or datetime.now(UTC)
+            if current.lease_owner != run.lease_owner or current.lease_expires_at is None or current.lease_expires_at <= at:
+                raise LessonVersionConflict("Lesson authoring lease expired")
         scope = self.read_scope(user_id=run.user_id, track_id=run.track_id, knowledge_key=run.knowledge_key)
         if (scope.track_version != run.expected_track_version
                 or scope.progress_version != run.expected_progress_version
                 or scope.active_plan_revision_id != run.active_plan_revision_id):
             raise LessonVersionConflict("Lesson authoring scope changed")
+        if (run.completion_contract_version == LESSON_COMPLETION_VERSION
+                and hashlib.sha256(_json(self.read_personalization_context(scope)).encode()).hexdigest() != run.profile_hash):
+            raise LessonVersionConflict("Lesson personal conditions changed")
+
+    def heartbeat_authoring_run(self, *, run: LessonAuthoringRunRecord, now: datetime) -> bool:
+        row = self._conn.execute(
+            """UPDATE tutor_lesson_authoring_runs SET lease_expires_at = %s
+               WHERE id = %s AND state = 'running' AND completion_contract_version = %s
+                 AND lease_owner = %s AND lease_generation = %s AND lease_expires_at > %s
+               RETURNING id""",
+            (now + timedelta(seconds=120), run.run_id, LESSON_COMPLETION_VERSION,
+             run.lease_owner, run.lease_generation, now),
+        ).fetchone()
+        return row is not None
+
+    def read_completion_attempts(
+        self, *, run: LessonAuthoringRunRecord, stage_kind: str,
+        dependency: Mapping[str, object],
+    ) -> tuple[dict[str, object], ...]:
+        rows = self._conn.execute(
+            """SELECT * FROM tutor_lesson_authoring_stage_attempts
+               WHERE user_id = %s AND track_id = %s AND knowledge_key = %s
+                 AND stage_kind = %s AND dependency_hash = %s AND dependency_json = %s
+               ORDER BY created_at, id""",
+            (run.user_id, run.track_id, run.knowledge_key, stage_kind,
+             hashlib.sha256(_json(dependency).encode()).hexdigest(), Jsonb(dict(dependency))),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def read_prior_personalized_stage(
+        self, *, run: LessonAuthoringRunRecord, standard_dependency_hash: str,
+    ) -> dict[str, object] | None:
+        row = self._conn.execute(
+            """SELECT * FROM tutor_lesson_authoring_stage_attempts
+               WHERE user_id = %s AND track_id = %s AND knowledge_key = %s
+                 AND stage_kind = 'personalized' AND state = 'accepted'
+                 AND dependency_json ->> 'standard_dependency_hash' = %s
+               ORDER BY created_at DESC, id DESC LIMIT 1""",
+            (run.user_id, run.track_id, run.knowledge_key, standard_dependency_hash),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def begin_completion_attempt(
+        self, *, run: LessonAuthoringRunRecord, stage_kind: str,
+        dependency: Mapping[str, object], request_hash: str,
+        standard_attempt_id: str | None, now: datetime,
+    ) -> dict[str, object] | None:
+        dependency_hash = hashlib.sha256(_json(dependency).encode()).hexdigest()
+        self._conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (f"lesson-stage:{run.user_id}:{run.track_id}:{run.knowledge_key}:{stage_kind}", dependency_hash),
+        )
+        self.assert_authoring_current(run=run, now=now)
+        if run.completion_contract_version != LESSON_COMPLETION_VERSION:
+            raise LessonVersionConflict("Legacy run cannot create a completion intent")
+        attempts = self.read_completion_attempts(run=run, stage_kind=stage_kind, dependency=dependency)
+        if any(row["state"] in {"intent", "outcome_unknown", "result_saved"} for row in attempts):
+            raise LessonVersionConflict("Lesson stage requires result reconciliation, not replay")
+        if any(row["state"] == "accepted" for row in attempts):
+            return None  # Another owner committed a reusable result after lookup.
+        current = self.read_authoring_run(run_id=run.run_id)
+        row = self._conn.execute(
+            """INSERT INTO tutor_lesson_authoring_stage_attempts (
+                 run_id, user_id, track_id, knowledge_key, stage_kind, attempt_index,
+                 stage_attempt_index, lease_generation, dependency_hash, dependency_json,
+                 request_hash, standard_attempt_id, request_deadline_at, result_deadline_at
+               ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING *""",
+            (run.run_id, run.user_id, run.track_id, run.knowledge_key, stage_kind,
+             current.attempt_count + 1, len(attempts) + 1, run.lease_generation,
+             dependency_hash, Jsonb(dict(dependency)),
+             request_hash, standard_attempt_id, now + timedelta(seconds=600), now + timedelta(seconds=660)),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Lesson stage intent was not inserted")
+        self._conn.execute(
+            "UPDATE tutor_lesson_authoring_runs SET attempt_count = %s WHERE id = %s",
+            (current.attempt_count + 1, run.run_id),
+        )
+        return dict(row)
+
+    def save_completion_result(
+        self, *, attempt: Mapping[str, object], result: Mapping[str, object],
+        feedback: Mapping[str, object], execution_outcome: str, usage_status: str,
+        now: datetime,
+    ) -> dict[str, object]:
+        # A late real result is private DATA, not acceptance. Preserve it even
+        # after lease loss/cancellation; no new provider call or authority is minted.
+        state = "outcome_unknown" if execution_outcome == "unknown" else "result_saved"
+        row = self._conn.execute(
+            """UPDATE tutor_lesson_authoring_stage_attempts
+               SET state = %s, result_json = %s, feedback_json = %s,
+                   execution_outcome = %s, usage_status = %s, result_saved_at = %s
+               WHERE id = %s AND run_id = %s AND lease_generation = %s AND state = 'intent'
+               RETURNING *""",
+            (state, Jsonb(dict(result)), Jsonb(dict(feedback)), execution_outcome, usage_status,
+             now, attempt["id"], attempt["run_id"], attempt["lease_generation"]),
+        ).fetchone()
+        if row is None:
+            raise LessonVersionConflict("Lesson result is already closed or unknown")
+        return dict(row)
+
+    def decide_completion_result(
+        self, *, run: LessonAuthoringRunRecord, attempt: Mapping[str, object],
+        document: LessonDocumentDraft | None, quality: Mapping[str, object], now: datetime,
+    ) -> dict[str, object]:
+        self.assert_authoring_current(run=run, now=now)
+        from app.services.learning.lesson_contracts import canonical_lesson_document_payload
+        row = self._conn.execute(
+            """UPDATE tutor_lesson_authoring_stage_attempts
+               SET state = %s, document_json = %s, document_hash = %s,
+                   quality_json = %s, decided_at = %s, decision_lease_generation = %s
+               WHERE id = %s AND run_id = %s AND state = 'result_saved' RETURNING *""",
+            ("accepted" if document is not None else "rejected",
+             Jsonb(canonical_lesson_document_payload(document)) if document else None,
+             document.content_hash if document else None, Jsonb(dict(quality)), now, run.lease_generation,
+             attempt["id"], run.run_id),
+        ).fetchone()
+        if row is None:
+            raise LessonVersionConflict("Lesson result decision changed")
+        return dict(row)
 
     def record_authoring_attempt(
         self, *, run: LessonAuthoringRunRecord, attempt_index: int, provider: str, model: str, protocol: str,
@@ -280,6 +448,21 @@ class PostgresLessonDocumentRepository:
         )
 
     def fail_authoring_run(self, *, run_id: str, lease_generation: int, failure_code: str, failure_message: str, now: datetime) -> None:
+        current = self.read_authoring_run(run_id=run_id, for_update=True)
+        if (current.completion_contract_version == LESSON_COMPLETION_VERSION
+                and (current.lease_expires_at is None or current.lease_expires_at <= now)):
+            # A stale worker cannot terminalize a known-closed stage that the
+            # next generation can legitimately resume.
+            raise LessonVersionConflict("Expired Lesson owner cannot fail the run")
+        if current.completion_contract_version == LESSON_COMPLETION_VERSION:
+            saved = self._conn.execute(
+                "SELECT id FROM tutor_lesson_authoring_stage_attempts WHERE run_id = %s AND state = 'result_saved' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if saved is not None:
+                # A heartbeat/decision error after result COMMIT must not strand
+                # recoverable DATA behind the immutable failed-run lifecycle.
+                raise LessonVersionConflict("Committed Lesson result requires reconciliation before failure")
         row = self._conn.execute(
             """
             UPDATE tutor_lesson_authoring_runs
@@ -296,7 +479,7 @@ class PostgresLessonDocumentRepository:
     def evidence_is_current(self, snapshots: Sequence[LessonSourceSnapshot]) -> bool:
         for snapshot in snapshots:
             row = self._conn.execute(
-                "SELECT source_id, canonical_url, source_version_label, source_version_kind, document_content_hash, content_hash FROM grounding_chunks WHERE chunk_id = %s",
+                "SELECT * FROM grounding_chunks WHERE chunk_id = %s",
                 (snapshot.grounding_chunk_id,),
             ).fetchone()
             if row is None or (str(row["source_id"]), str(row["canonical_url"]), str(row["source_version_label"]),
@@ -304,6 +487,22 @@ class PostgresLessonDocumentRepository:
                 snapshot.source_id, snapshot.canonical_url, snapshot.source_version_label,
                 snapshot.source_version_kind, snapshot.document_content_hash, snapshot.chunk_content_hash):
                 return False
+            if snapshot.evidence_schema_version == LESSON_EVIDENCE_VERSION:
+                from app.services.grounding.grounding_index_repository import _chunk_from_row
+                from app.services.grounding.grounding_processing import is_admissible_lesson_source
+                from app.services.grounding.grounding_sources import get_grounding_source
+                chunk = _chunk_from_row(row)
+                source = get_grounding_source(snapshot.source_id)
+                if (not is_admissible_lesson_source(chunk)
+                        or source is None
+                        or (source.source_version_label, source.source_version_kind, source.display_name,
+                            source.provider, source.trust_tier, source.content_type) != (
+                            snapshot.source_version_label, snapshot.source_version_kind, snapshot.display_name,
+                            snapshot.provider, snapshot.trust_tier, snapshot.source_type)
+                        or chunk.text != snapshot.evidence_units[0].text
+                        or chunk.section_path != snapshot.section_path
+                        or chunk.source_trust_tier != snapshot.trust_tier):
+                    return False
         return True
 
     def publish_authoring_result(
@@ -317,6 +516,11 @@ class PostgresLessonDocumentRepository:
         current_run = self.read_authoring_run(run_id=run.run_id, for_update=True)
         if current_run.state != "running" or current_run.lease_generation != run.lease_generation:
             raise LessonVersionConflict("Lesson authoring lease changed")
+        if run.completion_contract_version == LESSON_COMPLETION_VERSION:
+            self.assert_authoring_current(run=run, now=now)
+            from app.services.learning.lesson_quality import require_lesson_quality
+            require_lesson_quality(standard_document, snapshots, document_kind="standard")
+            require_lesson_quality(personalized_document, snapshots, document_kind="personalized", standard_document=standard_document)
         scope = self.read_scope(user_id=run.user_id, track_id=run.track_id, knowledge_key=run.knowledge_key, for_update=True)
         if (scope.track_version, scope.progress_version, scope.active_plan_revision_id) != (
             run.expected_track_version, run.expected_progress_version, run.active_plan_revision_id):
@@ -542,22 +746,26 @@ class PostgresLessonDocumentRepository:
         snapshots: tuple[LessonSourceSnapshot, ...], user_id: str | None, track_id: str | None,
     ) -> None:
         for snapshot in snapshots:
+            evidence_columns = ", evidence_schema_version, evidence_units_json" if snapshot.evidence_schema_version else ""
+            evidence_values = ", %s, %s" if snapshot.evidence_schema_version else ""
             self._conn.execute(
-                """
+                f"""
                 INSERT INTO tutor_lesson_source_snapshots (
                   document_id, user_id, track_id, knowledge_key, citation_id,
                   source_id, display_name, provider, trust_tier, source_type,
                   source_version_label, source_version_kind, canonical_url,
                   section_path_json, grounding_chunk_id, document_content_hash,
-                  chunk_content_hash, fetched_at, snapshotted_at, evidence_excerpt
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
+                  chunk_content_hash, fetched_at, snapshotted_at, evidence_excerpt{evidence_columns}
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s{evidence_values})
                 """,
                 (document_id, user_id, track_id, document.knowledge_key, snapshot.citation_id,
                  snapshot.source_id, snapshot.display_name, snapshot.provider, snapshot.trust_tier,
                  snapshot.source_type, snapshot.source_version_label, snapshot.source_version_kind,
                  snapshot.canonical_url, _json(list(snapshot.section_path)), snapshot.grounding_chunk_id,
                  snapshot.document_content_hash, snapshot.chunk_content_hash, snapshot.fetched_at,
-                 snapshot.snapshotted_at, snapshot.evidence_excerpt),
+                 snapshot.snapshotted_at, snapshot.evidence_excerpt)
+                + ((snapshot.evidence_schema_version, Jsonb([unit.payload() for unit in snapshot.evidence_units]))
+                   if snapshot.evidence_schema_version else ()),
             )
         for block in document.blocks:
             for citation_id in block.citation_ids:
@@ -627,6 +835,7 @@ def _run_from_row(row: Mapping[str, object]) -> LessonAuthoringRunRecord:
         personalized_document_id=_optional_str(row.get("personalized_document_id")), assignment_id=_optional_str(row.get("assignment_id")),
         created_at=_datetime(row["created_at"]), updated_at=_datetime(row["updated_at"]),
         terminal_at=_optional_datetime(row.get("terminal_at")),
+        completion_contract_version=_optional_str(row.get("completion_contract_version")),
     )
 
 
@@ -642,6 +851,12 @@ def _snapshot_from_row(row: Mapping[str, object]) -> LessonSourceSnapshot:
         grounding_chunk_id=str(row["grounding_chunk_id"]), document_content_hash=str(row["document_content_hash"]),
         chunk_content_hash=str(row["chunk_content_hash"]), fetched_at=_datetime(row["fetched_at"]),
         snapshotted_at=_datetime(row["snapshotted_at"]), evidence_excerpt=str(row["evidence_excerpt"]),
+        evidence_schema_version=_optional_str(row.get("evidence_schema_version")),
+        evidence_units=tuple(
+            LessonEvidenceUnit(text=str(unit["text"]), content_hash=str(unit["content_hash"]),
+                               start_byte=_int(unit["start_byte"]), end_byte=_int(unit["end_byte"]))
+            for unit in cast(list[dict[str, object]], row.get("evidence_units_json") or [])
+        ),
     )
 
 

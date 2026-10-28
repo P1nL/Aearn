@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import replace
-from typing import Final
+from datetime import datetime
+from typing import Final, NoReturn
 
 from app.agents.harness.context_budget import TutorContextBudgetPlanner
 from app.agents.harness.context_builder import TutorContextBuilder
@@ -22,6 +25,7 @@ from app.agents.harness.contracts import (
     TutorDecisionGateStatus,
     TutorEffectResult,
     TutorEffectStatus,
+    TutorExecutionProfile,
     TutorLease,
     TutorRunResult,
     TutorRunSnapshot,
@@ -35,6 +39,12 @@ from app.agents.harness.contracts import (
 from app.core.safe_diagnostics import log_safe_event, safe_diagnostic_identifier
 from app.agents.harness.skill_catalog import SkillCatalogSnapshot
 from app.services.learning.teaching_contracts import TeachingStepDecision
+from app.services.tutor.mvp_policy import (
+    MVPExecutionStopped, MVP_FINISH_RESERVE_SECONDS, MVP_HTTP_SECONDS, MVP_PHYSICAL_ATTEMPTS,
+)
+from app.services.tutor.completion_execution import (
+    CompletionExecutionError, CompletionExecutionOwner, StepAttempt, completion_enabled_for,
+)
 from app.services.tutor.public_thinking_stream import TutorPublicThinkingSink
 from app.services.tutor.ports import (
     Clock,
@@ -74,6 +84,10 @@ class TutorRunLoop:
         compaction_publisher: TutorCompactionPublisher,
         decision_gate: TutorDecisionGate | None = None,
         lifecycle: TutorLifecyclePersistence | None = None,
+        mvp_grant_fence: Callable[[], datetime | None] | None = None,
+        mvp_on_physical_attempt: Callable[[int], None] | None = None,
+        completion_owner: CompletionExecutionOwner | None = None,
+        completion_stage_seconds: float = 300,
     ) -> None:
         self._store = store
         self._context_loader = context_loader
@@ -86,28 +100,104 @@ class TutorRunLoop:
         self._clock = clock
         self._compaction_publisher = compaction_publisher
         self._lifecycle = lifecycle
+        self._mvp_grant_fence = mvp_grant_fence
+        self._mvp_on_physical_attempt = mvp_on_physical_attempt
+        self._completion_owner = completion_owner
+        self._completion_stage_seconds = completion_stage_seconds
 
     def run(self, *, run_id: str, lease_owner_id: str) -> TutorRunResult:
-        snapshot = self._store.load_snapshot(run_id)
-        if snapshot is None:
+        loaded_snapshot = self._store.load_snapshot(run_id)
+        if loaded_snapshot is None:
             return _missing_run_result(run_id)
+        snapshot: TutorRunSnapshot = loaded_snapshot
 
-        lease = self._store.acquire_lease(
+        acquired_lease = self._store.acquire_lease(
             run_id,
             owner_id=lease_owner_id,
             now=self._clock.now(),
             duration_seconds=snapshot.policy.lease_duration_seconds,
         )
-        if lease is None:
+        if acquired_lease is None:
             return _lease_unavailable_result(snapshot)
+        lease: TutorLease = acquired_lease
 
         snapshot = replace(snapshot, status=TutorRunStatus.LEASED, lease=lease)
+        if completion_enabled_for(snapshot):
+            if self._completion_owner is None:
+                return self.feature_disabled_result(run_id=run_id)
+            from app.services.tutor.completion_loop import run_completion
+
+            return run_completion(self, run=snapshot, lease=lease, owner=self._completion_owner,
+                                  stage_seconds=self._completion_stage_seconds)
         effect_results: list[TutorEffectResult] = []
         context_expansion_count = 0
         metadata = empty_checkpoint_metadata(token_budget=snapshot.policy.context_token_budget)
         thinking_sink: TutorPublicThinkingSink | None = None
+        execution = None
+        mvp_stop: MVPExecutionStopped | None = None
+
+        def deny_mvp(outcome: TutorTerminalOutcome, code: str) -> NoReturn:
+            nonlocal mvp_stop
+            mvp_stop = MVPExecutionStopped(outcome, code)
+            raise mvp_stop
+
+        def renew_mvp_lease() -> None:
+            nonlocal snapshot, lease
+            stop = self._stop_outcome(snapshot)
+            if stop is not None:
+                deny_mvp(*stop)
+            if self._store.current_input_revision(snapshot.run_id) != snapshot.input_revision:
+                deny_mvp(TutorTerminalOutcome.CANCELLED, "mvp_input_revision_changed")
+            renewed = self._heartbeat(lease, snapshot)
+            if renewed is None or (renewed.run_id, renewed.owner_id, renewed.generation) != (lease.run_id, lease.owner_id, lease.generation):
+                deny_mvp(TutorTerminalOutcome.BLOCKED_POLICY, "lease_expired")
+            else:
+                lease = renewed
+                snapshot = replace(snapshot, lease=renewed)
+            # Heartbeat/input queries can themselves wait; never trust their entry clock.
+            stop = self._stop_outcome(snapshot)
+            if stop is not None:
+                deny_mvp(*stop)
+            if self._store.current_input_revision(snapshot.run_id) != snapshot.input_revision:
+                deny_mvp(TutorTerminalOutcome.CANCELLED, "mvp_input_revision_changed")
+            from app.services.llm.http_execution import LEASE_PUMP_GUARD_SECONDS
+
+            # SQL/revision waits consume the original lease. The transport's
+            # independent pump timer must fit the lease left when we return.
+            if (lease.expires_at - self._clock.now()).total_seconds() < LEASE_PUMP_GUARD_SECONDS:
+                deny_mvp(TutorTerminalOutcome.BLOCKED_POLICY, "lease_expired")
+
+        def before_mvp_send() -> float:
+            renew_mvp_lease()
+            fence = self._mvp_grant_fence
+            if fence is None:
+                deny_mvp(TutorTerminalOutcome.BLOCKED_POLICY, "mvp_grant_fence_required")
+            try:
+                grant_deadline = fence() if fence is not None else None
+            except Exception:
+                deny_mvp(TutorTerminalOutcome.BLOCKED_POLICY, "mvp_grant_fence_rejected")
+                raise  # unreachable, keeps exception flow explicit to type checkers
+            renew_mvp_lease()
+            now = self._clock.now()
+            remaining = (snapshot.policy.deadline - now).total_seconds() - MVP_FINISH_RESERVE_SECONDS
+            if remaining <= 0:
+                deny_mvp(TutorTerminalOutcome.BUDGET_EXHAUSTED, "mvp_finish_reserve_required")
+            if grant_deadline is not None:
+                grant_remaining = (grant_deadline - now).total_seconds()
+                if grant_remaining <= 0:
+                    deny_mvp(TutorTerminalOutcome.BLOCKED_POLICY, "mvp_grant_expired")
+                remaining = min(remaining, grant_remaining)
+            return min(float(MVP_HTTP_SECONDS), remaining)
 
         try:
+            if snapshot.policy.execution_profile is TutorExecutionProfile.MVP_TEACHING_V1:
+                if self._mvp_grant_fence is None:
+                    return self._terminal(snapshot, outcome=TutorTerminalOutcome.BLOCKED_POLICY,
+                        diagnostic_code="mvp_grant_fence_required", metadata=metadata)
+                from app.services.llm.http_execution import LLMHTTPExecution, use_http_execution
+
+                execution = LLMHTTPExecution(before_send=before_mvp_send, renew_lease=renew_mvp_lease,
+                    on_attempt=self._mvp_on_physical_attempt, max_attempts=MVP_PHYSICAL_ATTEMPTS)
             initial_stop = self._stop_outcome(snapshot)
             if initial_stop is not None:
                 outcome, diagnostic = initial_stop
@@ -142,8 +232,8 @@ class TutorRunLoop:
                         effect_results=effect_results,
                     )
 
-                lease = self._heartbeat(lease, snapshot)
-                if lease is None:
+                heartbeat = self._heartbeat(lease, snapshot)
+                if heartbeat is None:
                     _discard_public_thinking(thinking_sink)
                     return self._terminal(
                         snapshot,
@@ -152,6 +242,7 @@ class TutorRunLoop:
                         metadata=metadata,
                         effect_results=effect_results,
                     )
+                lease = heartbeat
 
                 current_revision = self._store.current_input_revision(snapshot.run_id)
                 if current_revision != snapshot.input_revision:
@@ -207,15 +298,16 @@ class TutorRunLoop:
                             decision_iteration=decision_iteration,
                             now=self._clock.now,
                         )
-                provider_result = (
-                    self._provider.decide(
-                        run=snapshot,
-                        context=context,
-                        thinking_sink=thinking_sink,
+                with use_http_execution(execution) if execution is not None else nullcontext():
+                    provider_result = (
+                        self._provider.decide(
+                            run=snapshot,
+                            context=context,
+                            thinking_sink=thinking_sink,
+                        )
+                        if thinking_sink is not None
+                        else self._provider.decide(run=snapshot, context=context)
                     )
-                    if thinking_sink is not None
-                    else self._provider.decide(run=snapshot, context=context)
-                )
                 if self._lifecycle is not None and provider_result.attempts:
                     self._lifecycle.persist_provider_attempts(
                         snapshot=snapshot,
@@ -228,6 +320,10 @@ class TutorRunLoop:
                     iteration_count=snapshot.iteration_count + 1,
                     model_call_count=decision_iteration,
                 )
+                if mvp_stop is not None:
+                    _discard_public_thinking(thinking_sink)
+                    return self._terminal(snapshot, outcome=mvp_stop.outcome,
+                        diagnostic_code=mvp_stop.safe_code, metadata=metadata, effect_results=effect_results)
                 refreshed, terminal = self._refresh_before_unsafe_boundary(
                     snapshot,
                     lease=lease,
@@ -388,6 +484,10 @@ class TutorRunLoop:
                     public_thinking_steps=decision.public_thinking_steps,
                     conversation_title=decision.conversation_title,
                 )
+        except MVPExecutionStopped as exc:
+            _discard_public_thinking(thinking_sink)
+            return self._terminal(snapshot, outcome=exc.outcome, diagnostic_code=exc.safe_code,
+                metadata=metadata, effect_results=effect_results)
         except TutorLifecycleConflict:
             return _lease_unavailable_result(snapshot, effect_results=effect_results)
         except TutorContextError as exc:
@@ -434,8 +534,10 @@ class TutorRunLoop:
         decision: TutorDecision,
         metadata: TutorCheckpointMetadata,
         effect_results: list[TutorEffectResult],
+        completion_step: StepAttempt | None = None,
+        validate_action: Callable[[], None] | None = None,
     ) -> tuple[TutorRunSnapshot, bool, TutorRunResult | None]:
-        for request in decision.capability_requests:
+        for index, request in enumerate(decision.capability_requests, 1):
             refreshed, terminal = self._refresh_before_unsafe_boundary(
                 snapshot,
                 lease=lease,
@@ -447,7 +549,17 @@ class TutorRunLoop:
             if refreshed.input_revision != snapshot.input_revision:
                 return refreshed, True, None
             snapshot = refreshed
-            if snapshot.capability_call_count >= snapshot.policy.max_capability_calls:
+            if validate_action is not None:
+                validate_action()
+            if completion_step is not None:
+                if self._completion_owner is None:
+                    raise RuntimeError('completion action owner missing')
+                snapshot = self._completion_owner.action_progress(
+                    run=snapshot, lease=snapshot.lease or lease, step=completion_step,
+                    capability_count=completion_step.capability_count_before + index,
+                    request_id=request.request_id,
+                )
+            elif snapshot.capability_call_count >= snapshot.policy.max_capability_calls:
                 return snapshot, False, self._terminal(
                     snapshot,
                     outcome=TutorTerminalOutcome.BUDGET_EXHAUSTED,
@@ -457,7 +569,12 @@ class TutorRunLoop:
                 )
 
             result = self._capability_gateway.dispatch(run=snapshot, request=request)
-            snapshot = replace(snapshot, capability_call_count=snapshot.capability_call_count + 1)
+            if completion_step is not None and result.diagnostic_code is not None and (
+                '_http_unknown_' in result.diagnostic_code or 'outcome_unknown' in result.diagnostic_code
+            ):
+                raise CompletionExecutionError('completion_action_outcome_unknown')
+            if completion_step is None:
+                snapshot = replace(snapshot, capability_call_count=snapshot.capability_call_count + 1)
             current_revision = self._store.current_input_revision(snapshot.run_id)
             if current_revision != snapshot.input_revision:
                 return replace(snapshot, input_revision=current_revision), True, None
@@ -484,8 +601,10 @@ class TutorRunLoop:
         decision: TutorDecision,
         metadata: TutorCheckpointMetadata,
         effect_results: list[TutorEffectResult],
+        completion_step: StepAttempt | None = None,
+        validate_action: Callable[[], None] | None = None,
     ) -> tuple[TutorRunSnapshot, bool, TutorRunResult | None]:
-        for proposal in decision.effect_proposals:
+        for index, proposal in enumerate(decision.effect_proposals, 1):
             refreshed, terminal = self._refresh_before_unsafe_boundary(
                 snapshot,
                 lease=lease,
@@ -501,7 +620,11 @@ class TutorRunLoop:
                 )
                 return refreshed, True, None
             snapshot = replace(refreshed, status=TutorRunStatus.AWAITING_EFFECT_COMMIT)
-            if snapshot.effect_count >= snapshot.policy.max_effects:
+            if validate_action is not None:
+                validate_action()
+            requested_count = (completion_step.effect_count_before + index if completion_step is not None
+                               else snapshot.effect_count + 1)
+            if max(snapshot.effect_count, requested_count) > snapshot.policy.max_effects:
                 return snapshot, False, self._terminal(
                     snapshot,
                     outcome=TutorTerminalOutcome.BUDGET_EXHAUSTED,
@@ -512,7 +635,16 @@ class TutorRunLoop:
 
             result = self._effect_committer.commit(run=snapshot, proposal=proposal)
             effect_results.append(result)
-            snapshot = replace(snapshot, effect_count=snapshot.effect_count + 1, status=TutorRunStatus.RUNNING)
+            if completion_step is not None:
+                if self._completion_owner is None:
+                    raise RuntimeError('completion action owner missing')
+                snapshot = self._completion_owner.action_progress(
+                    run=snapshot, lease=snapshot.lease or lease, step=completion_step,
+                    effect_count=requested_count,
+                )
+            else:
+                snapshot = replace(snapshot, effect_count=requested_count)
+            snapshot = replace(snapshot, status=TutorRunStatus.RUNNING)
             if result.status is not TutorEffectStatus.COMMITTED:
                 return snapshot, False, self._terminal(
                     snapshot,
@@ -565,7 +697,7 @@ class TutorRunLoop:
             return TutorTerminalOutcome.CANCELLED, "superseded"
         if self._store.is_cancelled(snapshot.run_id) or snapshot.cancelled:
             return TutorTerminalOutcome.CANCELLED, "cancelled"
-        if self._clock.now() >= snapshot.policy.deadline:
+        if not completion_enabled_for(snapshot) and self._clock.now() >= snapshot.policy.deadline:
             return TutorTerminalOutcome.BUDGET_EXHAUSTED, "deadline_exhausted"
         return None
 

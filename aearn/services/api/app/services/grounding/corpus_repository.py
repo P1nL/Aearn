@@ -97,9 +97,13 @@ class CorpusRepository:
     def __init__(self, conn: Connection[dict[str, Any]]) -> None:
         self.conn = conn
 
-    def version(self, corpus_id: UUID, *, for_update: bool = False) -> CorpusVersion:
+    def version(self, corpus_id: UUID, *, for_update: bool = False,
+                for_share: bool = False) -> CorpusVersion:
+        if for_update and for_share:
+            raise ValueError("corpus version lock modes are mutually exclusive")
+        suffix = " FOR UPDATE" if for_update else " FOR SHARE" if for_share else ""
         row = self.conn.execute(
-            "SELECT * FROM grounding_corpus_versions WHERE id=%s" + (" FOR UPDATE" if for_update else ""),
+            "SELECT * FROM grounding_corpus_versions WHERE id=%s" + suffix,
             (corpus_id,),
         ).fetchone()
         if row is None:

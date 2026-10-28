@@ -153,9 +153,15 @@ class CorpusGovernance:
         if current is None or not (current["name"].startswith("aearn_rag260_c_") or owned_assessment):
             raise CorpusGovernanceDenied("ISOLATED_DATABASE_REQUIRED")
 
-    def _rows(self, corpus_id: UUID, *, lock: bool = True) -> tuple[Any, list[dict[str, Any]]]:
+    def _rows(self, corpus_id: UUID, *, lock: bool = True,
+              consumption_read: bool = False) -> tuple[Any, list[dict[str, Any]]]:
         self._transaction()
-        version = self.repo.version(corpus_id, for_update=lock)
+        if consumption_read:
+            if not lock:
+                raise CorpusGovernanceDenied("CONSUMPTION_LOCK_REQUIRED")
+            version = self.repo.version(corpus_id, for_share=True)
+        else:
+            version = self.repo.version(corpus_id, for_update=lock)
         if get_grounding_subject(version.subject_id) is None:
             raise CorpusGovernanceDenied("SUBJECT_UNSUPPORTED")
         rows = self.conn.execute(
@@ -198,9 +204,10 @@ class CorpusGovernance:
         ).fetchall()
         return version, rows
 
-    def _audit(self, corpus_id: UUID, *, purpose: str, full_required: bool = False
+    def _audit(self, corpus_id: UUID, *, purpose: str, full_required: bool = False,
+               consumption_read: bool = False
                ) -> tuple[dict[str, str | int | bool], dict[str, str | int | bool], str, str, int | None, bool]:
-        version, rows = self._rows(corpus_id)
+        version, rows = self._rows(corpus_id, consumption_read=True) if consumption_read else self._rows(corpus_id)
         partitioned = version.coverage_policy_version == PURPOSE_PARTITION_POLICY
         subject = get_grounding_subject(version.subject_id)
         assert subject is not None
@@ -506,11 +513,15 @@ class CorpusGovernance:
             )
             return event
 
-    def _verified(self, corpus_id: UUID, *, summary_hash: str, purpose: str) -> Any:
-        version = self.repo.version(corpus_id, for_update=True)
+    def _verified(self, corpus_id: UUID, *, summary_hash: str, purpose: str,
+                  consumption_read: bool = False) -> Any:
+        version = (self.repo.version(corpus_id, for_share=True) if consumption_read
+                   else self.repo.version(corpus_id, for_update=True))
         if version.summary_hash != summary_hash or version.state not in ("validated", "published"):
             raise CorpusGovernanceDenied("SUMMARY_STALE")
-        validation, coverage, admissions, facets, generation, partial = self._audit(corpus_id, purpose=purpose)
+        validation, coverage, admissions, facets, generation, partial = (
+            self._audit(corpus_id, purpose=purpose, consumption_read=True) if consumption_read
+            else self._audit(corpus_id, purpose=purpose))
         source_rows = self.conn.execute(
             "SELECT source_id,source_hash FROM grounding_corpus_source_snapshots "
             "WHERE corpus_version_id=%s ORDER BY source_id", (corpus_id,),
@@ -595,7 +606,8 @@ class PostgresQualificationAuthority:
             version = service.repo.version(active.corpus_id)
             if version.state != "published" or version.summary_hash is None:
                 return None
-            service._verified(active.corpus_id, summary_hash=version.summary_hash, purpose=full.purpose)
+            service._verified(active.corpus_id, summary_hash=version.summary_hash, purpose=full.purpose,
+                              consumption_read=True)
             locked_pointer = service.conn.execute(
                 "SELECT corpus_version_id,generation,activation_event_id FROM grounding_active_corpora "
                 "WHERE subject_id=%s FOR SHARE", (full.scope.subject_id,),
@@ -604,7 +616,7 @@ class PostgresQualificationAuthority:
                     or locked_pointer["generation"] != active.generation
                     or locked_pointer["activation_event_id"] != active.activation_event_id):
                 return None
-            _, rows = service._rows(active.corpus_id)
+            _, rows = service._rows(active.corpus_id, consumption_read=True)
             chunks = service.conn.execute(
                 "SELECT document_id,facets_json FROM grounding_corpus_chunks WHERE corpus_version_id=%s",
                 (active.corpus_id,),

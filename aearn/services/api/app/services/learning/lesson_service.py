@@ -10,8 +10,9 @@ from uuid import UUID
 
 from psycopg import Connection
 
+from app.core.config import get_settings
 from app.services.learning.contracts import stable_key
-from app.services.learning.lesson_contracts import LessonDocumentDraft, LessonSourceSnapshot
+from app.services.learning.lesson_contracts import LESSON_COMPLETION_VERSION, LessonDocumentDraft, LessonSourceSnapshot
 from app.services.learning.lesson_projection import project_lesson_document, project_lesson_source
 from app.services.learning.teaching_events import TeachingDomainEventAdapter
 from app.services.learning.lesson_repository import (
@@ -59,7 +60,12 @@ class LessonDocumentService:
         self, *, user_id: str, track_id: str, knowledge_key: str,
         expected_track_version: int, expected_progress_version: int,
         idempotency_key: str, run_kind: str = "prepare",
+        completion_driven: bool = False,
     ) -> dict[str, object]:
+        if completion_driven and not get_settings().tutor_completion_driven_enabled:
+            raise LessonDocumentServiceError(
+                "LESSON_COMPLETION_DISABLED", "完成驱动课程生成尚未启用。", status_code=409,
+            )
         user, track, key = _scope_ids(user_id, track_id, knowledge_key)
         action_key = _idempotency_key(idempotency_key)
         with self._conn.transaction():
@@ -75,14 +81,18 @@ class LessonDocumentService:
                     }
                 self._assert_prepare_scope(scope, expected_track_version, expected_progress_version)
                 profile_hash = self._profile_hash(scope)
-                request_hash = _hash_json({
+                request_identity: dict[str, object] = {
                     "user_id": user, "track_id": track, "knowledge_key": key,
                     "run_kind": run_kind, "expected_track_version": expected_track_version,
                     "expected_progress_version": expected_progress_version, "profile_hash": profile_hash,
-                })
+                }
+                if completion_driven:
+                    request_identity["completion_contract_version"] = LESSON_COMPLETION_VERSION
+                request_hash = _hash_json(request_identity)
                 run, replayed = self._repository.create_or_replay_authoring_run(
                     scope=scope, run_kind=run_kind, idempotency_key=action_key,
                     request_hash=request_hash, profile_hash=profile_hash,
+                    **({"completion_contract_version": LESSON_COMPLETION_VERSION} if completion_driven else {}),
                 )
             except LessonNotFound as exc:
                 raise _not_found(track, key) from exc

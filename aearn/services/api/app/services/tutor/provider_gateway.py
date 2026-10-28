@@ -1,6 +1,14 @@
 """Primary-only model gateway for the feature-disabled Tutor Harness."""
 from __future__ import annotations
 
+from app.agents.harness.contracts import TutorExecutionProfile
+from app.services.llm.http_execution import LLMHTTPExecutionError
+from app.services.llm.completion_policy import resolve_completion_stage_policy
+from app.services.tutor.completion_execution import (
+    CompletionNestedHTTPOutcome, CompletionTutorProviderResult, validate_completion_batch_settings,
+)
+from app.services.tutor.mvp_policy import MVPExecutionStopped, MVP_SOFT_CLOSE_AFTER, MVP_SOFT_CLOSE_HINT
+
 import json
 import logging
 import socket
@@ -109,6 +117,10 @@ class TutorOutputSafetyError(LLMInvalidResponseError):
     """A learner-visible Tutor output failed the shared teaching safety policy."""
 
 
+class _CompletionStageArguments(TypedDict, total=False):
+    completion_stage: str
+
+
 class TutorJsonClient(Protocol):
     @property
     def model(self) -> str: ...
@@ -125,6 +137,7 @@ class TutorJsonClient(Protocol):
         thinking_mode: Literal["enabled", "disabled"] | None = None,
         capture_provider_body: bool = False,
         visible_output_observer: LLMVisibleOutputObserver | None = None,
+        completion_stage: str | None = None,
     ) -> LLMJsonResponse: ...
 
 
@@ -281,7 +294,20 @@ class PrimaryTutorProviderGateway:
         thinking_sink: TutorPublicThinkingSink | None = None,
     ) -> TutorProviderResult:
         attempts: list[TutorProviderAttemptReceipt] = []
+        if run.policy.execution_profile is TutorExecutionProfile.COMPLETION_DRIVEN_V1:
+            if not self._settings.tutor_completion_driven_enabled:
+                return TutorProviderResult.model_unavailable(safe_code='completion_feature_disabled')
+            validate_completion_batch_settings(self._settings)
         try:
+            completion_policy = (
+                resolve_completion_stage_policy(self._settings, 'tutor_decision')
+                if run.policy.execution_profile is TutorExecutionProfile.COMPLETION_DRIVEN_V1 else None
+            )
+            max_output_tokens = completion_policy.max_output_tokens if completion_policy else self._max_output_tokens
+            timeout_seconds = completion_policy.timeout_seconds if completion_policy else self._timeout_seconds
+            completion_arguments: _CompletionStageArguments = (
+                {"completion_stage": "tutor_decision"} if completion_policy is not None else {}
+            )
             client = (
                 self._client
                 if self._client is not None
@@ -345,6 +371,8 @@ class PrimaryTutorProviderGateway:
                 capability = resolve_tutor_provider_context_capability(self._settings)
             else:
                 capability = policy.capability
+            if completion_policy is not None and completion_policy.context_capability is not None:
+                capability = completion_policy.context_capability
             try:
                 assert_tutor_provider_request_budget(messages, capability=capability)
             except TutorContextError as exc:
@@ -370,24 +398,26 @@ class PrimaryTutorProviderGateway:
                     response = client.complete_json(
                         messages,
                         temperature=None,
-                        max_tokens=self._max_output_tokens,
-                        timeout_seconds=self._timeout_seconds,
+                        max_tokens=max_output_tokens,
+                        timeout_seconds=timeout_seconds,
                         output_schema=self._output_schema,
                         schema_name=TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
                         thinking_mode=thinking_mode,
                         capture_provider_body=True,
+                        **completion_arguments,
                     )
                 else:
                     response = client.complete_json(
                         messages,
                         temperature=None,
-                        max_tokens=self._max_output_tokens,
-                        timeout_seconds=self._timeout_seconds,
+                        max_tokens=max_output_tokens,
+                        timeout_seconds=timeout_seconds,
                         output_schema=self._output_schema,
                         schema_name=TUTOR_PROVIDER_ITEMS_SCHEMA_NAME,
                         thinking_mode=thinking_mode,
                         capture_provider_body=True,
                         visible_output_observer=projector,
+                        **completion_arguments,
                     )
                 _assert_raw_provider_text_safe(response.content)
                 _assert_plan_draft_not_repeated(run=run, context=context, action=response.content.get("action"))
@@ -437,6 +467,48 @@ class PrimaryTutorProviderGateway:
                     safe_code=_PROVIDER_CONFIGURATION_UNAVAILABLE,
                     attempts=tuple(attempts),
                 )
+            except LLMHTTPExecutionError as exc:
+                if projector is not None and thinking_sink is not None:
+                    thinking_sink.discard_attempt(attempt_index)
+                prefix = 'completion' if completion_policy is not None else 'mvp'
+                code = prefix + ("_http_unknown_" if exc.outcome_unknown else "_http_") + exc.reason
+                if completion_policy is not None and response is not None:
+                    # The Tutor HTTP returned before its material validator sent
+                    # another HTTP. Keep those two origins separate: the original
+                    # Tutor receipt uses response usage/model, never semantic usage.
+                    _commit_provider_diagnostic(response.diagnostic_capture, run=run, attempt_index=attempt_index,
+                        provider_type=provider_type, protocol=protocol, model=response.model or client.model,
+                        diagnostic_code=code, contract_hash=self._output_schema_hash)
+                    attempts.append(TutorProviderAttemptReceipt(
+                        attempt_index=attempt_index, outcome=TutorProviderAttemptOutcome.TERMINAL_REJECTED,
+                        provider_type=provider_type, protocol=protocol, model=response.model or client.model,
+                        usage=response.usage, diagnostic_code=code,
+                    ))
+                    if exc.outcome_unknown:
+                        binding_hash = getattr(exc, 'request_binding_hash', None)
+                        nested = CompletionNestedHTTPOutcome(
+                            stage='material_semantic_review',
+                            request_binding_hash=binding_hash if isinstance(binding_hash, str) else None,
+                            current_scope_http_attempts=exc.physical_attempts,
+                            from_dispatched_receipt=bool(getattr(exc, 'from_dispatched_receipt', False)),
+                            model=exc.model, usage=exc.usage, response_diagnostics=exc.response_diagnostics,
+                        )
+                        return CompletionTutorProviderResult(decision=None,
+                            terminal_outcome=TutorTerminalOutcome.MODEL_UNAVAILABLE,
+                            safe_code=code, attempts=tuple(attempts), nested_http_outcomes=(nested,))
+                    return TutorProviderResult.model_unavailable(safe_code=code, attempts=tuple(attempts))
+                _commit_provider_diagnostic(exc.diagnostic_capture, run=run, attempt_index=attempt_index,
+                    provider_type=provider_type, protocol=protocol, model=exc.model or client.model,
+                    diagnostic_code=code, contract_hash=self._output_schema_hash)
+                if exc.outcome_unknown or exc.reason in {"pre_send_retries_exhausted", "http_error"}:
+                    attempts.append(TutorProviderAttemptReceipt(attempt_index=attempt_index,
+                        outcome=(TutorProviderAttemptOutcome.TERMINAL_REJECTED if exc.usage is not None
+                                 else TutorProviderAttemptOutcome.TRANSPORT_FAILED), provider_type=provider_type,
+                        protocol=protocol, model=exc.model or client.model, usage=exc.usage, diagnostic_code=code))
+                outcome = (TutorTerminalOutcome.BUDGET_EXHAUSTED if exc.reason == "physical_attempts_exhausted"
+                           else TutorTerminalOutcome.MODEL_UNAVAILABLE)
+                return TutorProviderResult(decision=None, terminal_outcome=outcome,
+                    safe_code=code, attempts=tuple(attempts))
             except LLMCallError as exc:
                 if projector is not None and thinking_sink is not None:
                     thinking_sink.discard_attempt(attempt_index)
@@ -558,6 +630,9 @@ class PrimaryTutorProviderGateway:
                 model = (response.model if response is not None else None) or client.model
             except TutorLifecycleConflict:
                 raise
+            except MVPExecutionStopped as exc:
+                return TutorProviderResult(decision=None, terminal_outcome=exc.outcome,
+                    safe_code=exc.safe_code, attempts=tuple(attempts))
             except Exception as exc:
                 if projector is not None and thinking_sink is not None:
                     thinking_sink.discard_attempt(attempt_index)
@@ -822,7 +897,10 @@ def parse_tutor_decision(
 def _build_messages(*, run: TutorRunSnapshot, context: TutorContextSelection) -> list[dict[str, str]]:
     """Compatibility alias for tests and evals using the shared serializer."""
 
-    return build_tutor_provider_messages(run=run, context=context)
+    messages = build_tutor_provider_messages(run=run, context=context)
+    if run.policy.execution_profile is TutorExecutionProfile.MVP_TEACHING_V1 and run.model_call_count >= MVP_SOFT_CLOSE_AFTER:
+        messages.append({"role": "system", "content": MVP_SOFT_CLOSE_HINT})
+    return messages
 
 
 def _assert_raw_provider_text_safe(payload: Mapping[str, object]) -> None:

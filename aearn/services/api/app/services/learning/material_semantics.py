@@ -16,6 +16,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 from app.core.config import Settings
 from app.services.grounding.material_contracts_v2 import digest
 from app.services.llm.contracts import LLMUsage
+from app.agents.harness.contracts import TutorExecutionProfile
+from app.services.llm.completion_policy import resolve_completion_stage_policy
+from app.services.llm.http_execution import current_http_execution
 from app.services.llm.llm_client import (
     LLMCallError, LLMConfigurationError, LLMInvalidResponseError,
     LLMJsonResponse, OpenAICompatibleClient,
@@ -140,7 +143,8 @@ class MaterialReviewClient(Protocol):
                       timeout_seconds: float | None = None,
                       output_schema: Mapping[str, object] | None = None,
                       schema_name: str | None = None,
-                      thinking_mode: Literal["enabled", "disabled"] | None = None) -> LLMJsonResponse: ...
+                      thinking_mode: Literal["enabled", "disabled"] | None = None,
+                      completion_stage: str | None = None) -> LLMJsonResponse: ...
 
 
 class MaterialSemanticReviewer(Protocol):
@@ -163,23 +167,48 @@ class PrimaryMaterialSemanticReviewer:
         from app.agents.harness.context_budget import resolve_tutor_provider_context_capability
         from app.agents.harness.contracts import TutorContextError
         from app.services.tutor.provider_request_budget import assert_tutor_provider_request_budget
+        execution = current_http_execution()
+        completion_policy = (
+            resolve_completion_stage_policy(self._settings, "material_semantic_review")
+            if (self._settings.tutor_completion_driven_enabled and execution is not None
+                and execution.execution_profile is TutorExecutionProfile.COMPLETION_DRIVEN_V1)
+            else None
+        )
         try:
             messages = request.messages()
-            capability = resolve_tutor_provider_context_capability(self._settings)
+            capability = (
+                completion_policy.context_capability if completion_policy is not None
+                else resolve_tutor_provider_context_capability(self._settings)
+            )
+            if capability is None:
+                raise ValueError("Semantic HTTP stage requires a context capability")
             assert_tutor_provider_request_budget(messages, capability=capability)
         except TutorContextError:
             return self._uncertain(request, ReviewReason.INSUFFICIENT_CONTEXT)
         try:
-            bounded_settings = self._settings.model_copy(update={
+            bounded_settings = self._settings if completion_policy is not None else self._settings.model_copy(update={
                 "llm_timeout_seconds": min(self._settings.llm_timeout_seconds, 20.0),
             })
             client = self._client or OpenAICompatibleClient(bounded_settings, max_http_attempts=1)
-            response = client.complete_json(
-                messages, temperature=0.0, max_tokens=256,
-                timeout_seconds=20.0, output_schema=StrictReviewVerdict.model_json_schema(),
-                schema_name="material_plan_semantic_verdict_v1", thinking_mode="disabled",
-            )
+            if completion_policy is not None:
+                response = client.complete_json(
+                    messages, temperature=0.0, max_tokens=completion_policy.max_output_tokens,
+                    timeout_seconds=completion_policy.timeout_seconds,
+                    output_schema=StrictReviewVerdict.model_json_schema(),
+                    schema_name="material_plan_semantic_verdict_v1", thinking_mode="disabled",
+                    completion_stage="material_semantic_review",
+                )
+            else:
+                response = client.complete_json(
+                    messages, temperature=0.0, max_tokens=256,
+                    timeout_seconds=20.0, output_schema=StrictReviewVerdict.model_json_schema(),
+                    schema_name="material_plan_semantic_verdict_v1", thinking_mode="disabled",
+                )
             verdict = StrictReviewVerdict.model_validate(response.content)
+        except TutorContextError:
+            # The final client guard includes schema/protocol bytes not present
+            # in the message-only preflight above. It is still a no-HTTP denial.
+            return self._uncertain(request, ReviewReason.INSUFFICIENT_CONTEXT)
         except (LLMCallError, LLMConfigurationError, LLMInvalidResponseError) as exc:
             return self._uncertain(request, ReviewReason.PROVIDER_UNAVAILABLE,
                                    usage=getattr(exc, "usage", None), model=getattr(exc, "model", None))

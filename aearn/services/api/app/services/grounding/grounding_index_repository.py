@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -149,6 +150,47 @@ def search_persisted_grounding_chunks(
         language_query = replace(query, language_id_or_alias=language_id, top_k=per_language_top_k)
         results.extend(retrieve_grounding_chunks(chunks, language_query))
     return tuple(sorted(results, key=lambda result: (-result.relevance_score, result.chunk.chunk_id))[: query.top_k])
+
+
+def search_lesson_coverage_chunks(
+    conn: Connection[dict[str, object]], query: GroundingRetrievalQuery, *,
+    required_topics: Sequence[str], admission_filter: Callable[[GroundingChunk], bool],
+) -> tuple[tuple[GroundingRetrievalResult, ...], tuple[str, ...]]:
+    """Lesson-only persisted-index coverage, not a v2 corpus/purpose grant.
+
+    Coverage is a lexical retrieval signal, not evidence of generated fidelity.
+    Followups rank only missing topics, after the original provenance admission.
+    Full selected chunks are returned unchanged; there is no network fallback.
+    """
+    language_ids = grounding_language_ids(query.language_id_or_alias)
+    chunks = tuple(chunk for chunk in _load_grounding_chunks_for_languages(conn, language_ids)
+                   if admission_filter(chunk)) if language_ids else ()
+    topics = tuple(dict.fromkeys(required_topics))
+    if not topics or len(topics) > 32:
+        return (), topics
+
+    def covers(chunk: GroundingChunk, topic: str) -> bool:
+        if topic in chunk.topic_tags:
+            return True
+        terms = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", topic.rsplit(".", 1)[-1].casefold())
+        text = " ".join((chunk.title, *chunk.section_path, chunk.text)).casefold()
+        return bool(terms) and all(re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text) for term in terms)
+
+    selected: dict[str, GroundingRetrievalResult] = {}
+    for topic in topics:
+        if any(covers(result.chunk, topic) for result in selected.values()):
+            continue
+        eligible = tuple(chunk for chunk in chunks if covers(chunk, topic))
+        ranked: list[GroundingRetrievalResult] = []
+        for language_id in language_ids:
+            ranked.extend(retrieve_grounding_chunks(eligible, replace(
+                query, language_id_or_alias=language_id, query_text=f"{query.query_text} {topic}", top_k=1,
+            )))
+        if ranked:
+            winner = sorted(ranked, key=lambda item: (-item.relevance_score, item.chunk.chunk_id))[0]
+            selected[winner.chunk.chunk_id] = winner
+    missing = tuple(topic for topic in topics if not any(covers(item.chunk, topic) for item in selected.values()))
+    return tuple(selected.values()), missing
 
 
 def build_official_docs_grounding_context(

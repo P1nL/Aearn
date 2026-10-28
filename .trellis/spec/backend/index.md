@@ -15,14 +15,14 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Service ownership, package boundaries, and module layout | Filled |
-| [Database Guidelines](./database-guidelines.md) | PostgreSQL schema, transaction, query, and migration rules | Filled |
+| [Database Guidelines](./database-guidelines.md) | SQL lifecycle/freeze governance, bounded named non-B1d install/upgrade/readiness, caller modes and completion-driven persistence | Filled |
 | [Grounding Corpus Operations](./grounding-corpus-operations.md) | Local fixture-only operator CLI, replay, validation, safe output and runtime isolation | Filled |
 | [Grounding Retrieval V2](./grounding-retrieval-v2.md) | Exact-scope FTS, fake embedding, facet coverage, bounded evidence and no public cutover | Filled |
 | [Plan Preflight and Migration](./plan-preflight-migration.md) | Default-off server-fact preflight, immutable repair projections and no history mutation | Filled |
 | [Grounding Shadow Integration](./grounding-shadow-integration.md) | Internal legacy-shape adapters, disposable fixture demo and no public release authority | Filled |
 | [Grounding Material Contracts](./grounding-material-contracts.md) | Package A strict material/source contracts and default-deny authority ports; B is documented separately | Filled |
 | [Grounding Controlled Discovery](./grounding-controlled-discovery.md) | B1 durable search/budget and B2 candidate-specific lease, safe fetch, quarantine, egress and default-off worker contracts | Filled |
-| [Grounding Source Admission](./grounding-source-admission.md) | C default-off registered-source, Unix bridge, review, retention and corpus governance contracts; live acceptance remains separate | Filled |
+| [Grounding Source Admission](./grounding-source-admission.md) | C default-off source admission, retention, corpus governance and finite pure-parser DATA reuse; live acceptance remains separate | Filled |
 | [Course Material Lifetime and Exact Renewal](./grounding-course-material-lifetime.md) | Versioned seven-day proof bounds, exact renewal accounting and actual-D private lifecycle gates | Filled |
 | [Grounding Plan Material Consumption](./grounding-plan-material-consumption.md) | D internal default-off material feedback, successor bindings, same-transaction authorization and private receipt lifecycle | Filled |
 | [Error Handling](./error-handling.md) | Error types and safe failure mapping | Filled |
@@ -45,7 +45,7 @@ The formal backend lives under `aearn/services/`. Runtime facts come from curren
 | [Knowledge Check Artifacts](./knowledge-check-artifacts.md) | Structured scoring, assistance receipts, remediation/transfer selection, and evaluation continuation | Filled |
 | [Model Review Artifacts](./model-review-artifacts.md) | Stable code/diff identity, deterministic findings, immutable receipts, remediation, and evaluation continuation | Filled |
 | [Authoritative Execution Result Artifacts](./execution-result-artifacts.md) | Safe result v2, terminal projection, evaluation continuation, fallback, and cross-layer response identity | Filled |
-| [Codex Runtime Sidecar](./codex-runtime-sidecar.md) | App Server contracts, typed tools, fencing, and worker lifecycle | Filled |
+| [Codex Runtime Sidecar](./codex-runtime-sidecar.md) | App Server, typed tools, fencing, completion-step checkpoints and cold recovery | Filled |
 
 ---
 

@@ -1,5 +1,39 @@
 # Codex Runtime Sidecar
 
+## Scenario: Explicit completion-driven steps and cold recovery (2026-10-26)
+
+### 1. Scope / Trigger
+Only new `completion_driven_v1` Tutor runs with the default-off completion flag. Existing runtime enablement, legacy single-turn runs and historical bindings keep their original behavior. The section below is a code contract, not evidence of installed SQL or live acceptance.
+
+### 2. Signatures
+- `RuntimeTurnRequest.completion_driven` is explicit; `RuntimePlanningStepResult` is private typed result DATA, not a completed Tutor run.
+- SQL598 adds nullable `tutor_run_runtime_bindings.step_attempt_id`, referencing `(id, run_id, user_id, conversation_id)` in SQL596; it adds no table.
+- `LearningPlanToolRegistry.continuation_state` uses `learning-plan-runtime-checkpoint-v1` with exact facts fingerprint/revision, direction state, draft hash, and cumulative `tool_call_count`, `tool_repair_count`, `tool_conflict_count`.
+- `LearningPlanToolService.recover_committed_draft()` reads through the original service and locks the current planning session; it does not append another draft.
+
+### 3. Contracts
+Commit an intent before the native turn, then commit its actual typed result before fresh-owner acceptance. Use the real `CompletionExecutionOwner`, including a fresh acceptance batch after cold recovery. A native turn terminal closes its binding, not an unfinished business run. Legacy permits one null-step binding; new steps are unique and each run has at most one active binding. Deferred message publication requires the accepted current step even on replay.
+
+Checkpoint counters are cumulative guards; result DTO counters are this-step increments. Restoring a registry must neither reset remaining tool/repair/conflict authority nor charge an accepted step again. Restored draft callbacks re-read current source/facts/catalog/quality/hash through the service. Its session `FOR UPDATE` remains held through the caller's final acceptance transaction; cached success and a saved `draft_completed` flag cannot grant write authority.
+
+New work turns default to 900 seconds, bounded by their owner's remaining time; startup/control remain 15 seconds. Output-token wire enforcement and exact context capability remain unsupported (`None`/false), not unlimited. Do not introduce a proxy, modify/upgrade a binary, send removed config keys or count one native turn as one observed HTTP request.
+
+### 4. Validation & Error Matrix
+- Dispatched/UNKNOWN step without a known committed result: no native re-dispatch or duplicate tool action.
+- Facts, input revision, direction, draft hash or current owner changes: deny stale recovery rather than restore old capability.
+- Invalid/negative cumulative counters: `planning_committed_tool_counters_invalid`.
+- A consume callback leaves final business incomplete: roll back acceptance, including deferred messages.
+- A late internal terminal replay lacks an accepted current step: do not publish a new public message.
+
+### 5. Good / Base / Bad Cases
+Good: two accepted native steps belong to one logical run; a committed draft is read once under fresh authority and not rewritten. Base: legacy recovery creates no completion batch or step. Bad: reset tool guards for each registry, treat an internal terminal as whole-run completion, or return a cached successful draft without checking current state.
+
+### 6. Tests Required
+Keep `test_completion_sidecar.py`, `test_completion_dispatcher.py`, `test_completion_sidecar_recovery_cpu.py` and adjacent runtime/tool tests: real dispatcher/owner codec, two steps, result-recorded crash, expired batch/new generation, UNKNOWN denial, cumulative guard exhaustion, current draft locking, typed/deferred terminal and legacy isolation. CPU SQL transcripts do not prove actual PostgreSQL guards or provider behavior; run those only through the separately approved isolated candidate/live paths.
+
+### 7. Wrong vs Correct
+Wrong: `return cached_draft_result` after a cold restore. Correct: call `recover_committed_draft()` under the current owner transaction, check the exact saved hash, preserve cumulative guards, and accept only that persisted step under fresh authority.
+
 ## Scenario: Aearn-owned Codex App Server runtime boundary
 
 ### 1. Scope / Trigger

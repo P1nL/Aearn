@@ -148,6 +148,10 @@ class ConfirmedAssessmentCourseReader:
 
     def authorize(self, course: ConfirmedAssessmentCourse, *, target_id: TargetId | None = None) -> AuthorizationReceipt:
         """Resolve ORIGINAL prepared claims and access delegation on this conn."""
+        with self.receipts._sqlite_analysis_scope():
+            return self._authorize(course, target_id=target_id)
+
+    def _authorize(self, course: ConfirmedAssessmentCourse, *, target_id: TargetId | None) -> AuthorizationReceipt:
         binding = course.binding
         reqs = [r for r in course.selection.requirements if (r.node_id,r.goal_hash,r.demand.purpose) == (
             binding.node_id,binding.goal_hash,"assessment_evidence")]

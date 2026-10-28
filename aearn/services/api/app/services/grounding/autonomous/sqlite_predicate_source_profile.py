@@ -130,3 +130,61 @@ def analyze_sqlite_capture(capture: CompleteCapture, role: SQLiteCaptureRole) ->
         result.append(SourceSpan(unit=unit, start_byte=lo, end_byte=hi,
                                  sha256=hashlib.sha256(capture.body[lo:hi]).hexdigest()))
     return tuple(result)
+
+
+class _SQLiteAnalysisData:
+    """At most three capture-role parses in one caller-owned lexical operation.
+
+    Only exact input bytes/metadata and primitive spans live here, never a current
+    finding, receipt, signature, connection or permission. The public analyzer
+    above remains the cold validator. Returned DTOs are rebuilt on every use.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, SQLiteCaptureRole], tuple[
+            tuple[object, ...], tuple[tuple[str, int, int, str], ...]]] = {}
+        self._closed = False
+
+    def close(self) -> None:
+        self._entries.clear()
+        self._closed = True
+
+    def analyze(self, capture: CompleteCapture, role: SQLiteCaptureRole) -> tuple[SourceSpan, ...]:
+        try:
+            if (self._closed or type(capture) is not CompleteCapture
+                    or type(capture.body) is not bytes or type(capture.scope.facets) is not tuple):
+                self.close()
+                return analyze_sqlite_capture(capture, role)
+            # Snapshot nested metadata and the finite rules, not a mutable DTO or
+            # a digest-only assertion supplied by a caller. No body normalization.
+            key = (capture.capture_id, capture.lane, capture.body, capture.digest, capture.revision,
+                   capture.source_handle, capture.final_url, capture.request_chain,
+                   capture.scope.subject_id, capture.scope.subject_version, capture.scope.facets,
+                   capture.origin, capture.reading_level, capture.license_id, role,
+                   analyze_sqlite_capture, _SQLiteUnits, _Units, _SQLiteUnits.__init__,
+                   _SQLiteUnits.feed, _SQLiteUnits.close, _SQLiteUnits.handle_starttag, _SQLiteUnits.handle_endtag,
+                   _SQLiteUnits.handle_data, _SQLiteUnits._finish_unit, SQLITE_PROFILE, SQLITE_CAPTURE_URLS[role],
+                   tuple((unit, tuple(texts)) for unit, texts in SQLITE_ASSERTIONS[role].items()),
+                   SQLITE_OFFICIAL_UNCLOSED_FOOTERS, EXPRESSION_TAIL, COREFUNC_TAIL)
+            slot = (str(capture.capture_id), role)
+            previous = self._entries.get(slot)
+            if previous is not None and previous[0] != key:
+                # A changed input cannot revive an earlier successful parse.
+                self._entries.clear()
+                previous = None
+            if previous is None:
+                spans = analyze_sqlite_capture(capture, role)
+                values = tuple((s.unit, s.start_byte, s.end_byte, s.sha256) for s in spans)
+                if len(self._entries) < 3:
+                    self._entries[slot] = key, values
+            else:
+                values = previous[1]
+            return tuple(SourceSpan(unit=u, start_byte=lo, end_byte=hi, sha256=h) for u, lo, hi, h in values)
+        except BaseException:
+            # Even a caller catching a parse failure cannot resume warm DATA.
+            self.close()
+            raise
+
+def _analyze_sqlite_capture(capture: CompleteCapture, role: SQLiteCaptureRole, *,
+                            data: _SQLiteAnalysisData | None = None) -> tuple[SourceSpan, ...]:
+    return analyze_sqlite_capture(capture, role) if data is None else data.analyze(capture, role)

@@ -1,4 +1,4 @@
-# pnpm --dir .\aearn dev：启动 Docker 依赖、bootstrap DB、API、Celery worker/beat、Tauri desktop
+# pnpm --dir .\aearn dev：启动 Docker 依赖、只读检查 DB、API、Celery worker/beat、Tauri desktop
 # pnpm --dir .\aearn dev:status：查看状态
 # pnpm --dir .\aearn dev:restart：重启本脚本拉起的进程
 # pnpm --dir .\aearn dev:stop：停止本脚本拉起的 API/worker/desktop
@@ -14,6 +14,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSEdition -ne "Core" -or $PSVersionTable.PSVersion.Major -lt 7) {
+  throw "start-dev.ps1 requires pwsh (PowerShell 7 or newer)."
+}
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AearnDir = Split-Path -Parent $ScriptDir
@@ -191,7 +194,7 @@ function Start-ManagedProcess {
   )
   Remove-Item -LiteralPath $OutLog, $ErrLog -ErrorAction SilentlyContinue
   $process = Start-Process `
-    -FilePath "powershell" `
+    -FilePath "pwsh" `
     -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $Command) `
     -WorkingDirectory $RepoRoot `
     -RedirectStandardOutput $OutLog `
@@ -202,15 +205,31 @@ function Start-ManagedProcess {
   return [int]$process.Id
 }
 
+function Assert-CompletionStartupQuiescent {
+  # PIDs, command lines and the legacy static health response cannot establish
+  # which database contract an already-running process loaded. Never kill it.
+  $listener = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+    Where-Object { $_.Port -eq $ApiPort }
+  $apiPid = Find-ProcessIdByCommand "uvicorn.*app\.main:app"
+  $workerOrBeatPid = Find-ProcessIdByCommand "aearn_worker\.worker_app.*\b(worker|beat)\b"
+  if ($listener -or $apiPid -or $workerOrBeatPid) {
+    throw "completion_non_b1d_v1 requires a controlled restart: quiesce existing API/worker/beat and finish in-flight work first. No existing process was stopped or accepted as contract-ready."
+  }
+}
+
 function Wait-LogContains {
   param(
     [string[]]$Paths,
     [string]$Pattern,
     [string]$Name,
-    [int]$TimeoutSeconds = 45
+    [int]$TimeoutSeconds = 45,
+    [int]$ProcessId = 0
   )
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   while ((Get-Date) -lt $deadline) {
+    if ($ProcessId -and -not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+      throw "$Name exited before startup completed; inspect its startup logs."
+    }
     foreach ($path in $Paths) {
       if ((Test-Path -LiteralPath $path) -and (Select-String -Path $path -Pattern $Pattern -Quiet -ErrorAction SilentlyContinue)) {
         return
@@ -226,7 +245,7 @@ function Show-Status {
   Write-Step "status"
   Write-Host "  docker:"
   docker compose -f (Join-Path $AearnDir "infra\docker-compose.yml") ps
-  $apiStatus = if (Test-Http "http://127.0.0.1:$ApiPort/health") { "ready http://127.0.0.1:$ApiPort" } else { "not ready" }
+  $apiStatus = if (Test-Http "http://127.0.0.1:$ApiPort/health") { "HTTP reachable http://127.0.0.1:$ApiPort (not database-contract readiness)" } else { "not reachable" }
   $desktopStatus = if (Test-Http "http://127.0.0.1:$DesktopPort") { "ready http://127.0.0.1:$DesktopPort" } else { "not ready" }
   Write-Host "  api:     $apiStatus"
   Write-Host "  desktop: $desktopStatus"
@@ -258,10 +277,6 @@ if ($Stop) {
   exit 0
 }
 
-if ($Restart) {
-  Stop-TrackedProcesses
-}
-
 Assert-Command "uv"
 Assert-Command "pnpm"
 Assert-Command "docker"
@@ -269,6 +284,26 @@ Assert-Command "docker"
 if ($Status) {
   Show-Status
   exit 0
+}
+
+# Resolve exactly the same process-env/.env precedence as API/worker without
+# opening a database connection or printing settings/credentials.
+$databaseContractJson = Invoke-Checked `
+  -FilePath "uv" `
+  -ArgumentList @("--directory", $ApiDir, "run", "python", "-c", "import json, os; import app.core.config; print(json.dumps(os.environ.get('AEARN_DATABASE_CONTRACT')))") `
+  -FailureMessage "database contract selection failed"
+$databaseContract = $databaseContractJson | ConvertFrom-Json
+$completionContractSelected = $databaseContract -ceq "completion_non_b1d_v1"
+if (-not $completionContractSelected) {
+  throw "Managed startup requires AEARN_DATABASE_CONTRACT=completion_non_b1d_v1; missing or unsupported selection cannot run legacy DDL or seeds."
+}
+if ($completionContractSelected) {
+  if ($Restart) {
+    throw "completion_non_b1d_v1 requires a controlled restart after in-flight work is quiescent; automatic -Restart is disabled. No process was stopped."
+  }
+  Assert-CompletionStartupQuiescent
+} elseif ($Restart) {
+  Stop-TrackedProcesses
 }
 
 $state = [ordered]@{}
@@ -281,16 +316,19 @@ if (-not $SkipDocker) {
     -FailureMessage "docker compose startup failed"
 }
 
-if (-not $SkipBootstrap) {
-  Write-Step "bootstrapping database schema"
+if ($completionContractSelected) {
+  # SkipBootstrap never skips this readonly gate, and this branch never installs
+  # schema, seeds data, or falls back to the legacy bootstrap.
+  Write-Step "checking completion_non_b1d_v1 database contract (readonly)"
   Invoke-Checked `
     -FilePath "uv" `
-    -ArgumentList @("--directory", $ApiDir, "run", "python", "-m", "app.db.bootstrap") `
-    -FailureMessage "database bootstrap failed"
+    -ArgumentList @("--directory", $ApiDir, "run", "python", "-m", "app.db.bootstrap", "--contract", "completion_non_b1d_v1", "--check") `
+    -FailureMessage "completion_non_b1d_v1 readiness failed; no API/worker/beat started"
+  Assert-CompletionStartupQuiescent
 }
 
 $apiHealthUrl = "http://127.0.0.1:$ApiPort/health"
-if (Test-Http $apiHealthUrl) {
+if (-not $completionContractSelected -and (Test-Http $apiHealthUrl)) {
   Write-Step "api already ready at $apiHealthUrl"
   $apiPid = Find-ProcessIdByCommand "uv --directory .*python -m uvicorn app\.main:app"
   if ($apiPid) {
@@ -302,12 +340,18 @@ if (Test-Http $apiHealthUrl) {
     -Command "uv --directory `"$ApiDir`" run python -m uvicorn app.main:app --host 127.0.0.1 --port $ApiPort --reload" `
     -OutLog (Join-Path $LogDir "api-dev.out.log") `
     -ErrLog (Join-Path $LogDir "api-dev.err.log")
+  if ($completionContractSelected) {
+    Wait-LogContains -Paths @((Join-Path $LogDir "api-dev.out.log"), (Join-Path $LogDir "api-dev.err.log")) -Pattern "^INFO:\s+Application startup complete\.$" -Name "api lifespan" -ProcessId $state.apiPid
+  }
   Wait-Http -Url $apiHealthUrl -Name "api"
 }
 
 if (-not $NoWorker) {
   $workerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app worker.*-Q celery,tutor-interactive,tutor-proactive,tutor-curation.*-n tutor-main@%h"
   if ($workerPid) {
+    if ($completionContractSelected) {
+      throw "Existing worker requires a controlled restart; it was not accepted as contract-ready."
+    }
     Write-Step "worker already running, pid=$workerPid"
     $state.workerPid = $workerPid
   } else {
@@ -318,12 +362,16 @@ if (-not $NoWorker) {
       -Command "uv --directory `"$ApiDir`" run python -m celery -A aearn_worker.worker_app:celery_app worker --loglevel=info --pool=solo --concurrency=1 -Q celery,tutor-interactive,tutor-proactive,tutor-curation -n tutor-main@%h" `
       -OutLog $workerOutLog `
       -ErrLog $workerErrLog
-    Wait-LogContains -Paths @($workerOutLog, $workerErrLog) -Pattern "ready" -Name "worker"
+    $workerReadyPattern = if ($completionContractSelected) { "\]\s+tutor-main@\S+ ready\.$" } else { "ready" }
+    Wait-LogContains -Paths @($workerOutLog, $workerErrLog) -Pattern $workerReadyPattern -Name "worker" -ProcessId $state.workerPid
   }
 
   if (-not $NoCodexWorker) {
     $codexWorkerPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app worker.*tutor-codex"
     if ($codexWorkerPid) {
+      if ($completionContractSelected) {
+        throw "Existing tutor-codex worker requires a controlled restart; it was not accepted as contract-ready."
+      }
       Write-Step "tutor-codex worker already running, pid=$codexWorkerPid"
       $state.codexWorkerPid = $codexWorkerPid
     } else {
@@ -334,12 +382,16 @@ if (-not $NoWorker) {
         -Command "uv --directory `"$ApiDir`" run python -m celery -A aearn_worker.worker_app:celery_app worker --loglevel=info --pool=solo --concurrency=1 -Q tutor-codex -n tutor-codex@%h" `
         -OutLog $codexWorkerOutLog `
         -ErrLog $codexWorkerErrLog
-      Wait-LogContains -Paths @($codexWorkerOutLog, $codexWorkerErrLog) -Pattern "ready" -Name "tutor-codex worker"
+      $codexReadyPattern = if ($completionContractSelected) { "\]\s+tutor-codex@\S+ ready\.$" } else { "ready" }
+      Wait-LogContains -Paths @($codexWorkerOutLog, $codexWorkerErrLog) -Pattern $codexReadyPattern -Name "tutor-codex worker" -ProcessId $state.codexWorkerPid
     }
   }
 
   $beatPid = Find-ProcessIdByCommand "aearn_worker\.worker_app:celery_app beat"
   if ($beatPid) {
+    if ($completionContractSelected) {
+      throw "Existing beat requires a controlled restart; it was not accepted as contract-ready."
+    }
     Write-Step "beat already running, pid=$beatPid"
     $state.beatPid = $beatPid
   } else {
@@ -350,7 +402,8 @@ if (-not $NoWorker) {
       -Command "uv --directory `"$ApiDir`" run python -m celery -A aearn_worker.worker_app:celery_app beat --loglevel=info --pidfile=" `
       -OutLog $beatOutLog `
       -ErrLog $beatErrLog
-    Wait-LogContains -Paths @($beatOutLog, $beatErrLog) -Pattern "beat: Starting" -Name "beat"
+    $beatReadyPattern = if ($completionContractSelected) { "\]\s+aearn beat scheduler startup complete$" } else { "beat: Starting" }
+    Wait-LogContains -Paths @($beatOutLog, $beatErrLog) -Pattern $beatReadyPattern -Name "beat" -ProcessId $state.beatPid
   }
 }
 

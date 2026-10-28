@@ -2,6 +2,112 @@
 
 > Database patterns and conventions for this project.
 
+## Scenario: SQL lifecycle governance and bounded upgrades (2026-10-27)
+
+### 1. Scope / Trigger
+Changes to SQL inventories, candidate edit/freeze decisions, normal bootstrap startup or the named completion upgrade path. Preserve installed SQL and the current enabled completion configuration; no history reset, generic migration framework, arbitrary new database admission or business grants.
+
+### 2. Signatures
+- `schema_migration_inventory(*, contract=None, storage_check=False)` is a pure JSON-friendly manifest/lifecycle view; `target_database_installation='not_observed'` is not readiness.
+- `CandidateEditFacts(installed_anywhere, external_pin, freeze_commitment)` requires three explicit facts; only all `False` permits in-place candidate edits. Unknown denies.
+- Current frozen names are an unordered historical snapshot, not derived from the greatest number or from newly edited execution manifests. A candidate registration/rollback does not freeze or auto-select it.
+
+### 3. Contracts
+The existing manifest remains the only execution order; classification metadata is not duplicate DDL. Explicit candidates, installed/frozen files and non-executable drafts are separate. First persistent install, external pin or freeze commitment closes in-place editing; unknown COMMIT cannot be asserted as not installed. Close actual consumers, dynamic reads/grants, constraints and recovery before installation, reusing the same reviewed candidate for its pre-install corrections.
+
+Named initial install requires a complete matching BASE, not an empty database. The historical legacy replay has B1d-only guards and is not a general fresh-database route. Normal managed startup/CLI performs only readonly readiness and rejects missing/unknown selector, including SkipBootstrap; explicit legacy maintenance/test Python calls are not normal startup or current empty-database support.
+
+Finite upgrades admit only exact whole-catalog prefixes: runtime/validation latest602 is noop, exact599 gets601→602, exact601 gets602; validation must already have its complete600-purpose objects. Derive old ACLs by removing exact reviewed non-grantable SELECT triples from the authoritative latest metadata; preserve all other categories, column ACLs and development13-pair rendering. Unknown/partial/reversed changes deny, never repair by broad subset.
+
+### 4. Validation & Error Matrix
+- Candidate facts unknown/installed/pinned/promised frozen: no in-place-edit permission.
+- Fresh empty/missing BASE, unknown catalog or absent validation objects: reject, not legacy bootstrap or seed fallback.
+- Maintenance operations require actual OID/acknowledgement, original lock and fresh lock-internal checks; candidate rolls back, explicit install commits. Unknown COMMIT does not trigger replay; post-ack observation failures must retain the committed fact.
+- A formal changed install admits only frozen files or a candidate with an explicit freeze commitment; a full-rollback rehearsal does not freeze it. After COMMIT acknowledgement, close the writer and verify identity/purpose/latest COMPLETE on a new readonly connection before reporting success. Post-ack cleanup/readback errors remain explicitly committed, never ordinary install failure; candidate/latest-noop does not open a post-COMMIT readback.
+- Identity/FK/state/uniqueness/UNKNOWN fences are not ordinary configuration. Lesson SQL checks prior result transaction; Tutor prior-COMMIT also depends on its Python short-transaction owner protocol. Do not claim SQL alone owns global exactly-once effects.
+
+### 5. Good / Base / Bad Cases
+Good: a mutable uninstalled candidate gets several fixes before one reviewed install; a known601 catalog gets only602. Base: latest COMPLETE startup/check is readonly and leaves data untouched. Bad: renumber installed SQL, freeze on candidate registration, run the full163 chain on startup, or claim arbitrary empty databases are supported because subsystem ABSENT passed.
+
+### 6. Tests Required
+Focused inventory/governance/upgrade/startup CPU and lint/type checks; Main-only isolated whole-rollback historical ACL-prefix transitions and exact refusal, then independent full catalog/data-count readback. Reuse prior unchanged SQL601/602 evidence; no repeated paid model, large history matrix or destructive provisioning solely for governance proof.
+
+### 7. Wrong vs Correct
+Wrong: loosen only Settings or delete a v1 CHECK to make policy configurable. Correct: leave2400/8/16/60 and Lesson600+60/current12000/600 intact until an actual non-security need is proved; changed installed contracts require an explicit forward version and matching consumers. This governance round does not add SQL603 or business authority.
+
+## Scenario: Named non-B1d installation and lifecycle caller modes (2026-10-27)
+
+### 1. Scope / Trigger
+Use `completion_non_b1d_v1` only for the three declared local databases with the existing base schema. `postgres` and the original completion TEST are runtime-purpose; the separate validation database is storage-validation-purpose, never an application target. SQL599–602 are installed and frozen; do not replay them to repair an already-installed target or reopen P2/P7 business authority.
+
+### 2. Signatures
+- `ensure_startup_contract(*, entrypoint: str)` is the common readonly entry gate; selector is `AEARN_DATABASE_CONTRACT=completion_non_b1d_v1`.
+- `candidate_completion_baseline` / `install_completion_baseline` require the actual database OID and maintenance confirmation. Runtime first-install plan is 599→601→602; validation first-install plan is 599→601→602→600. Legacy manifest/531 classification is separate.
+- `capture_completion_catalog(conn, *, metadata, base, storage_check=False)` uses the same explicit `pg_catalog,pg_temp` rendering path as comparison and requires a caller-owned transaction.
+- `actual_d_private_counts(conn, user_id: UUID)` requires `conn.autocommit is False` and an active transaction. In contrast, `CompletionExecutionOwner` requires an idle autocommit connection between its short transactions.
+
+### 3. Contracts
+Catalog metadata is pure static data, not marker-only readiness. Compare original PG expressions and function bodies, owners, paths, table/column ACLs, roles and memberships; NULL column ACL and an explicit empty ACL are distinct. Only the fixed thirteen development CHECK pairs may differ from restored-clone rendering; do not remove parentheses/casts or accept a variant for another target. A canonical flag is not installation or business acceptance.
+
+Initial cutover must run through its original owner on a **non-autocommit** connection, even though `get_decision` itself opens a transaction. Do not pass a connection configured for completion dispatch to all other owners. Metadata reads on an autocommit connection must finish before changing mode; birth/cutover must commit before reporting `user_committed`, and later completion work uses a separate idle autocommit connection.
+
+Runtime ACL inventories must follow actual dynamic/f-string JOINs too: `actual_d_private_counts` reads `rag_source_reviews`, `rag_source_admissions` and `rag_source_claim_receipts`. SQL601 adds exactly their runtime SELECT permissions, not mutation/source/quality authority. Missing SELECT is a failure, never a zero count.
+
+Planning reads include `_active_courses` even before intent-resolution gating, plus the tag/intent join: SQL602 grants only SELECT on `language_courses`, `language_course_intent_tags`, and `tutor_learning_intents`. Include their existing triggers and the finite `enforce_language_course_intent_coverage()` → `assert_language_course_intent_coverage()` call in BASE metadata; exact-dedupe existing `set_updated_at()`. Do not label existing guards NEW, seed empty course catalogs to hide an ACL failure, or expand privileges to all public relations.
+
+The normal interactive caller supplies `tutor_interactive_policy_v1`; only a new explicit completion profile with `origin='interactive'` may normalize that exact alias to the canonical completion policy version. Legacy/null keeps its label; retry/queue/interaction-response/unknown labels and proactive use of the alias remain rejected before SQL. Do not rewrite stored runs or broaden recovery admissions.
+
+### 4. Validation & Error Matrix
+- Lock-inside fresh ABSENT: apply only the fixed plan; COMPLETE: no DDL/seed/import; unknown or partial catalog: reject, not automatic recovery.
+- Dedicated role/validation DSN with missing selector, unknown selector, wrong live purpose, or any catalog drift: reject before business work. SkipBootstrap/custom Celery loader cannot bypass this.
+- Unknown COMMIT: retain uncertainty and reconcile readonly, never retry. Readback/cleanup exceptions must not erase an already acknowledged COMMIT record.
+- `autocommit=True` passed to actual-D inventory: `ValueError`, including inside `conn.transaction()`; fix the caller mode, not the lifecycle guard or verified state.
+
+### 5. Good / Base / Bad Cases
+Good: fixed 601/602 forward deltas after exact known predecessor comparison, retaining all failed synthetic history. Base: the explicit historical maintenance/test Python API retains legacy compatibility; the normal CLI and managed dev reject a missing selector rather than run legacy DDL. Bad: modifying installed SQL, granting all public tables, backfilling old user births, replaying a spent journal, or treating a known pre-provider stop as zero historical monetary cost.
+
+### 6. Tests Required
+Use direct schema/loader/manifest tests plus the eight opt-in real-login storage scenes. Runtime and verifier must be real distinct logins, ADMIN observation-only, with no bootstrap or teardown inside tests. Retention comparisons may sort complete row sets by their actual UUID primary key (`id`), not a presumed shared `created_at` column; this is deterministic comparison, not chronology. Real process startup and HTTP/sidecar acceptance remain distinct from CPU/catalog evidence.
+
+### 7. Wrong vs Correct
+Wrong: one autocommit factory for birth, cutover, completion and all readbacks, then bypass inventory when it fails. Correct: a non-autocommit birth/cutover TOP followed by independent idle-autocommit completion transactions; preserve existing lifecycle checks, original commit boundaries and once-only operator identities.
+
+---
+
+## Scenario: Completion-driven durable work and fresh acceptance (2026-10-26)
+
+### 1. Scope / Trigger
+New explicit Tutor `completion_driven_v1` and Lesson `lesson_completion_v1` runs only, behind `TUTOR_COMPLETION_DRIVEN_ENABLED=false` by default. SQL596–598 were installed with separate readback on 2026-10-26; installed SQL, legacy/null versions, historical UNKNOWN and previous resource windows remain immutable. Local development activation requires both independent live-channel acceptances and a fresh actual-configuration readback; it never changes the code default or proves an existing process reloaded. Do not mask absent mandatory tables as zero or bypass clean-start authority. Contract documentation is not a substitute for installation/acceptance records.
+
+### 2. Signatures
+- Only three new tables: `tutor_run_execution_batches`, `tutor_run_step_attempts`, `tutor_lesson_authoring_stage_attempts`.
+- `CompletionExecutionOwner(conn)` requires an idle autocommit connection; its methods own short transactions. `accept_result(..., batch, dependencies, validate, consume)` requires a fresh batch and database-only callbacks.
+- Existing runtime bindings gain nullable `step_attempt_id`; existing Lesson source snapshots gain `evidence_schema_version/evidence_units_json`, and authoring runs gain nullable `completion_contract_version`.
+- Completion v1 batch settings are exactly 2400 seconds / 8 decisions / 16 observable HTTP / 60 seconds result reserve. Both explicit and environment-factory non-default overrides must be rejected, not silently ignored.
+
+### 3. Contracts
+Commit the intent before external IO, record the full bounded private typed result in a separate transaction, then accept under current original-owner authority. Result-recorded is not business-accepted. A new owner/batch inherits the same logical run, input revision, committed work and cumulative counts; it cannot restore old leases/caps or add effects/tools. Step `(id,run_id,user_id,conversation_id)` must support the real sidecar FK.
+
+On result/usage-receipt gaps, recover original attempts idempotently from committed results rather than call the provider again. Action/effect recovery uses original stable receipts and nondecreasing counts. Explicit nested material HTTP UNKNOWN must survive consumer→gateway→loop→owner; preserve primary Tutor usage and nested semantic metadata separately. A physical-attempt snapshot is not an increment, and cold-read zero does not prove zero historical requests or fees.
+
+Lesson standard/personalized attempts bind exact user/course/dependencies and preserve full candidates/feedback privately. A saved result cannot be terminalized as unrecoverable failure; expiry does not authorize replay of unresolved intent. Personalization freezes document metadata and block structure, changing only allowed block content. Full versioned evidence and ≤1200-character display excerpts are distinct; old source identities and expiry stay unchanged. Final publication remains the original atomic path.
+
+### 4. Validation & Error Matrix
+- Unknown dispatch/commit without a conclusively recovered result: block redispatch; do not manufacture known success/zero usage.
+- Wrong user/input/dependency/owner generation or stale source: original denial, no acceptance shortcut.
+- Same-transaction result and acceptance where prior COMMIT is required: reject.
+- Old run switched to a new profile, regressing counters or duplicate successor: reject in database guards.
+- Optional new relation absent: do not query it; a query failure is not an absent relation or zero count.
+
+### 5. Good / Base / Bad Cases
+Good: a cold owner reads a committed result, obtains current acceptance authority and commits the original effect once. Base: unflagged legacy requests retain the old profile and stage limits. Bad: replay the model after a saved result, reuse an expired batch, reset tool guards, publish a standard-stage draft early, or expose private candidates through export.
+
+### 6. Tests Required
+Use the direct completion owner, material consumer, Lesson stage and sidecar CPU tests for changed behavior. Real DB tests are separately opt-in via `AEARN_COMPLETION_TEST_DATABASE_URL`, local `aearn_completion_b_test_*` only, using a Main-prepared schema clone and no complete legacy bootstrap. `test_completion_contracts_postgres.py` and `test_lesson_completion_postgres.py` must exercise actual trigger/COMMIT branches; collect-only and SQL transcripts are not PG acceptance. Preserve explicit gaps for real source-current/final publication and independent HTTP/sidecar smokes.
+
+### 7. Wrong vs Correct
+Wrong: store a hash, mark the run complete and regenerate after restart. Correct: commit the bounded typed result, recover its exact original accounting, recheck fresh authority, and accept with original transactional business receipts; keep unresolved UNKNOWN blocked.
+
 ---
 
 ## Overview
@@ -26,6 +132,7 @@ The formal MVP runtime lives under `aearn/`, not under the historical `01_` thro
 
 - Milestone 1 must establish a repeatable migration baseline before features write business data.
 - 当前 bootstrap Schema 由 `app/db/schema/__init__.py` 的 `SCHEMA_FRAGMENT_NAMES` 显式排序；数字前缀只帮助阅读，loader 不得依赖目录自然排序或 `glob()` 顺序。
+- `SCHEMA_DRAFT_FILE_NAMES` 仅精确保留尚未接受的 SQL531，不参与 load/apply；active/draft 必须互斥、各自无重复且文件存在，任意未登记 SQL 仍拒绝。这不是忽略未知文件或批准草案执行。原523/524的B1d-only部署门禁仍有效；非B1d初装需完整前向合同，不得抽取空表绕过原scope/owner/immutable/epoch约束。
 - 每个 `app/db/schema/*.sql` fragment 只拥有连续职责范围，所有 fragment 必须在同一 caller-owned connection 和最终提交事务中执行；fragment/loader 不得 `commit` 或维护第二份聚合 SQL。
 - bootstrap 使用 transaction-scoped advisory lock 串行化多进程 schema owner，并对 deadlock/serialization failure 有界重试完整事务；不得在 fragment 之间提交以规避锁冲突。
 - Migration order must follow `docs/plans/learning-agent-implementation-plan.md`: base tables first, then learning/exercise core tables, then review and notes tables.

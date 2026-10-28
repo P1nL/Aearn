@@ -8,14 +8,14 @@ from time import monotonic
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 from psycopg import Connection
 from uuid import uuid4
 
 from app.core.safe_diagnostics import log_safe_event
 from app.db.connection import connect
-from app.services.grounding.grounding_index_repository import search_persisted_grounding_chunks
+from app.services.grounding.grounding_index_repository import search_lesson_coverage_chunks, search_persisted_grounding_chunks
 from app.services.grounding.grounding_retrieval import GroundingRetrievalQuery
 from app.services.grounding.grounding_processing import GroundingChunk, is_admissible_lesson_source
 from app.services.grounding.grounding_sources import get_grounding_source
@@ -23,6 +23,9 @@ from app.services.learning.lesson_contracts import (
     LESSON_GENERATOR_VERSION,
     LESSON_CONTENT_STANDARD_VERSION,
     LESSON_POLICY_VERSION,
+    LESSON_COMPLETION_VERSION,
+    LESSON_EVIDENCE_VERSION,
+    LessonEvidenceUnit,
     LessonDocumentDraft,
     ExerciseGateBlock,
     LessonSourceSnapshot,
@@ -33,6 +36,7 @@ from app.services.learning.lesson_contracts import (
     citation_id_for_chunk,
     lesson_author_block_examples,
     lesson_author_output_schema,
+    lesson_block_payload,
     parse_lesson_document_candidate,
 )
 from app.services.learning.lesson_quality import LessonQualityError, LessonQualityReport, require_lesson_quality
@@ -77,6 +81,8 @@ class LessonAuthoringEvidence:
     source_version_kind: str
     section_path: tuple[str, ...]
     evidence_excerpt: str
+    evidence_schema_version: str | None = None
+    evidence_units: tuple[LessonEvidenceUnit, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +100,10 @@ class LessonAuthoringRequest:
     standard_document: LessonDocumentDraft | None = None
     previous_attempt_feedback: LessonAuthorFeedback | None = None
     citation_handles: tuple[tuple[str, str], ...] = ()
+    completion_contract_version: str | None = None
+    previous_personalized_document: LessonDocumentDraft | None = None
+    editable_block_ids: tuple[str, ...] = ()
+    personal_preferences: tuple[tuple[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +134,11 @@ class LessonAuthoringFailure(RuntimeError):
         self.protocol = "unknown"
         self.usage: LLMUsage | None = None
         self.response_diagnostics: LLMResponseDiagnostics | None = None
+        self.execution_outcome = "unknown"
+
+
+class _CompletionAuthorOptions(TypedDict, total=False):
+    completion_stage: str
 
 
 class PrimaryLessonDocumentAuthor:
@@ -134,15 +149,23 @@ class PrimaryLessonDocumentAuthor:
         self._client = client
 
     def author(self, request: LessonAuthoringRequest) -> LessonAuthoringResponse:
+        completion = request.completion_contract_version == LESSON_COMPLETION_VERSION
+        if completion and not self._settings.tutor_completion_driven_enabled:
+            failure = LessonAuthoringFailure("LESSON_COMPLETION_DISABLED", "完成驱动课程生成尚未启用。", outcome="unavailable")
+            failure.execution_outcome = "not_started"
+            raise failure
         try:
             client = self._client or OpenAICompatibleClient(self._settings)
         except LLMConfigurationError as exc:
-            raise LessonAuthoringFailure(
+            failure = LessonAuthoringFailure(
                 "LESSON_DOCUMENT_GENERATION_UNAVAILABLE",
                 "课程生成服务当前不可用。",
                 outcome="unavailable",
-            ) from exc
+            )
+            failure.execution_outcome = "not_started"
+            raise failure from exc
         messages = _author_messages(request)
+        options: _CompletionAuthorOptions = {"completion_stage": "lesson_authoring"} if completion else {}
         try:
             response = client.complete_json(
                 messages,
@@ -154,9 +177,12 @@ class PrimaryLessonDocumentAuthor:
                     self._settings.llm_provider_type == "deepseek"
                     and self._settings.llm_model == "deepseek-flash"
                 ) else None,
+                **options,
             )
         except LLMConfigurationError as exc:
-            raise LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", outcome="unavailable") from exc
+            failure = LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", outcome="unavailable")
+            failure.execution_outcome = "not_started"
+            raise failure from exc
         except LLMInvalidResponseError as exc:
             failure = LessonAuthoringFailure("LESSON_DOCUMENT_INVALID", "课程生成结果未通过结构校验。", outcome="invalid")
             code = "LESSON_PROVIDER_" + exc.kind.value.upper()
@@ -173,6 +199,8 @@ class PrimaryLessonDocumentAuthor:
             failure.protocol = select_llm_protocol(self._settings).value
             failure.usage = exc.usage
             failure.response_diagnostics = exc.response_diagnostics
+            status = exc.response_diagnostics.response_status if exc.response_diagnostics is not None else None
+            failure.execution_outcome = "unknown" if status in {"missing_terminal", "queued", "in_progress", "unknown"} else "known"
             raise failure from exc
         except LLMCallError as exc:
             raise LessonAuthoringFailure("LESSON_DOCUMENT_GENERATION_UNAVAILABLE", "课程生成服务当前不可用。", outcome="unavailable") from exc
@@ -211,9 +239,17 @@ def dispatch_lesson_authoring_run(
             return
         with connect() as conn:
             with conn.transaction():
-                running = PostgresLessonDocumentRepository(conn).mark_authoring_running(
-                    run_id=claimed.run_id, lease_generation=claimed.lease_generation,
-                )
+                if (getattr(claimed, "completion_contract_version", None) == LESSON_COMPLETION_VERSION
+                        and claimed.state == "running"):
+                    running = claimed
+                else:
+                    running = PostgresLessonDocumentRepository(conn).mark_authoring_running(
+                        run_id=claimed.run_id, lease_generation=claimed.lease_generation,
+                    )
+        if getattr(running, "completion_contract_version", None) == LESSON_COMPLETION_VERSION:
+            from app.services.learning.lesson_completion_stages import dispatch_completion_lesson
+            dispatch_completion_lesson(run=running, author=author, clock=clock)
+            return
         diagnostics.stage = "source"
         with connect() as conn:
             repository = PostgresLessonDocumentRepository(conn)
@@ -424,23 +460,35 @@ def _load_evidence_snapshots(
     snapshotted_at: datetime,
     *,
     allow_fixtures_for_tests: bool = False,
+    completion_driven: bool = False,
+    required_topics: tuple[str, ...] = (),
 ) -> tuple[LessonSourceSnapshot, ...]:
     # No route, setting, or live dispatcher enables this offline-test-only seam.
     def admitted(chunk: GroundingChunk) -> bool:
-        return is_admissible_lesson_source(chunk, allow_fixtures_for_tests=allow_fixtures_for_tests)
+        if not is_admissible_lesson_source(chunk, allow_fixtures_for_tests=allow_fixtures_for_tests):
+            return False
+        if completion_driven:
+            source = get_grounding_source(chunk.source_id)
+            return source is not None and (source.source_version_label, source.source_version_kind) == (
+                chunk.source_version_label, chunk.source_version_kind)
+        return True
 
-    results = search_persisted_grounding_chunks(
-        conn,
-        GroundingRetrievalQuery(
+    query = GroundingRetrievalQuery(
             language_id_or_alias=language_id,
             query_text=f"{title} {knowledge_key}",
             topic_tags=tuple(part for part in knowledge_key.split(".") if part),
             preferred_trust_tiers=("official", "trusted_de_facto"),
             knowledge_point_title=title,
             top_k=4,
-        ),
-        admission_filter=admitted,
-    )
+        )
+    if completion_driven:
+        results, missing = search_lesson_coverage_chunks(
+            conn, query, required_topics=required_topics or (knowledge_key,), admission_filter=admitted,
+        )
+        if missing:
+            raise LessonAuthoringFailure("LESSON_SOURCE_EVIDENCE_INSUFFICIENT", "课程必要知识点的来源依据不足。", outcome="invalid")
+    else:
+        results = search_persisted_grounding_chunks(conn, query, admission_filter=admitted)
     snapshots: list[LessonSourceSnapshot] = []
     seen: set[str] = set()
     for result in results:
@@ -465,6 +513,8 @@ def _load_evidence_snapshots(
                 chunk_content_hash=chunk.content_hash, fetched_at=chunk.fetched_at,
                 snapshotted_at=snapshotted_at,
                 evidence_excerpt=" ".join(chunk.text.split())[:1200],
+                evidence_schema_version=LESSON_EVIDENCE_VERSION if completion_driven else None,
+                evidence_units=(LessonEvidenceUnit(chunk.text, chunk.content_hash, 0, len(chunk.text.encode("utf-8"))),) if completion_driven else (),
             )
         )
     return tuple(snapshots)
@@ -486,6 +536,8 @@ def _authoring_evidence(
                 source_version_kind=snapshot.source_version_kind,
                 section_path=snapshot.section_path,
                 evidence_excerpt=snapshot.evidence_excerpt,
+                evidence_schema_version=snapshot.evidence_schema_version,
+                evidence_units=snapshot.evidence_units,
             )
         )
     return tuple(evidence), handles
@@ -549,6 +601,19 @@ def _parse_author_candidate(payload: Mapping[str, object], handles: Mapping[str,
 
 
 def _assert_candidate_identity(document: LessonDocumentDraft, request: LessonAuthoringRequest) -> None:
+    if request.previous_personalized_document is not None:
+        previous = request.previous_personalized_document
+        document_identity = ("schema_version", "title", "language_id", "knowledge_key", "content_standard_version", "coverage_keys")
+        if any(getattr(document, field) != getattr(previous, field) for field in document_identity):
+            raise _candidate_failure("LESSON_PERSONALIZED_UNAFFECTED_CHANGED", "candidate_identity")
+        if tuple(block.block_id for block in document.blocks) != tuple(block.block_id for block in previous.blocks):
+            raise _candidate_failure("LESSON_PERSONALIZED_UNAFFECTED_CHANGED", "candidate_identity")
+        for block, prior in zip(document.blocks, previous.blocks, strict=True):
+            payload, prior_payload = lesson_block_payload(block), lesson_block_payload(prior)
+            structural_fields = ("type", "block_id", "order_index", "citation_ids", "coverage_keys")
+            if (any(payload.get(field) != prior_payload.get(field) for field in structural_fields)
+                    or (block.block_id not in request.editable_block_ids and payload != prior_payload)):
+                raise _candidate_failure("LESSON_PERSONALIZED_UNAFFECTED_CHANGED", "candidate_identity", f"blocks[{block.order_index}]")
     if document.language_id != request.language_id:
         raise _candidate_failure("LESSON_CANDIDATE_SCOPE_INVALID", "candidate_identity", "language_id")
     if document.knowledge_key != request.knowledge_key:
@@ -651,6 +716,11 @@ def _author_messages(request: LessonAuthoringRequest) -> tuple[dict[str, str], .
     payload: dict[str, object] = _safe_request_payload(request)
     if request.standard_document is not None:
         payload["personalization_rule"] = "Preserve all coverage keys and every exercise_gate contract exactly."
+    if request.previous_personalized_document is not None:
+        payload["personalization_rule"] = (
+            "Update only content inside editable_block_ids for the changed personal conditions. Preserve document metadata, "
+            "other blocks, all block identities, types and order, coverage, citations and every exercise_gate contract exactly."
+        )
     return (
         {"role": "system", "content": instruction},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)},
@@ -678,6 +748,9 @@ def _safe_request_payload(request: LessonAuthoringRequest) -> dict[str, object]:
                 "source_version_kind": item.source_version_kind,
                 "section_path": list(item.section_path),
                 "evidence_excerpt": item.evidence_excerpt,
+                **({"evidence_schema_version": item.evidence_schema_version,
+                    "evidence_units": [unit.payload() for unit in item.evidence_units]}
+                   if item.evidence_schema_version is not None else {}),
             }
             for item in request.evidence
         ],
@@ -692,6 +765,19 @@ def _safe_request_payload(request: LessonAuthoringRequest) -> dict[str, object]:
         for block in standard_blocks:
             block["citation_ids"] = [reverse[citation] for citation in block["citation_ids"]]
         payload["standard_document"] = standard_payload
+    if request.completion_contract_version is not None:
+        payload["completion_contract_version"] = request.completion_contract_version
+    if request.personal_preferences:
+        payload["personal_preferences"] = dict(request.personal_preferences)
+    if request.previous_personalized_document is not None:
+        previous_payload = canonical_lesson_document_payload(request.previous_personalized_document)
+        reverse = {citation: handle for handle, citation in request.citation_handles}
+        previous_blocks = previous_payload["blocks"]
+        assert isinstance(previous_blocks, list)
+        for block in previous_blocks:
+            block["citation_ids"] = [reverse[citation] for citation in block["citation_ids"]]
+        payload["previous_personalized_document"] = previous_payload
+        payload["editable_block_ids"] = list(request.editable_block_ids)
     return payload
 
 

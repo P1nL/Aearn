@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import logging
 from time import perf_counter
@@ -34,13 +36,14 @@ from app.agents.runtime.contracts import (
     RuntimeHealthSnapshot,
     RuntimeHealthStatus,
     RuntimeInput,
+    RuntimePlanningStepResult,
     RuntimeTerminalStatus,
     RuntimeThreadHandle,
     RuntimeThreadRequest,
     RuntimeTurnRequest,
     RuntimeTurnResult,
 )
-from app.agents.runtime.learning_plan_tools import LearningPlanRuntimeToolRegistry
+from app.agents.runtime.learning_plan_tools import LearningPlanRuntimeToolRegistry, LearningPlanToolBudget
 from app.agents.runtime.tutor_projection import TutorRuntimeEventProjector
 from app.agents.runtime.worker_host import (
     RuntimeTurnControlDirective,
@@ -53,6 +56,7 @@ from app.services.learning.contracts import LearningScopeKind
 from app.services.learning.plan_tools import (
     LearningPlanToolStatus,
     PlanningDirectionAction,
+    build_expected_learning_plan_tool_fence,
 )
 from app.services.learning.planning_intent import PlanningIntentResolver
 
@@ -70,7 +74,15 @@ from app.services.tutor.persistence import (
 )
 from app.services.tutor.runtime_projection import (
     PostgresTutorRuntimeProjectionRepository,
+    TutorRuntimeProjectionEvent,
     TutorRuntimeProjectionFence,
+)
+from app.services.tutor.completion_execution import (
+    COMPLETION_RESULT_RESERVE_SECONDS,
+    CompletionExecutionError,
+    CompletionExecutionOwner,
+    completion_enabled_for,
+    decode_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,6 +219,13 @@ class CodexTutorRunDispatcher:
             leased = repository.load_snapshot(user_id=user_id, run_id=run_id)
             if leased is None or leased.lease != lease:
                 raise RuntimeError("Tutor Codex lease snapshot is unavailable")
+
+            if completion_enabled_for(leased):
+                if not self._settings.tutor_completion_driven_enabled:
+                    raise CompletionExecutionError("completion_profile_disabled")
+                return self._dispatch_completion(
+                    conn=conn, repository=repository, run=leased, lease=lease,
+                )
 
             existing_binding = conn.execute(
                 "SELECT * FROM tutor_run_runtime_bindings WHERE run_id = %s",
@@ -395,294 +414,672 @@ class CodexTutorRunDispatcher:
                     else self._settings.codex_runtime_turn_timeout_seconds + 30
                 ),
             )
-            result = _ensure_terminal_event(result)
-            log_safe_event(
-                logger, "codex_planning_runtime_result", level=logging.INFO,
-                run_id=run_id, conversation_id=leased.conversation_id,
-                code=result.safe_error_code, state=result.terminal_status.value,
-                termination_reason=result.metrics.termination_reason,
-                visible_chars=result.metrics.message_text_chars,
-                reasoning_chars=result.metrics.reasoning_text_chars,
-                total_text_chars=result.metrics.visible_text_chars,
-                effective_max_visible_chars=result.metrics.effective_max_visible_text_chars,
-                effective_max_reasoning_chars=result.metrics.effective_max_reasoning_text_chars,
-                effective_max_total_chars=result.metrics.effective_max_total_text_chars,
-                effective_timeout_seconds=result.metrics.effective_timeout_seconds,
-                tool_count=registry.call_count, tool_repair_count=registry.repair_count,
-                runtime_generation=thread.generation,
+            return self._finish_runtime_result(
+                conn=conn, repository=repository, projection_repository=projection_repository,
+                user_id=user_id, run_id=run_id, lease=lease, thread=thread,
+                registry=registry, binding_id=binding.binding_id, result=result,
             )
-            terminal_event, terminal_sequence = _runtime_terminal_event(result)
-            current = repository.load_snapshot(user_id=user_id, run_id=run_id)
+
+    def _dispatch_completion(
+        self, *, conn: Connection[dict[str, object]], repository: PostgresTutorRepository,
+        run: TutorRunSnapshot, lease: TutorLease,
+    ) -> TutorRunResult:
+        """Continue one original run through committed, owner-fenced native steps."""
+        owner = CompletionExecutionOwner(conn)
+        projection = PostgresTutorRuntimeProjectionRepository(conn)
+        config = CodexRuntimeConfig.from_settings(self._settings)
+        while True:
+            current = repository.load_snapshot(user_id=run.user_id, run_id=run.run_id)
             if current is None:
-                raise RuntimeError("Tutor Codex run disappeared")
-            final_fence = TutorRuntimeProjectionFence(
-                input_revision=current.input_revision,
-                lease_owner_id=lease.owner_id,
-                lease_generation=lease.generation,
-                connection_generation=thread.generation,
-            )
-            projector = TutorRuntimeEventProjector(
-                projection_repository,
-                binding_id=binding.binding_id,
-                fence=final_fence,
-            )
-            awaiting_field = _awaiting_planning_field(registry)
-            direction_action = registry.planning_direction_action
-            receipt_source = "model_candidate"
-            if direction_action is None:
-                direction_action = PlanningDirectionAction.CLARIFY_DIRECTION
-                receipt_source = _direction_fallback_source(registry, result)
-            elif (
-                direction_action is PlanningDirectionAction.CONTINUE_MAINLINE
-                and not registry.intake_mode
-                and not registry.draft_completed
-            ):
-                direction_action = PlanningDirectionAction.CLARIFY_DIRECTION
-                receipt_source = "server_fallback_action_postcondition"
-            server_terminalized = (
-                registry.intake_mode
-                or receipt_source != "model_candidate"
-                or direction_action
-                in {
-                    PlanningDirectionAction.CLARIFY_DIRECTION,
-                    PlanningDirectionAction.CONFIRMED_SWITCH,
-                    PlanningDirectionAction.ANSWER_AND_REFOCUS,
-                }
-            )
-            if server_terminalized and not _direction_server_terminalization_allowed(
-                registry,
-                result,
-            ):
-                failed_result = _direction_failure_result(registry, result)
-                occurred_at = datetime.now(UTC)
-                for index, event in enumerate(failed_result.events, start=1):
-                    projector.project_event(
-                        event,
-                        sequence=event.sequence or index,
-                        occurred_at=occurred_at,
-                        defer_public_message=(
-                            event.kind is RuntimeEventKind.MESSAGE_COMPLETED
-                            and event.phase in {None, "final_answer"}
-                        ),
-                    )
-                return _run_result(
-                    repository.read_run_state(user_id=user_id, run_id=run_id)
+                raise CompletionExecutionError("completion_run_missing")
+            step = owner.pending_step(run=current, lease=lease)
+            if step is not None and step.state in {"dispatched", "outcome_unknown"}:
+                raise CompletionExecutionError("completion_unresolved_attempt")
+            if step is not None and step.state == "prepared":
+                # Only the owner's durable pre-send state proves no model send.
+                owner.mark_not_sent(run=current, lease=lease, step=step)
+                conn.execute(
+                    "UPDATE tutor_run_runtime_bindings SET state='unavailable', "
+                    "safe_error_code='runtime_step_not_sent', terminal_at=clock_timestamp() "
+                    "WHERE step_attempt_id=%s AND state='thread_bound' AND external_turn_id IS NULL",
+                    (step.id,),
                 )
-            if server_terminalized:
-                occurred_at = datetime.now(UTC)
-                for index, event in enumerate(result.events, start=1):
-                    if event.kind is RuntimeEventKind.TURN_COMPLETED:
-                        continue
-                    projector.project_event(
-                        event,
-                        sequence=event.sequence or index,
-                        occurred_at=occurred_at,
-                        defer_public_message=(
-                            event.kind is RuntimeEventKind.MESSAGE_COMPLETED
-                            and event.phase in {None, "final_answer"}
+                step = None
+            previous = _latest_completion_sidecar_result(conn, current)
+            recovered = step is not None
+            recorded = step.result if step is not None else None
+            if recovered and not isinstance(recorded, RuntimePlanningStepResult):
+                raise CompletionExecutionError("completion_sidecar_result_invalid")
+            saved: RuntimePlanningStepResult | None = recorded if isinstance(recorded, RuntimePlanningStepResult) else None
+            health = self._host.health_snapshot(
+                timeout_s=self._settings.codex_runtime_startup_timeout_seconds + 5,
+            )
+            if health.status is not RuntimeHealthStatus.READY or health.generation < 1 or not health.version:
+                raise CompletionExecutionError("completion_runtime_unavailable")
+            checkpoint = saved.planning_state if isinstance(saved, RuntimePlanningStepResult) else (
+                previous.planning_state if previous is not None else None
+            )
+            registry = LearningPlanRuntimeToolRegistry.from_postgres(
+                conn, run=current, runtime_generation=health.generation,
+                runtime_generation_reader=self._host.current_generation,
+                budget=LearningPlanToolBudget(max_wall_seconds=config.completion_turn_timeout_s),
+                committed_state=checkpoint, recover_committed_draft=checkpoint is not None,
+            )
+            if registry.prime_context().status is LearningPlanToolStatus.AWAITING_USER:
+                registry.configure_direction_intake(
+                    max_wall_seconds=self._settings.tutor_codex_intake_timeout_seconds,
+                )
+            dependencies = _completion_dependencies(conn, current, health.generation)
+            if not recovered:
+                work_seconds = (
+                    self._settings.tutor_codex_intake_timeout_seconds
+                    if registry.intake_mode else config.completion_turn_timeout_s
+                )
+                batch = owner.ensure_batch(
+                    run=current, lease=lease, minimum_seconds=work_seconds,
+                    minimum_http_attempts=0,  # Native internal HTTP is not observable.
+                )
+                input_text = _completion_input(
+                    _read_input_text(conn, run_id=current.run_id, input_revision=current.input_revision),
+                    registry, previous,
+                )
+                step = owner.prepare_step(
+                    run=current, lease=lease, batch=batch,
+                    step_key=f"plan_drafting:{current.input_revision}:turn:{current.model_call_count + 1}",
+                    kind="sidecar_turn", request={"input": input_text}, dependencies=dependencies,
+                )
+                if step.state != "prepared":
+                    raise CompletionExecutionError("completion_sidecar_dispatch_state_invalid")
+                conversation_thread = projection.active_conversation_thread(
+                    user_id=current.user_id, conversation_id=current.conversation_id,
+                )
+                rpc_wait = config.startup_timeout_s + config.request_timeout_s
+                if conversation_thread is None:
+                    thread = self._host.start_thread(
+                        RuntimeThreadRequest(
+                            cwd=str((config.home_root / "workspace").resolve()),
+                            tools=registry.definitions, base_instructions=_BASE_INSTRUCTIONS, ephemeral=False,
+                        ), timeout_s=rpc_wait,
+                    )
+                    conversation_thread = projection.create_conversation_thread(
+                        user_id=current.user_id, conversation_id=current.conversation_id,
+                        runtime_version=health.version, protocol_version=CODEX_WIRE_API,
+                        external_thread_id=thread.thread_id, migration_mode="native",
+                        occurred_at=datetime.now(UTC),
+                    )
+                else:
+                    thread = self._host.resume_thread(conversation_thread.external_thread_id, timeout_s=rpc_wait)
+                    projection.mark_conversation_thread_resumed(
+                        thread_binding_id=conversation_thread.thread_binding_id,
+                        user_id=current.user_id, occurred_at=datetime.now(UTC),
+                    )
+                if thread.generation != health.generation:
+                    raise CompletionExecutionError("completion_runtime_generation_changed")
+                fence = TutorRuntimeProjectionFence(current.input_revision, lease.owner_id, lease.generation, thread.generation)
+                binding = projection.bind_run(
+                    user_id=current.user_id, run_id=current.run_id, fence=fence,
+                    runtime_version=health.version, protocol_version=CODEX_WIRE_API,
+                    external_thread_id=thread.thread_id, occurred_at=datetime.now(UTC),
+                    conversation_runtime_thread_id=conversation_thread.thread_binding_id, step_attempt_id=step.id,
+                )
+                remaining = (batch.expires_at - datetime.now(UTC)).total_seconds() - COMPLETION_RESULT_RESERVE_SECONDS
+                work_seconds = min(work_seconds, remaining)
+                if work_seconds < 0.1:
+                    raise CompletionExecutionError("completion_stage_window_invalid")
+                registry.configure_work_deadline(work_seconds)
+                control = _CodexControlReader(
+                    conn=conn, repository=repository, user_id=current.user_id, run_id=current.run_id,
+                    lease=lease, lease_duration_seconds=current.policy.lease_duration_seconds, allow_steer=False,
+                )
+                projector = TutorRuntimeEventProjector(projection, binding_id=binding.binding_id, fence=fence)
+
+                def observe(event: RuntimeEvent, sequence: int) -> None:
+                    if event.kind is not RuntimeEventKind.TURN_COMPLETED:
+                        projector.project_event(
+                            event, sequence=sequence, occurred_at=datetime.now(UTC), defer_public_message=True,
+                        )
+
+                step = owner.mark_dispatched(run=current, lease=lease, step=step)
+                try:
+                    runtime = _ensure_terminal_event(self._host.run_turn(
+                        RuntimeTurnRequest(
+                            thread=thread, input=(RuntimeInput(input_text),), tools=registry,
+                            completion_driven=True, timeout_seconds=work_seconds,
+                            effort="low" if registry.intake_mode else None,
+                            max_visible_text_chars=_DIRECTION_INTAKE_MAX_VISIBLE_TEXT_CHARS if registry.intake_mode else None,
+                            max_reasoning_text_chars=_DIRECTION_INTAKE_MAX_REASONING_TEXT_CHARS if registry.intake_mode else None,
+                        ), control_reader=control.read, initial_input_revision=current.input_revision,
+                        event_observer=observe, timeout_s=work_seconds + 15,
+                    ))
+                except BaseException:
+                    owner.mark_unknown(run=current, lease=lease, step=step)
+                    raise
+                saved = RuntimePlanningStepResult(
+                    runtime=runtime, planning_state=registry.continuation_state,
+                    tool_results=tuple(item.model_dump(mode="json") for item in registry.results),
+                    tool_call_count=registry.call_count, tool_repair_count=registry.repair_count,
+                )
+                step = owner.record_result(
+                    run=current, lease=lease, step=step, result=saved,
+                    outcome_unknown=_completion_outcome_unknown(saved),
+                )
+                if step.state == "outcome_unknown":
+                    raise CompletionExecutionError("completion_unresolved_attempt")
+            if step is None or not isinstance(saved, RuntimePlanningStepResult):
+                raise CompletionExecutionError("completion_sidecar_result_invalid")
+            if recovered:
+                registry.restore_recorded_tool_results(saved)
+            binding_row = conn.execute(
+                "SELECT * FROM tutor_run_runtime_bindings WHERE step_attempt_id=%s AND run_id=%s "
+                "AND user_id=%s AND conversation_id=%s",
+                (step.id, current.run_id, current.user_id, current.conversation_id),
+            ).fetchone()
+            if binding_row is None:
+                raise CompletionExecutionError("completion_sidecar_binding_missing")
+            if dependencies != dict(step.dependencies):
+                raise CompletionExecutionError("completion_sidecar_dependencies_stale")
+            current = repository.load_snapshot(user_id=run.user_id, run_id=run.run_id)
+            if current is None:
+                raise CompletionExecutionError("completion_run_missing")
+            counted = replace(
+                current, capability_call_count=max(current.capability_call_count, step.capability_count_before + saved.tool_call_count),
+            )
+            should_continue = _completion_should_continue(saved, previous, registry)
+            result_for_acceptance = saved.runtime
+            if not should_continue and not _completion_goal_ready(saved, registry):
+                result_for_acceptance = _completion_postcondition_failure(saved.runtime)
+
+            def validate() -> None:
+                fresh = _completion_dependencies(conn, current, self._host.current_generation())
+                if fresh != dict(step.dependencies):
+                    raise CompletionExecutionError("completion_sidecar_dependencies_stale")
+                # Rebuild rather than transferring the old prepared registry/cap.
+                LearningPlanRuntimeToolRegistry.from_postgres(
+                    conn, run=current, runtime_generation=self._host.current_generation(),
+                    runtime_generation_reader=self._host.current_generation,
+                    committed_state=saved.planning_state,
+                    recover_committed_draft=registry.draft_completed,
+                )
+
+            def consume() -> TutorRunResult | None:
+                if should_continue:
+                    projector = TutorRuntimeEventProjector(
+                        projection, binding_id=str(binding_row["id"]),
+                        fence=TutorRuntimeProjectionFence(
+                            current.input_revision, lease.owner_id, lease.generation,
+                            _as_int(binding_row["connection_generation"]),
                         ),
                     )
-                continuation_kind = TutorContinuationKind.PLANNING_INPUT
-                planning_intent_hint = None
-                facts = PostgresPlanningFactRepository(conn)
-                receipt_action = direction_action
-                with conn.transaction():
-                    if direction_action is PlanningDirectionAction.CONFIRMED_SWITCH:
-                        facts.record_input(
-                            user_id=user_id,
-                            run_id=run_id,
-                            conversation_id=current.conversation_id,
-                            message_id=_read_input_message_id(
-                                conn,
-                                run_id=run_id,
-                                input_revision=current.input_revision,
-                            ),
-                            input_revision=current.input_revision,
-                            content=_read_input_text(
-                                conn,
-                                run_id=run_id,
-                                input_revision=current.input_revision,
-                            ),
-                            reopen_fields=tuple(
-                                field.value
-                                for field in PLANNING_DIRECTION_SWITCH_REOPEN_FIELDS
-                            ),
-                            intent_resolution_enabled=(
-                                self._settings.tutor_planning_intent_enabled
-                            ),
+                    for index, event in enumerate(saved.runtime.events, start=1):
+                        projector.project_event(
+                            event, sequence=event.sequence or index, occurred_at=datetime.now(UTC), defer_public_message=True,
                         )
-                        missing = facts.missing_fields_for_run(
-                            user_id=user_id,
-                            run_id=run_id,
-                        )
-                        if not missing:
-                            raise RuntimeError(
-                                "confirmed planning switch left no missing direction fact"
-                            )
-                        awaiting_field = _next_switch_field(missing)
-                        if awaiting_field is PlanningFactField.LANGUAGE_ID:
-                            deterministic = PlanningIntentResolver(conn).resolve_for_run(
-                                user_id=user_id,
-                                run_id=run_id,
-                                expected_input_revision=current.input_revision,
-                            )
-                            if deterministic.resolution not in {"shortlist", "conflict"}:
-                                continuation_kind = TutorContinuationKind.CLARIFICATION
-                                prompt = _confirmed_switch_language_clarification()
-                            else:
-                                prompt = _confirmed_switch_prompt(awaiting_field)
-                        else:
-                            prompt = _confirmed_switch_prompt(awaiting_field)
-                    elif direction_action is PlanningDirectionAction.CLARIFY_DIRECTION:
-                        continuation_kind = TutorContinuationKind.CLARIFICATION
-                        prompt = _direction_clarification_prompt()
-                    else:
-                        if awaiting_field is None:
-                            continuation_kind = TutorContinuationKind.CLARIFICATION
-                            prompt = _direction_clarification_prompt()
-                            receipt_action = PlanningDirectionAction.CLARIFY_DIRECTION
-                            receipt_source = "server_fallback_action_postcondition"
-                        elif direction_action is PlanningDirectionAction.ANSWER_AND_REFOCUS:
-                            candidate = _answer_and_refocus_prompt(result, awaiting_field)
-                            if candidate is None:
-                                continuation_kind = TutorContinuationKind.CLARIFICATION
-                                prompt = _direction_clarification_prompt()
-                                receipt_action = PlanningDirectionAction.CLARIFY_DIRECTION
-                                receipt_source = (
-                                    "server_fallback_action_postcondition"
-                                )
-                            else:
-                                prompt = candidate
-                        else:
-                            prompt = _planning_input_prompt(awaiting_field)
-                        if (
-                            continuation_kind is TutorContinuationKind.PLANNING_INPUT
-                            and awaiting_field is PlanningFactField.LANGUAGE_ID
-                            and self._settings.tutor_planning_intent_enabled
-                        ):
-                            planning_intent_hint = _planning_intent_hint(registry)
-                            deterministic = PlanningIntentResolver(conn).resolve_for_run(
-                                user_id=user_id,
-                                run_id=run_id,
-                                expected_input_revision=current.input_revision,
-                            )
-                            if (
-                                planning_intent_hint is None
-                                and deterministic.resolution
-                                not in {"shortlist", "conflict"}
-                            ):
-                                continuation_kind = TutorContinuationKind.CLARIFICATION
-                                prompt = _language_implementation_clarification()
-                    if continuation_kind is TutorContinuationKind.PLANNING_INPUT:
-                        if awaiting_field is None:
-                            raise RuntimeError("Tutor planning request field is missing")
-                        facts.record_question_asked(run=current, field=awaiting_field)
-                    typed_result = TutorRunResult(
-                        run_id=run_id,
-                        status=TutorRunStatus.COMPLETED,
-                        input_revision=current.input_revision,
-                        iteration_count=current.iteration_count + 1,
-                        model_call_count=current.model_call_count + 1,
-                        capability_call_count=(
-                            current.capability_call_count + registry.call_count
-                        ),
-                        effect_count=current.effect_count,
-                        terminal_outcome=TutorTerminalOutcome.COMPLETED,
-                        public_message=prompt,
-                        completion_reason=TutorTurnCompletionReason.AWAITING_USER,
-                    )
-                    projection_repository.discard_streaming_text_items_for_server_terminalization(
-                        binding_id=binding.binding_id,
-                        fence=final_fence,
-                        thread_id=terminal_event.thread_id,
-                        turn_id=terminal_event.turn_id,
-                        sequence=terminal_sequence,
-                        occurred_at=occurred_at,
-                    )
-                    repository.record_interaction_request(
+                    return None
+                finished = self._finish_runtime_result(
+                    conn=conn, repository=repository, projection_repository=projection,
+                    user_id=current.user_id, run_id=current.run_id, lease=lease,
+                    thread=saved.runtime.thread, registry=registry, binding_id=str(binding_row["id"]),
+                    result=result_for_acceptance, completion_driven=True,
+                )
+                if finished.terminal_outcome is None:
+                    raise CompletionExecutionError("completion_sidecar_acceptance_rejected")
+                return finished
+
+            # Recorded results are DATA even after a cold takeover. Acquire fresh
+            # acceptance authority, never revive the expired dispatch batch.
+            acceptance_batch = owner.ensure_batch(
+                run=current, lease=lease, minimum_http_attempts=0,
+            )
+            accepted = owner.accept_result(
+                run=counted, lease=lease, step=step, batch=acceptance_batch,
+                dependencies=dependencies, validate=validate, consume=consume,
+            )
+            if accepted is not None:
+                return accepted
+
+    def _finish_runtime_result(
+        self, *, conn: Connection[dict[str, object]], repository: PostgresTutorRepository,
+        projection_repository: PostgresTutorRuntimeProjectionRepository,
+        user_id: str, run_id: str, lease: TutorLease, thread: RuntimeThreadHandle,
+        registry: LearningPlanRuntimeToolRegistry, binding_id: str, result: RuntimeTurnResult,
+        completion_driven: bool = False,
+    ) -> TutorRunResult:
+        result = _ensure_terminal_event(result)
+        log_safe_event(
+            logger, "codex_planning_runtime_result", level=logging.INFO,
+            run_id=run_id,
+            code=result.safe_error_code, state=result.terminal_status.value,
+            termination_reason=result.metrics.termination_reason,
+            visible_chars=result.metrics.message_text_chars,
+            reasoning_chars=result.metrics.reasoning_text_chars,
+            total_text_chars=result.metrics.visible_text_chars,
+            effective_max_visible_chars=result.metrics.effective_max_visible_text_chars,
+            effective_max_reasoning_chars=result.metrics.effective_max_reasoning_text_chars,
+            effective_max_total_chars=result.metrics.effective_max_total_text_chars,
+            effective_timeout_seconds=result.metrics.effective_timeout_seconds,
+            tool_count=registry.call_count, tool_repair_count=registry.repair_count,
+            runtime_generation=thread.generation,
+        )
+        terminal_event, terminal_sequence = _runtime_terminal_event(result)
+        current = repository.load_snapshot(user_id=user_id, run_id=run_id)
+        if current is None:
+            raise RuntimeError("Tutor Codex run disappeared")
+        final_fence = TutorRuntimeProjectionFence(
+            input_revision=current.input_revision,
+            lease_owner_id=lease.owner_id,
+            lease_generation=lease.generation,
+            connection_generation=thread.generation,
+        )
+        projector = TutorRuntimeEventProjector(
+            projection_repository,
+            binding_id=binding_id,
+            fence=final_fence,
+        )
+        def project_event(
+            event: RuntimeEvent, *, sequence: int, occurred_at: datetime,
+            defer_public_message: bool = False,
+        ) -> object:
+            if completion_driven and event.kind is RuntimeEventKind.TURN_COMPLETED:
+                return projection_repository.project(
+                    binding_id=binding_id, fence=final_fence,
+                    event=_completion_terminal_projection(event, sequence, occurred_at),
+                    complete_business_run=True,
+                )
+            return projector.project_event(
+                event, sequence=sequence, occurred_at=occurred_at,
+                defer_public_message=defer_public_message,
+            )
+
+        awaiting_field = _awaiting_planning_field(registry)
+        direction_action = registry.planning_direction_action
+        receipt_source = "model_candidate"
+        if direction_action is None:
+            direction_action = PlanningDirectionAction.CLARIFY_DIRECTION
+            receipt_source = _direction_fallback_source(registry, result)
+        elif (
+            direction_action is PlanningDirectionAction.CONTINUE_MAINLINE
+            and not registry.intake_mode
+            and not registry.draft_completed
+        ):
+            direction_action = PlanningDirectionAction.CLARIFY_DIRECTION
+            receipt_source = "server_fallback_action_postcondition"
+        server_terminalized = (
+            registry.intake_mode
+            or receipt_source != "model_candidate"
+            or direction_action
+            in {
+                PlanningDirectionAction.CLARIFY_DIRECTION,
+                PlanningDirectionAction.CONFIRMED_SWITCH,
+                PlanningDirectionAction.ANSWER_AND_REFOCUS,
+            }
+        )
+        if server_terminalized and not _direction_server_terminalization_allowed(
+            registry,
+            result,
+        ):
+            failed_result = _direction_failure_result(registry, result)
+            occurred_at = datetime.now(UTC)
+            for index, event in enumerate(failed_result.events, start=1):
+                project_event(
+                    event,
+                    sequence=event.sequence or index,
+                    occurred_at=occurred_at,
+                    defer_public_message=(
+                        event.kind is RuntimeEventKind.MESSAGE_COMPLETED
+                        and event.phase in {None, "final_answer"}
+                    ),
+                )
+            return _run_result(
+                repository.read_run_state(user_id=user_id, run_id=run_id)
+            )
+        if server_terminalized:
+            occurred_at = datetime.now(UTC)
+            for index, event in enumerate(result.events, start=1):
+                if event.kind is RuntimeEventKind.TURN_COMPLETED:
+                    continue
+                project_event(
+                    event,
+                    sequence=event.sequence or index,
+                    occurred_at=occurred_at,
+                    defer_public_message=(
+                        event.kind is RuntimeEventKind.MESSAGE_COMPLETED
+                        and event.phase in {None, "final_answer"}
+                    ),
+                )
+            continuation_kind = TutorContinuationKind.PLANNING_INPUT
+            planning_intent_hint = None
+            facts = PostgresPlanningFactRepository(conn)
+            receipt_action = direction_action
+            with conn.transaction():
+                if direction_action is PlanningDirectionAction.CONFIRMED_SWITCH:
+                    facts.record_input(
                         user_id=user_id,
-                        lease=lease,
-                        decision=TutorDecision(
-                            public_message=prompt,
-                            question_key=(
-                                cast(TutorPlanningQuestionKey, awaiting_field.value)
-                                if continuation_kind
-                                is TutorContinuationKind.PLANNING_INPUT
-                                and awaiting_field is not None
-                                else None
-                            ),
-                            planning_intent_hint=planning_intent_hint,
-                            checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
-                            continuation_kind=continuation_kind,
+                        run_id=run_id,
+                        conversation_id=current.conversation_id,
+                        message_id=_read_input_message_id(
+                            conn,
+                            run_id=run_id,
+                            input_revision=current.input_revision,
                         ),
-                        result=typed_result,
-                        created_at=occurred_at,
+                        input_revision=current.input_revision,
+                        content=_read_input_text(
+                            conn,
+                            run_id=run_id,
+                            input_revision=current.input_revision,
+                        ),
+                        reopen_fields=tuple(
+                            field.value
+                            for field in PLANNING_DIRECTION_SWITCH_REOPEN_FIELDS
+                        ),
                         intent_resolution_enabled=(
                             self._settings.tutor_planning_intent_enabled
                         ),
                     )
-                    message = conn.execute(
-                        "SELECT tutor_message_id FROM tutor_run_public_processes "
-                        "WHERE run_id = %s",
-                        (run_id,),
-                    ).fetchone()
-                    if message is None or message.get("tutor_message_id") is None:
+                    missing = facts.missing_fields_for_run(
+                        user_id=user_id,
+                        run_id=run_id,
+                    )
+                    if not missing:
                         raise RuntimeError(
-                            "Tutor typed planning request message is missing"
+                            "confirmed planning switch left no missing direction fact"
                         )
-                    projection_repository.finalize_typed_request_binding(
-                        binding_id=binding.binding_id,
-                        user_id=user_id,
-                        message_id=str(message["tutor_message_id"]),
-                        occurred_at=occurred_at,
-                    )
-                    facts_fingerprint = _planning_facts_fingerprint(
-                        conn,
-                        user_id=user_id,
-                        run_id=run_id,
-                    )
-                    repository.record_planning_direction_resolution(
-                        user_id=user_id,
-                        run_id=run_id,
-                        input_revision=current.input_revision,
-                        direction_action=receipt_action.value,
-                        result_kind=continuation_kind.value,
-                        source=receipt_source,
+                    awaiting_field = _next_switch_field(missing)
+                    if awaiting_field is PlanningFactField.LANGUAGE_ID:
+                        deterministic = PlanningIntentResolver(conn).resolve_for_run(
+                            user_id=user_id,
+                            run_id=run_id,
+                            expected_input_revision=current.input_revision,
+                        )
+                        if deterministic.resolution not in {"shortlist", "conflict"}:
+                            continuation_kind = TutorContinuationKind.CLARIFICATION
+                            prompt = _confirmed_switch_language_clarification()
+                        else:
+                            prompt = _confirmed_switch_prompt(awaiting_field)
+                    else:
+                        prompt = _confirmed_switch_prompt(awaiting_field)
+                elif direction_action is PlanningDirectionAction.CLARIFY_DIRECTION:
+                    continuation_kind = TutorContinuationKind.CLARIFICATION
+                    prompt = _direction_clarification_prompt()
+                else:
+                    if awaiting_field is None:
+                        continuation_kind = TutorContinuationKind.CLARIFICATION
+                        prompt = _direction_clarification_prompt()
+                        receipt_action = PlanningDirectionAction.CLARIFY_DIRECTION
+                        receipt_source = "server_fallback_action_postcondition"
+                    elif direction_action is PlanningDirectionAction.ANSWER_AND_REFOCUS:
+                        candidate = _answer_and_refocus_prompt(result, awaiting_field)
+                        if candidate is None:
+                            continuation_kind = TutorContinuationKind.CLARIFICATION
+                            prompt = _direction_clarification_prompt()
+                            receipt_action = PlanningDirectionAction.CLARIFY_DIRECTION
+                            receipt_source = (
+                                "server_fallback_action_postcondition"
+                            )
+                        else:
+                            prompt = candidate
+                    else:
+                        prompt = _planning_input_prompt(awaiting_field)
+                    if (
+                        continuation_kind is TutorContinuationKind.PLANNING_INPUT
+                        and awaiting_field is PlanningFactField.LANGUAGE_ID
+                        and self._settings.tutor_planning_intent_enabled
+                    ):
+                        planning_intent_hint = _planning_intent_hint(registry)
+                        deterministic = PlanningIntentResolver(conn).resolve_for_run(
+                            user_id=user_id,
+                            run_id=run_id,
+                            expected_input_revision=current.input_revision,
+                        )
+                        if (
+                            planning_intent_hint is None
+                            and deterministic.resolution
+                            not in {"shortlist", "conflict"}
+                        ):
+                            continuation_kind = TutorContinuationKind.CLARIFICATION
+                            prompt = _language_implementation_clarification()
+                if continuation_kind is TutorContinuationKind.PLANNING_INPUT:
+                    if awaiting_field is None:
+                        raise RuntimeError("Tutor planning request field is missing")
+                    facts.record_question_asked(run=current, field=awaiting_field)
+                typed_result = TutorRunResult(
+                    run_id=run_id,
+                    status=TutorRunStatus.COMPLETED,
+                    input_revision=current.input_revision,
+                    iteration_count=current.iteration_count + (0 if completion_driven else 1),
+                    model_call_count=current.model_call_count + (0 if completion_driven else 1),
+                    capability_call_count=(
+                        current.capability_call_count + (0 if completion_driven else registry.call_count)
+                    ),
+                    effect_count=current.effect_count,
+                    terminal_outcome=TutorTerminalOutcome.COMPLETED,
+                    public_message=prompt,
+                    completion_reason=TutorTurnCompletionReason.AWAITING_USER,
+                )
+                projection_repository.discard_streaming_text_items_for_server_terminalization(
+                    binding_id=binding_id,
+                    fence=final_fence,
+                    thread_id=terminal_event.thread_id,
+                    turn_id=terminal_event.turn_id,
+                    sequence=terminal_sequence,
+                    occurred_at=occurred_at,
+                )
+                repository.record_interaction_request(
+                    user_id=user_id,
+                    lease=lease,
+                    decision=TutorDecision(
+                        public_message=prompt,
                         question_key=(
-                            awaiting_field.value
+                            cast(TutorPlanningQuestionKey, awaiting_field.value)
                             if continuation_kind
                             is TutorContinuationKind.PLANNING_INPUT
                             and awaiting_field is not None
                             else None
                         ),
-                        facts_fingerprint=facts_fingerprint,
-                        public_message_hash=_sha256_text(prompt),
-                    )
-                    projector.project_event(
-                        terminal_event,
-                        sequence=terminal_sequence,
-                        occurred_at=occurred_at,
-                    )
-                return _run_result(
-                    repository.read_run_state(user_id=user_id, run_id=run_id)
+                        planning_intent_hint=planning_intent_hint,
+                        checkpoint_reason=TutorCheckpointReason.CAPABILITY_RESULT,
+                        continuation_kind=continuation_kind,
+                    ),
+                    result=typed_result,
+                    created_at=occurred_at,
+                    intent_resolution_enabled=(
+                        self._settings.tutor_planning_intent_enabled
+                    ),
                 )
-            projector.project_result(result, occurred_at=datetime.now(UTC))
-            state = repository.read_run_state(user_id=user_id, run_id=run_id)
-            if (
-                state.terminal_outcome is TutorTerminalOutcome.COMPLETED
-                and direction_action is PlanningDirectionAction.CONTINUE_MAINLINE
-                and registry.draft_completed
-            ):
-                _record_completed_draft_direction_receipt(
+                message = conn.execute(
+                    "SELECT tutor_message_id FROM tutor_run_public_processes "
+                    "WHERE run_id = %s",
+                    (run_id,),
+                ).fetchone()
+                if message is None or message.get("tutor_message_id") is None:
+                    raise RuntimeError(
+                        "Tutor typed planning request message is missing"
+                    )
+                projection_repository.finalize_typed_request_binding(
+                    binding_id=binding_id,
+                    user_id=user_id,
+                    message_id=str(message["tutor_message_id"]),
+                    occurred_at=occurred_at,
+                )
+                facts_fingerprint = _planning_facts_fingerprint(
                     conn,
-                    repository=repository,
-                    binding_id=binding.binding_id,
+                    user_id=user_id,
+                    run_id=run_id,
+                )
+                repository.record_planning_direction_resolution(
                     user_id=user_id,
                     run_id=run_id,
                     input_revision=current.input_revision,
+                    direction_action=receipt_action.value,
+                    result_kind=continuation_kind.value,
+                    source=receipt_source,
+                    question_key=(
+                        awaiting_field.value
+                        if continuation_kind
+                        is TutorContinuationKind.PLANNING_INPUT
+                        and awaiting_field is not None
+                        else None
+                    ),
+                    facts_fingerprint=facts_fingerprint,
+                    public_message_hash=_sha256_text(prompt),
                 )
-                state = repository.read_run_state(user_id=user_id, run_id=run_id)
-            return _run_result(state)
+                project_event(
+                    terminal_event,
+                    sequence=terminal_sequence,
+                    occurred_at=occurred_at,
+                )
+            return _run_result(
+                repository.read_run_state(user_id=user_id, run_id=run_id)
+            )
+        for index, event in enumerate(result.events, start=1):
+            project_event(event, sequence=event.sequence or index, occurred_at=datetime.now(UTC))
+        state = repository.read_run_state(user_id=user_id, run_id=run_id)
+        if (
+            state.terminal_outcome is TutorTerminalOutcome.COMPLETED
+            and direction_action is PlanningDirectionAction.CONTINUE_MAINLINE
+            and registry.draft_completed
+        ):
+            _record_completed_draft_direction_receipt(
+                conn,
+                repository=repository,
+                binding_id=binding_id,
+                user_id=user_id,
+                run_id=run_id,
+                input_revision=current.input_revision,
+            )
+            state = repository.read_run_state(user_id=user_id, run_id=run_id)
+        return _run_result(state)
+
+
+def _latest_completion_sidecar_result(
+    conn: Connection[dict[str, object]], run: TutorRunSnapshot,
+) -> RuntimePlanningStepResult | None:
+    row = conn.execute(
+        "SELECT result_type, result_json FROM tutor_run_step_attempts "
+        "WHERE run_id=%s AND user_id=%s AND conversation_id=%s AND input_revision=%s "
+        "AND kind='sidecar_turn' AND state='accepted' ORDER BY decision_iteration DESC LIMIT 1",
+        (run.run_id, run.user_id, run.conversation_id, run.input_revision),
+    ).fetchone()
+    if row is None:
+        return None
+    result = decode_result(str(row["result_type"]), row["result_json"])
+    if not isinstance(result, RuntimePlanningStepResult):
+        raise CompletionExecutionError("completion_sidecar_result_invalid")
+    return result
+
+
+def _completion_dependencies(
+    conn: Connection[dict[str, object]], run: TutorRunSnapshot, runtime_generation: int,
+) -> dict[str, object]:
+    fence = build_expected_learning_plan_tool_fence(conn, run=run, runtime_generation=runtime_generation)
+    return {
+        "schema_version": "completion-planning-dependencies-v1",
+        "run_id": run.run_id, "user_id": run.user_id, "conversation_id": run.conversation_id,
+        "input_revision": run.input_revision,
+        "facts_fingerprint": fence.facts_fingerprint, "facts_revision": fence.facts_revision,
+    }
+
+
+def _completion_input(
+    current_input: str, registry: LearningPlanRuntimeToolRegistry,
+    previous: RuntimePlanningStepResult | None,
+) -> str:
+    if previous is None:
+        return current_input
+    recovery = {
+        "committed_planning_state": dict(registry.continuation_state),
+        "current_server_context": dict(registry.prime_context().data),
+        "last_tool_feedback": [
+            {"code": item.get("code"), "issues": item.get("issues", [])}
+            for item in previous.tool_results if item.get("issues")
+        ],
+    }
+    text = (
+        "这是同一原始 Tutor 任务的内部续行，不是新的用户请求。以下状态已由原 owner 提交并 fresh 回读。"
+        "若 direction_action 已存在，不重复 read/action；若 draft_content_hash 已存在，不重发草拟动作，"
+        "只完成尚缺的安全最终答复。保留原确认门和 exact_question，不自行确认计划。\n"
+        + json.dumps(recovery, ensure_ascii=False, sort_keys=True)
+        + "\n[current user input]\n" + current_input
+    )
+    if len(text) > 20_000:
+        raise CompletionExecutionError("completion_required_input_too_large")
+    return text
+
+
+def _completion_outcome_unknown(saved: RuntimePlanningStepResult) -> bool:
+    return (
+        saved.runtime.metrics.termination_reason not in {"natural_terminal", "interrupt_terminal_confirmed"}
+        or any(item.get("code") == "learning_plan_tool_failed" for item in saved.tool_results)
+        or saved.runtime.safe_error_code == "runtime_connection_failed"
+    )
+
+
+def _completion_goal_ready(saved: RuntimePlanningStepResult, registry: LearningPlanRuntimeToolRegistry) -> bool:
+    if saved.runtime.terminal_status is not RuntimeTerminalStatus.COMPLETED:
+        return False
+    if registry.intake_mode or registry.planning_direction_action is not PlanningDirectionAction.CONTINUE_MAINLINE:
+        return True  # Existing server-owned input/clarification postconditions still decide.
+    return registry.draft_completed and any(
+        event.kind is RuntimeEventKind.MESSAGE_COMPLETED
+        and event.phase in {None, "final_answer"} and bool(event.visible_text)
+        for event in saved.runtime.events
+    )
+
+
+def _completion_progress(saved: RuntimePlanningStepResult | None) -> tuple[object, ...]:
+    if saved is None:
+        return (None, None, ())
+    issue_keys: set[tuple[str, str]] = set()
+    for result in saved.tool_results:
+        issues = result.get("issues")
+        if isinstance(issues, list | tuple):
+            issue_keys.update(
+                (str(issue.get("path")), str(issue.get("code")))
+                for issue in issues if isinstance(issue, Mapping)
+            )
+    issues = tuple(sorted(issue_keys))
+    return (saved.planning_state.get("direction_action"), saved.planning_state.get("draft_content_hash"), issues)
+
+
+def _completion_should_continue(
+    saved: RuntimePlanningStepResult, previous: RuntimePlanningStepResult | None,
+    registry: LearningPlanRuntimeToolRegistry,
+) -> bool:
+    if _completion_goal_ready(saved, registry) or _completion_outcome_unknown(saved):
+        return False
+    if saved.planning_state.get("direction_action") != PlanningDirectionAction.CONTINUE_MAINLINE.value:
+        return False
+    allowed_bounds = {"tool_call_budget_exhausted", "tool_repair_budget_exhausted", "tool_deadline_exhausted", "runtime_turn_time_exhausted"}
+    if saved.runtime.terminal_status is not RuntimeTerminalStatus.COMPLETED and saved.runtime.safe_error_code not in allowed_bounds:
+        return False
+    if any(item.get("status") == "fatal" and item.get("code") not in allowed_bounds for item in saved.tool_results):
+        return False
+    return _completion_progress(saved) != _completion_progress(previous)
+
+
+def _completion_postcondition_failure(runtime: RuntimeTurnResult) -> RuntimeTurnResult:
+    terminal, sequence = _runtime_terminal_event(runtime)
+    failed = replace(
+        terminal, terminal_status=RuntimeTerminalStatus.FAILED,
+        safe_code=runtime.safe_error_code or "runtime_completion_no_progress", sequence=sequence,
+    )
+    return replace(
+        runtime, terminal_status=RuntimeTerminalStatus.FAILED,
+        safe_error_code=failed.safe_code,
+        events=tuple(event for event in runtime.events if event.kind is not RuntimeEventKind.TURN_COMPLETED) + (failed,),
+    )
+
+
+def _completion_terminal_projection(
+    event: RuntimeEvent, sequence: int, occurred_at: datetime,
+) -> TutorRuntimeProjectionEvent:
+    return TutorRuntimeProjectionEvent(
+        kind=event.kind.value, thread_id=event.thread_id, turn_id=event.turn_id,
+        sequence=event.projection_sequence or sequence, occurred_at=occurred_at,
+        source_sequence_start=event.source_sequence_start, source_sequence_end=event.source_sequence_end,
+        source_delta_count=event.source_delta_count, source_content_hash=event.source_content_sha256,
+        terminal_status=event.terminal_status.value if event.terminal_status else None,
+        safe_code=event.safe_code,
+    )
 
 
 class _CodexControlReader:
@@ -695,6 +1092,7 @@ class _CodexControlReader:
         run_id: str,
         lease: TutorLease,
         lease_duration_seconds: int,
+        allow_steer: bool = True,
     ) -> None:
         self._conn = conn
         self._repository = repository
@@ -702,6 +1100,7 @@ class _CodexControlReader:
         self._run_id = run_id
         self._lease = lease
         self._lease_duration_seconds = lease_duration_seconds
+        self._allow_steer = allow_steer
         self._next_heartbeat_at = datetime.now(UTC) + timedelta(
             seconds=max(1, lease_duration_seconds // 3)
         )
@@ -735,6 +1134,8 @@ class _CodexControlReader:
         revision = _as_int(row.get("input_revision"))
         if revision <= applied_revision:
             return RuntimeTurnControlDirective(applied_revision)
+        if not self._allow_steer:
+            return RuntimeTurnControlDirective(applied_revision, interrupt=True)
         rows = self._conn.execute(
             """
             SELECT inputs.input_revision, messages.content

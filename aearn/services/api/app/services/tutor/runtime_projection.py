@@ -149,6 +149,7 @@ class TutorRuntimeBinding:
     conversation_id: str
     state: TutorRuntimeBindingState
     connection_generation: int
+    step_attempt_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +280,7 @@ class PostgresTutorRuntimeProjectionRepository:
         external_thread_id: str,
         occurred_at: datetime,
         conversation_runtime_thread_id: str | None = None,
+        step_attempt_id: str | None = None,
     ) -> TutorRuntimeBinding:
         if not runtime_version or len(runtime_version) > 120:
             raise ValueError("runtime version is invalid")
@@ -301,6 +303,19 @@ class PostgresTutorRuntimeProjectionRepository:
                 raise TutorRuntimeProjectionError("Tutor run is not eligible for public runtime projection")
             if not self._fence_matches(run, fence, occurred_at):
                 raise TutorRuntimeProjectionError("Tutor runtime binding fence is stale")
+            if step_attempt_id is not None:
+                step = self._conn.execute(
+                    "SELECT * FROM tutor_run_step_attempts WHERE id = %s AND run_id = %s "
+                    "AND user_id = %s AND conversation_id = %s FOR UPDATE",
+                    (step_attempt_id, run_id, user_id, run["conversation_id"]),
+                ).fetchone()
+                if (
+                    step is None or step.get("state") != "prepared" or step.get("kind") != "sidecar_turn"
+                    or step.get("input_revision") != fence.input_revision
+                    or step.get("owner_id") != fence.lease_owner_id
+                    or step.get("owner_generation") != fence.lease_generation
+                ):
+                    raise TutorRuntimeProjectionError("Tutor runtime step binding fence is stale")
             thread_row = None
             if conversation_runtime_thread_id is not None:
                 thread_row = self._conn.execute(
@@ -349,8 +364,9 @@ class PostgresTutorRuntimeProjectionRepository:
                 raise RuntimeError("Tutor conversation Runtime thread is missing")
             conversation_runtime_thread_id = str(thread_row["id"])
             existing = self._conn.execute(
-                "SELECT * FROM tutor_run_runtime_bindings WHERE run_id = %s FOR UPDATE",
-                (run_id,),
+                "SELECT * FROM tutor_run_runtime_bindings WHERE run_id = %s "
+                "AND step_attempt_id IS NOT DISTINCT FROM %s::uuid FOR UPDATE",
+                (run_id, step_attempt_id),
             ).fetchone()
             if existing is not None:
                 if (
@@ -365,15 +381,16 @@ class PostgresTutorRuntimeProjectionRepository:
             row = self._conn.execute(
                 """
                 INSERT INTO tutor_run_runtime_bindings (
-                  run_id, conversation_runtime_thread_id, user_id, conversation_id,
+                  run_id, conversation_runtime_thread_id, user_id, conversation_id, step_attempt_id,
                   runtime_kind, runtime_version, protocol_version,
                   external_thread_id, connection_generation,
                   state, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, 'codex_sidecar_v1', %s, %s, %s, %s, 'thread_bound', %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, 'codex_sidecar_v1', %s, %s, %s, %s, 'thread_bound', %s, %s)
                 RETURNING *
                 """,
                 (
                     run_id, conversation_runtime_thread_id, user_id, run["conversation_id"],
+                    step_attempt_id,
                     runtime_version, protocol_version, external_thread_id,
                     fence.connection_generation, occurred_at, occurred_at,
                 ),
@@ -388,6 +405,7 @@ class PostgresTutorRuntimeProjectionRepository:
         binding_id: str,
         fence: TutorRuntimeProjectionFence,
         event: TutorRuntimeProjectionEvent,
+        complete_business_run: bool = False,
     ) -> TutorRuntimeProjectionReceipt:
         event_key = self._event_key(event)
         with self._conn.transaction():
@@ -422,7 +440,47 @@ class PostgresTutorRuntimeProjectionRepository:
                     raise TutorIdempotencyConflict(
                         "runtime event sequence conflicts with different safe facts"
                     )
+                if (
+                    binding.get("step_attempt_id") is not None
+                    and event.kind == "message_completed" and event.phase in {None, "final_answer"}
+                    and not event.defer_public_message and binding.get("final_message_id") is None
+                    and str(binding["state"]) not in _TERMINAL_BINDING_STATES
+                    and self._fence_matches(binding, fence, event.occurred_at)
+                    and self._turn_matches(binding, event)
+                ):
+                    self._require_accepted_message_step(binding, fence)
+                    # The immutable stream receipt is reused; formal publication
+                    # occurs only now, inside the original owner's acceptance txn.
+                    self._project_message(binding=binding, run=self._run_row(binding), event=event)
                 return self._receipt(existing, replayed=True)
+            if complete_business_run:
+                step = self._conn.execute(
+                    "SELECT state, accepted_owner_id, accepted_owner_generation, input_revision "
+                    "FROM tutor_run_step_attempts WHERE id = %s AND run_id = %s "
+                    "AND user_id = %s AND conversation_id = %s FOR UPDATE",
+                    (binding.get("step_attempt_id"), binding["run_id"], binding["user_id"], binding["conversation_id"]),
+                ).fetchone()
+                if (
+                    event.kind != "turn_completed" or step is None or step.get("state") != "accepted"
+                    or step.get("accepted_owner_id") != fence.lease_owner_id
+                    or step.get("accepted_owner_generation") != fence.lease_generation
+                    or step.get("input_revision") != fence.input_revision
+                    or event.thread_id != str(binding["external_thread_id"])
+                    or not self._turn_matches(binding, event)
+                    or _as_int(binding["connection_generation"]) != fence.connection_generation
+                ):
+                    raise TutorRuntimeProjectionError("Tutor business completion requires accepted current step")
+                # Typed input acceptance has already atomically committed its
+                # public message and terminal binding in this same owner txn.
+                if (
+                    binding.get("state") == "completed" and binding.get("final_message_id") is not None
+                    and binding.get("terminal_outcome") == "completed"
+                    and binding.get("input_revision") == fence.input_revision
+                ):
+                    return self._insert_receipt(
+                        binding=binding, event=event, event_key=event_key,
+                        status=TutorRuntimeProjectionStatus.APPLIED,
+                    )
             stale = (
                 event.thread_id != str(binding["external_thread_id"])
                 or str(binding["state"]) in _TERMINAL_BINDING_STATES
@@ -436,11 +494,21 @@ class PostgresTutorRuntimeProjectionRepository:
                     event_key=event_key,
                     status=TutorRuntimeProjectionStatus.IGNORED_STALE,
                 )
-            status, public_item_id, public_item_kind = self._apply_event(
-                binding=binding,
-                fence=fence,
-                event=event,
-            )
+            if complete_business_run:
+                status, public_item_id, public_item_kind = self._project_terminal(
+                    binding=binding, run=self._run_row(binding), fence=fence, event=event,
+                    complete_business_run=True,
+                )
+            else:
+                if (
+                    binding.get("step_attempt_id") is not None
+                    and event.kind == "message_completed" and event.phase in {None, "final_answer"}
+                    and not event.defer_public_message
+                ):
+                    self._require_accepted_message_step(binding, fence)
+                status, public_item_id, public_item_kind = self._apply_event(
+                    binding=binding, fence=fence, event=event,
+                )
             return self._insert_receipt(
                 binding=binding,
                 event=event,
@@ -856,6 +924,19 @@ class PostgresTutorRuntimeProjectionRepository:
             return self._project_terminal(binding=binding, run=run, fence=fence, event=event)
         return TutorRuntimeProjectionStatus.IGNORED_NONPUBLIC, None, None
 
+    def _require_accepted_message_step(
+        self, binding: Mapping[str, object], fence: TutorRuntimeProjectionFence,
+    ) -> None:
+        accepted = self._conn.execute(
+            "SELECT id FROM tutor_run_step_attempts WHERE id=%s AND run_id=%s "
+            "AND user_id=%s AND conversation_id=%s AND input_revision=%s "
+            "AND state='accepted' AND accepted_owner_id=%s AND accepted_owner_generation=%s FOR UPDATE",
+            (binding["step_attempt_id"], binding["run_id"], binding["user_id"], binding["conversation_id"],
+             fence.input_revision, fence.lease_owner_id, fence.lease_generation),
+        ).fetchone()
+        if accepted is None:
+            raise TutorRuntimeProjectionError("Deferred runtime message requires accepted current step")
+
     def _project_message(
         self,
         *,
@@ -967,6 +1048,7 @@ class PostgresTutorRuntimeProjectionRepository:
         run: Mapping[str, object],
         fence: TutorRuntimeProjectionFence,
         event: TutorRuntimeProjectionEvent,
+        complete_business_run: bool = False,
     ) -> tuple[TutorRuntimeProjectionStatus, str | None, str | None]:
         requested = event.terminal_status or "failed"
         latest = self._conn.execute(
@@ -983,6 +1065,20 @@ class PostgresTutorRuntimeProjectionRepository:
         final_message_id = latest.get("final_message_id")
         blocked = latest.get("final_message_blocked") is True
         safe_code = str(latest.get("safe_error_code") or event.safe_code or "runtime_failed")
+        if latest.get("step_attempt_id") is not None and not complete_business_run:
+            # A native work turn is not the original plan's acceptance boundary.
+            # The dispatcher records its durable attempt result separately before
+            # any next step. No run terminal, lease release or public completion.
+            state = {
+                "completed": "completed", "interrupted": "interrupted",
+                "failed": "failed", "unavailable": "unavailable",
+            }.get(requested, "failed")
+            self._conn.execute(
+                "UPDATE tutor_run_runtime_bindings SET state = %s, safe_error_code = %s, "
+                "terminal_at = %s WHERE id = %s",
+                (state, None if requested == "completed" else safe_code, event.occurred_at, binding["id"]),
+            )
+            return TutorRuntimeProjectionStatus.APPLIED, None, None
         if requested == "completed" and (final_message_id is None or blocked):
             requested = "failed"
             safe_code = "runtime_final_message_unsafe" if blocked else "runtime_final_message_missing"
@@ -1252,6 +1348,7 @@ class PostgresTutorRuntimeProjectionRepository:
             user_id=str(row["user_id"]), conversation_id=str(row["conversation_id"]),
             state=TutorRuntimeBindingState(str(row["state"])),
             connection_generation=_as_int(row["connection_generation"]),
+            step_attempt_id=str(row["step_attempt_id"]) if row.get("step_attempt_id") is not None else None,
         )
 
     @staticmethod

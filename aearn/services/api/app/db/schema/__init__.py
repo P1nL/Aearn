@@ -4,6 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .governance import (
+    SCHEMA_CANDIDATE_FACTS,
+    SCHEMA_FROZEN_FILE_NAMES,
+    candidate_edit_blockers,
+)
+
 
 SCHEMA_DIRECTORY = Path(__file__).parent
 SCHEMA_FRAGMENT_NAMES: tuple[str, ...] = (
@@ -119,8 +125,10 @@ SCHEMA_FRAGMENT_NAMES: tuple[str, ...] = (
     '544_rag_registered_course_refresh_successor.sql',
     '545_learning_item_revision_source_reference_successor.sql',
     '546_learning_item_committed_revision_recheck_v2.sql',
-    '547_learning_item_committed_child_admission_v1.sql',
-    '549_learning_item_current_pack_source_origin_v1.sql',
+    '547_learning_item_committed_child_admission_v1.sql',
+
+    '549_learning_item_current_pack_source_origin_v1.sql',
+
     '550_learning_item_native_relation_alias_fix.sql',
     '551_learning_item_private_development_model_accounting_v1.sql',
     '552_learning_item_private_slot_alias_fix.sql',
@@ -135,7 +143,67 @@ SCHEMA_FRAGMENT_NAMES: tuple[str, ...] = (
     '561_learning_item_private_source_claim_receipt_hash_v1.sql',
     '562_learning_item_private_generation_persistence_phase_v1.sql',
     '563_learning_item_private_native_handle_identity_v1.sql',
+    '564_learning_item_private_native_quality_phase_v1.sql',
+    '565_learning_item_private_quality_persist_expression_v1.sql',
+    '566_learning_item_private_quality_successor_v1.sql',
+    '567_learning_item_private_known_generation_inheritance_v1.sql',
+    '568_learning_item_private_bound_phase_window_v1.sql',
+    '569_learning_item_private_resume_review_expression_v1.sql',
+    '570_learning_item_private_revision_durability_v1.sql',
+    '571_learning_item_private_normal_same_scene_v1.sql',
+    '572_learning_item_private_revision_author_successor_v1.sql',
+    '573_learning_item_private_revision_policy_successor_v1.sql',
+    '574_learning_item_private_revision_kc_contract_successor_v1.sql',
+    '575_learning_item_private_relation_prompt_receiver_v1.sql',
+    '576_learning_item_mvp_relation_deferral_v1.sql',
+    '577_learning_item_mvp_retained_delivery_v1.sql',
+    '578_learning_item_mvp_eligibility_alias_v1.sql',
+    '579_learning_item_mvp_new_window_v1.sql',
+    '580_learning_item_private_native_binding_birth_v1.sql',
+    '581_learning_item_private_action_receipt_handle_v1.sql',
+    '582_learning_item_private_consumer_artifact_rowtype_v1.sql',
+    '583_learning_item_private_artifact_mutation_hash_v1.sql',
+    '584_rag_m03_sqlite_source_recovery.sql',
+    '585_rag_m03_companion_dependency_continuity.sql',
+    '586_rag_m03_p1_historical_base_once_receiver.sql',
+    '587_learning_item_m03_p2_normal_loop.sql',
+    '588_learning_item_incremental_quality.sql',
+    '589_learning_item_adjudication_known_settlement.sql',
+    '590_learning_item_adjudication_prestart_carry.sql',
+    '591_learning_item_adjudication_schema_failure_carry.sql',
+    '592_learning_item_adjudicated_publication_rowtype.sql',
+    '593_learning_item_persistent_pack_execution_closure.sql',
+    '594_m03_sqlite_teaching_companion.sql',
+    '595_learning_item_persistent_pack_closure_jsonb_precedence.sql',
+    '596_tutor_completion_execution.sql',
+    '597_lesson_completion_stages.sql',
+    '598_tutor_completion_sidecar_bindings.sql',
 )
+
+# 仅保留的未接受草案；不作为可执行 fragment，不进入 load/apply。
+SCHEMA_DRAFT_FILE_NAMES: tuple[str, ...] = (
+    "531_learning_item_private_native_semantic_continuation_v1.sql",
+)
+
+
+# Isolated first-install plan: never appended to the historical active list.
+SCHEMA_FORWARD_FRAGMENT_NAMES: tuple[str, ...] = (
+    "599_completion_non_b1d_baseline.sql",
+    "601_completion_non_b1d_inventory_reads.sql",
+    "602_completion_non_b1d_planning_catalog_reads.sql",
+    "600_completion_non_b1d_validation.sql",
+)
+RUNTIME_FORWARD_FRAGMENT_NAMES: tuple[str, ...] = (
+    "599_completion_non_b1d_baseline.sql",
+    "601_completion_non_b1d_inventory_reads.sql",
+    "602_completion_non_b1d_planning_catalog_reads.sql",
+)
+# Validation-only receivers never enter the live-runtime installation plan.
+VALIDATION_ONLY_FORWARD_FRAGMENT_NAMES: tuple[str, ...] = (
+    "600_completion_non_b1d_validation.sql",
+)
+VALIDATION_FORWARD_FRAGMENT_NAMES = RUNTIME_FORWARD_FRAGMENT_NAMES + VALIDATION_ONLY_FORWARD_FRAGMENT_NAMES
+COMPLETION_CONTRACT_ID = "completion_non_b1d_v1"
 
 
 @dataclass(frozen=True)
@@ -145,26 +213,122 @@ class SchemaFragment:
     sql: str
 
 
-def schema_fragment_paths() -> tuple[Path, ...]:
-    """按 manifest 顺序返回片段，并拒绝缺失或未登记 SQL。"""
-
-    if len(SCHEMA_FRAGMENT_NAMES) != len(set(SCHEMA_FRAGMENT_NAMES)):
-        raise RuntimeError("schema fragment manifest contains duplicate names")
-    paths = tuple(SCHEMA_DIRECTORY / name for name in SCHEMA_FRAGMENT_NAMES)
-    missing = tuple(path.name for path in paths if not path.is_file())
-    if missing:
-        raise RuntimeError(f"schema fragment files are missing: {missing}")
-    declared = set(SCHEMA_FRAGMENT_NAMES)
+def schema_fragment_paths(
+    *, contract: str | None = None, storage_check: bool = False,
+) -> tuple[Path, ...]:
+    """Validate plans and lifecycle inventory; only an explicit name selects forward DDL."""
+    if contract not in (None, COMPLETION_CONTRACT_ID):
+        raise RuntimeError("COMPLETION_BASELINE_CONTRACT_REJECTED")
+    if storage_check and contract is None:
+        raise RuntimeError("COMPLETION_BASELINE_CONTRACT_REQUIRED")
+    if (
+        set(RUNTIME_FORWARD_FRAGMENT_NAMES) & set(VALIDATION_ONLY_FORWARD_FRAGMENT_NAMES)
+        or SCHEMA_FORWARD_FRAGMENT_NAMES != RUNTIME_FORWARD_FRAGMENT_NAMES + VALIDATION_ONLY_FORWARD_FRAGMENT_NAMES
+        or VALIDATION_FORWARD_FRAGMENT_NAMES != SCHEMA_FORWARD_FRAGMENT_NAMES
+    ):
+        raise RuntimeError("COMPLETION_BASELINE_FORWARD_CLASSIFICATION_REJECTED")
+    inventories: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("fragment", SCHEMA_FRAGMENT_NAMES),
+        ("draft file", SCHEMA_DRAFT_FILE_NAMES),
+        ("forward fragment", SCHEMA_FORWARD_FRAGMENT_NAMES),
+    )
+    for label, names in inventories:
+        if len(names) != len(set(names)):
+            raise RuntimeError(f"schema {label} manifest contains duplicate names")
+    for index, (label, names) in enumerate(inventories):
+        for other_label, other_names in inventories[index + 1:]:
+            overlap = tuple(sorted(set(names) & set(other_names)))
+            if overlap:
+                raise RuntimeError(f"schema {label} and {other_label} manifests overlap: {overlap}")
+    executable = set(SCHEMA_FRAGMENT_NAMES) | set(SCHEMA_FORWARD_FRAGMENT_NAMES)
+    drafts = set(SCHEMA_DRAFT_FILE_NAMES)
+    candidates = set(SCHEMA_CANDIDATE_FACTS)
+    if (
+        SCHEMA_FROZEN_FILE_NAMES & (drafts | candidates)
+        or drafts & candidates
+    ):
+        raise RuntimeError("SCHEMA_LIFECYCLE_CLASSIFICATIONS_OVERLAP")
+    unclassified = tuple(sorted(executable - SCHEMA_FROZEN_FILE_NAMES - candidates))
+    if unclassified:
+        raise RuntimeError(f"SCHEMA_LIFECYCLE_UNCLASSIFIED: {unclassified}")
+    detached_frozen = tuple(sorted(SCHEMA_FROZEN_FILE_NAMES - executable))
+    if detached_frozen:
+        raise RuntimeError(f"SCHEMA_FROZEN_FILES_REMOVED_FROM_MANIFEST: {detached_frozen}")
+    # Registration alone is not execution: candidates may be held outside every
+    # plan. A future explicitly selected plan may include an unfrozen candidate.
+    inventories += (("candidate file", tuple(SCHEMA_CANDIDATE_FACTS)),)
+    for label, names in inventories:
+        missing = tuple(name for name in names if not (SCHEMA_DIRECTORY / name).is_file())
+        if missing:
+            raise RuntimeError(f"schema {'draft' if label == 'draft file' else label} files are missing: {missing}")
+    declared = set().union(*(set(names) for _, names in inventories))
     unexpected = tuple(sorted(path.name for path in SCHEMA_DIRECTORY.glob("*.sql") if path.name not in declared))
     if unexpected:
         raise RuntimeError(f"schema fragment files are not declared: {unexpected}")
-    return paths
+    selected = SCHEMA_FRAGMENT_NAMES if contract is None else (
+        VALIDATION_FORWARD_FRAGMENT_NAMES if storage_check else RUNTIME_FORWARD_FRAGMENT_NAMES
+    )
+    return tuple(SCHEMA_DIRECTORY / name for name in selected)
 
 
-def load_schema_fragments() -> tuple[SchemaFragment, ...]:
+def schema_migration_inventory(
+    *, contract: str | None = None, storage_check: bool = False,
+) -> dict[str, object]:
+    """JSON-friendly governance view, never proof of target DB readiness.
+
+    Reuse the loader's directory/classification validation without reading SQL
+    contents. Execution memberships are derived solely from existing manifests;
+    alphabetical presentation below is not an execution order.
+    """
+    selected = schema_fragment_paths(contract=contract, storage_check=storage_check)
+    plans = (
+        ("legacy", SCHEMA_FRAGMENT_NAMES),
+        (f"{COMPLETION_CONTRACT_ID}:runtime", RUNTIME_FORWARD_FRAGMENT_NAMES),
+        (f"{COMPLETION_CONTRACT_ID}:validation", VALIDATION_FORWARD_FRAGMENT_NAMES),
+    )
+    counts = {"installed_frozen": 0, "candidate": 0, "non_executable_draft": 0}
+    migrations: list[dict[str, object]] = []
+    names = SCHEMA_FROZEN_FILE_NAMES | set(SCHEMA_CANDIDATE_FACTS) | set(SCHEMA_DRAFT_FILE_NAMES)
+    for name in sorted(names):
+        facts: dict[str, bool | None] | None = None
+        if name in SCHEMA_FROZEN_FILE_NAMES:
+            lifecycle = "installed_frozen"
+            blockers = ["installed_or_freeze_commitment"]
+        elif name in SCHEMA_CANDIDATE_FACTS:
+            lifecycle = "candidate"
+            candidate = SCHEMA_CANDIDATE_FACTS[name]
+            facts = {
+                "installed_anywhere": candidate.installed_anywhere,
+                "external_pin": candidate.external_pin,
+                "freeze_commitment": candidate.freeze_commitment,
+            }
+            blockers = candidate_edit_blockers(candidate)
+        else:
+            lifecycle = "non_executable_draft"
+            blockers = ["non_executable_draft"]
+        counts[lifecycle] += 1
+        migrations.append({
+            "name": name,
+            "lifecycle": lifecycle,
+            "execution_plans": [label for label, members in plans if name in members],
+            "in_place_editable": not blockers,
+            "edit_blockers": blockers,
+            "candidate_facts": facts,
+        })
+    return {
+        "target_database_installation": "not_observed",
+        "selected_fragment_names": [path.name for path in selected],
+        "counts": counts,
+        "migrations": migrations,
+    }
+
+
+def load_schema_fragments(
+    *, contract: str | None = None, storage_check: bool = False,
+) -> tuple[SchemaFragment, ...]:
     return tuple(
         SchemaFragment(name=path.name, path=path, sql=path.read_text(encoding="utf-8"))
-        for path in schema_fragment_paths()
+        for path in schema_fragment_paths(contract=contract, storage_check=storage_check)
     )
 
 

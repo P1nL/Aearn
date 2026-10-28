@@ -1,5 +1,80 @@
 # Aearn 数据库 Schema 与持久化契约
 
+## 2026-10-27：SQL迁移生命周期与受支持路径
+
+### 候选、冻结与不可执行草案
+
+`app/db/schema/__init__.py` 的 manifest 仍是唯一SQL顺序/分类入口；catalog metadata用于实际对象比较，不是第二份可执行schema。生命周期和目标安装状态分开：某片段在一个持久环境安装或被外部协议pin后冻结，不表示每个数据库都已安装它。当前legacy163项和非B1d前向4项已有安装/冻结事实，531仍是不可执行草案，当前没有自由候选；目录未知文件不能静默执行。
+
+只有**已确认未在持久环境安装、没有外部依赖/协议pin、没有冻结承诺**的候选可原地修正；缺任一事实都不能默认可编辑。仅登记、审查或完整ROLLBACK演练不构成安装冻结。同一功能在持久安装前完成实际消费者、动态权限、约束/恢复和必要拒绝路径的闭合，候选小修复仍使用该候选，不逐次加编号。
+
+首次持久COMMIT、外部pin或明确冻结承诺任一发生即冻结；保留数据、被后继工作依赖的TEST也属于持久环境。COMMIT未知时先只读对账，不能将其当未安装候选改写；已冻结SQL不修改/删除/重编号，必要修正新增明确前向版本。纯库存入口不读取配置或DB；它不提供自动历史改写、全库迁移账本或编辑授权。
+
+### 支持矩阵
+
+| 目标状态 | 支持的操作 | 不做什么 |
+| --- | --- | --- |
+| 三个具名目标已是最新`COMPLETE` | 正常只读检查；重复candidate/install/upgrade为no-op | 不重复DDL、seed/import，不更改旧用户/任务 |
+| 具名目标具有完整匹配BASE、尚未安装该子系统 | 固定计划candidate全回滚，再显式install；validation另需storage purpose | 不是空数据库初始化；不以少建几张表解锁 |
+| 精确已安装599前缀（validation须已有完整600用途对象） | 只读计划，维护candidate/install仅补601→602 | 不重放599/600，不开放任意PARTIAL恢复 |
+| 精确已安装601前缀（validation同上） | 仅补602 | 不按最大编号猜版本，不忽略列ACL或函数漂移 |
+| 仅缺一个ACL、逆序组合、未知对象漂移、缺失validation用途对象 | 拒绝；定位具体差异，另审必要前向修复 | 不自动补齐/删对象/覆盖旧数据 |
+| 空数据库、任意新库名、未知历史legacy库 | 当前没有从空库到此BASE/完整runtime的已审通用provisioning路径 | 不用163项历史重放或截取前若干SQL冒充可用初始化 |
+
+本合同当前只支持`postgres`、`aearn_completion_b_test_20261026`和`aearn_completion_b_validation_20261027`，目标名/OID/角色/purpose仍由原合同核验。此前Main从可追溯schema-only基础恢复具名域，是一次具名准备证据，不是任意空库初始化器；本轮不重建现库或迁移B1d历史数据。
+
+### 启动与有限升级
+
+正常CLI和受管`start-dev.ps1`只做readiness，缺失/未知selector拒绝，不退回legacy DDL/seed；`-SkipBootstrap`也不绕过只读检查。API/worker自身入口仍按原共同readiness核验。历史显式legacy维护/测试Python API不作为正常启动或当前空库支持路线，本轮不执行它。
+
+已知升级仅从最新metadata移除601/602确切runtime SELECT delta构造前置，其他14类目录原样精确比较，TABLE/COLUMN ACL和开发13对CHECK表示均保留。只读计划不代表业务READY，旧前缀必须维护升级到最新后才能启动。candidate全TOP ROLLBACK；正式操作要求OID和维护确认，取原schema lock/BASE关系锁后fresh重查，只执行缺失的有限片段；COMMIT未知不自动重试，已ack不能被后续读回/清理错误抹掉。完整操作命令见[开发环境](../setup/development-environment.md#具名非b1d数据库合同)。
+
+### 数据库保证与运行策略
+
+身份/复合FK、唯一后继/单active、owner/generation、状态迁移及UNKNOWN不重派由数据库约束/trigger守护；防重复业务消费仍需原receipt owner。先保存结果、提交后再接收是跨层协议：Lesson另以SQL事务ID拒绝同事务接收；Tutor由数据库状态/owner围栏和Python短事务调用顺序共同实现，不能说SQL596独立保证了跨事务提交。
+
+输出预留、请求等待、上下文组织/展示等一般由运行策略负责；但已经写进v1 receiver和持久依赖的2400/8/16/60、Lesson600+60期限等不能只放宽Settings。当前Lesson consumer仅接受12000/600，repository固定600/660；12000不是SQL597 token CHECK，Settings表面接受更宽值也不表示全链路支持调参，非默认会显式拒绝。参数看似timeout不等于无安全/权限含义；只有实际需要且证明不是硬边界时才调整分层，改变已安装合同须明确新版本前向SQL和consumer一致验证。本轮核查未证明有必须调整数值/receiver的必要，不为“可配置”主动放松，不新增业务权限或SQL603。
+
+### 本轮验证与未支持路线
+
+最终五个直接CPU文件274项、8文件Ruff/mypy、独立CODE和pwsh parser通过。22:32固定隔离validation域内实际验证599补601/602、601补602及部分ACL拒绝，三个TOP全部回滚并独立读回全目录/原记录计数不变；22:38三个现有目标均为最新602、空计划、candidate升级noop及runtime登录COMPLETE。22:40新进程从实际开发配置加载completion=true并完整只读检查。没有修改实际配置或新增持久DDL提交、真实模型调用。
+
+这些结果不证明空库provisioning、任意旧库/任意PARTIAL、历史163整链或全应用E2E已完成。本轮新controller的changed正式COMMIT/readback故障路径为CPU/CODE证据，真实SQL分支为隔离回滚证据；原已安装601/602的COMMIT/readback记录保留复用，不重复付费业务或安装。支持范围见[支持矩阵](#支持矩阵)，候选回滚、正式COMMIT及未知提交处理见[启动与有限升级](#启动与有限升级)。
+
+## 2026-10-27：具名非B1d首次安装与只读启动合同
+
+`completion_non_b1d_v1` 是已有基础schema、但从未安装item-supply子系统的具名初装合同，不支持任意空库或历史中间态。实现入口仍归 `app.db.bootstrap`，普通运行前检查为 `app.db.completion_baseline.ensure_startup_contract(entrypoint=...)`；静态目录在 `completion_baseline_contract.py`，无导入时DB IO。
+
+- `postgres` 与 `aearn_completion_b_test_20261026` 使用固定599→601→602初装计划、`runtime-purpose`；另一个具名 `aearn_completion_b_validation_20261027` 使用599→601→602→600、`storage-validation-purpose`。旧B1d库不适用，531仍是不可执行草案。三个目标已安装SQL≤602冻结，不能通过重放初装计划修复既有目标。
+- schema角色固定NOLOGIN；runtime和verifier是互不继承的独立非特权LOGIN。普通用户birth、origin capture、cutover及export/reset/delete仍由正式owner执行；P2/P7生成、质量、发布与计费业务不因安装自动获权。600的有限合成存储图只能由独立verifier在固定验证域签发，不能成为真实来源/质量/发布成功。
+- 目录精确覆盖表、列、FK/CHECK、索引、触发器、函数正文/owner/ACL/search_path、表/列ACL、schema、序列、角色与membership。BASE和post都以同一显式catalog search_path读取，保留PG原始表达式。仅开发目标的13个已核旧CHECK有精确成对表示，不对未知差异做字符串归一化。
+- 安装时先维护静默，再取schema advisory lock与原基础关系锁，并在锁内重新判断：`ABSENT`才执行固定计划；`COMPLETE`只读no-op；`PARTIAL_OR_UNKNOWN`拒绝。正式候选始终ROLLBACK，安装显式COMMIT；未知COMMIT只能只读核对，不自动重放。新合同不运行旧seed/import或旧整事务重试。
+- 显式 `AEARN_DATABASE_CONTRACT=completion_non_b1d_v1` 下，普通bootstrap与API、普通/Codex worker、beat、独立验收operator只做完整启动检查；`-SkipBootstrap`和自定义Celery loader不能绕过。验证域不能启动实际应用；专用角色/验证域DSN即使漏selector也拒绝落入legacy路径。仅显式legacy维护/测试Python API保留历史调用兼容；正常CLI和受管dev缺selector一律拒绝，不启动历史DDL/seed。
+
+2026-10-27 10:28+08：三个具名目标已分别安装并独立判为`COMPLETE`；实际原安装与后续601/602差量记录分开保存。601只补actual-D库存读取的三张RAG表SELECT；602只补原规划resolver读取的`language_courses`、`language_course_intent_tags`、`tutor_learning_intents`三表SELECT，并把三表及两个既有coverage guard闭包纳入BASE精确目录，不新建或改写这些对象，不做课程seed/import。三库602候选均全回滚、前置目录和原数据计数保持，随后单602安装COMMIT/独立读回；验证域真实runtime登录的完整规划准备通过并全回滚。最终172项目录/loader/manifest CPU、Ruff/mypy通过；8个真实角色存储场景使用此前7+1证据，不重复刷矩阵。
+
+`CATALOG_CANONICALIZED=True`仍只说明目录可比较，不单独证明安装或业务READY。API、普通/Codex worker及beat已有受限新进程启动证据并停止；HTTP main03与sidecar新r2分别实际通过。10:36开发completion设为true，新验证进程从实际`.env`加载runtime登录与selector并完整只读判COMPLETE；这不表示原API/worker仍在运行，也不是Desktop/HTTP-SSE E2E。操作入口见[本地开发环境](../setup/development-environment.md#4-bootstrap启动与停止)。
+
+12:13补充真实Lesson闭环：原runtime TEST/专用runtime登录经原user/cutover/track/Lesson prepare正常准备新合成scope，默认真实作者完成两个请求；SQL597两阶段结果独立持久化并accepted，personalized精确引用standard阶段，原最终事务提交两稿/唯一assignment/run完成，独立公开投影一致。本轮没有新增或重放DDL、课程seed、来源GET或validation receiver；SQL≤602保持冻结。批准B切片按此及既有分层证据收口，不扩大为P8或应用E2E。
+
+## 2026-10-26：完成驱动的三个持久化合同（596–598已安装冻结，真实调用另验）
+
+本节对应已批准的独立 B 组增量，不改变历史 P7/P8 接收状态。候选片段为 `596_tutor_completion_execution.sql`、`597_lesson_completion_stages.sql`、`598_tutor_completion_sidecar_bindings.sql`，SQL≤595 保持冻结；新合同默认关闭，仅新显式运行可进入，不转换旧行或重开旧终态。
+
+- `tutor_run_execution_batches` 保存同一逻辑 Tutor run 的有界资源批次、唯一前驱/后继、当前 owner/generation 和累计计量。新批次重新取得执行资格，不清零逻辑工作、模型调用或 HTTP 历史。
+- `tutor_run_step_attempts` 保存派发前已提交的步骤意图、精确依赖、实际私有 typed 结果与独立业务接受状态；`(id, run_id, user_id, conversation_id)` 是 sidecar 引用的复合身份。结果记录不等于接受；恢复须经当前权限与原业务校验，UNKNOWN 不能重新派发。
+- `tutor_lesson_authoring_stage_attempts` 只承载标准稿和个性化两个阶段，保存完整依赖、候选、质量反馈与精确适用范围。合格标准稿可在模型调用前复用，个性化接续不提前发布 assignment，最终仍经原发布事务。
+
+既有 `tutor_lesson_authoring_runs` 追加可空 `completion_contract_version`，新合同为 `lesson_completion_v1`；NULL 保留 legacy 生命周期。既有 `tutor_lesson_source_snapshots` 追加 `evidence_schema_version` 与 `evidence_units_json`：完整必要依据供生成读取，1200 字符内的 excerpt 仍只作展示；旧来源身份与 hash 不改，来源 current/retention 不延长。
+
+既有 `tutor_run_runtime_bindings` 追加可空 `step_attempt_id`，不新增第四张表。旧运行保留单 binding，新运行每步骤唯一且同 run 最多一个 active binding；内部 turn 的终态不直接终结未完成的业务。审计引用和 immutable guard 保留，不能为清理而绕过 FK。
+
+用户摘要、导出和 cutover 仅按实际已安装关系查询当前用户计数；查询失败不视为未安装或零条。导出不包含完整依据、请求、候选或 provider 结果。Lesson 阶段清理由现有用户 purge 能力约束并先于其父记录，普通课程 reset 不额外清除仍随 Tutor conversation 保留的执行审计。
+
+验收分为源码/CPU、独立CODE、隔离库完整候选、开发库安装回读、配置激活和普通HTTP/sidecar实测。已完成具名CODE、179项整合CPU、14个真实PG接收器用例；补充单一注册Python文档后，新增两个Lesson领域owner/恢复/最终发布PG用例通过（fixed author，不是真实模型）。2026-10-26 22:52+08，596–598及同一保存文档在开发库原子提交并独立回读：23chunks、19admissible，未二次GET；这三片自此冻结。真实入口在原clean-start检查发现dev/TEST均缺66个既有P2/P7库存关系，尚未进入provider，completion开关已恢复关闭。定义定位涉及440/450/460/470/481/485/495/496/501/502/521/523/524/551，但这不是已审核执行清单，不能直接重放冻结片段或把缺表当0。
+
+2026-10-27补充基线对齐授权后：manifest保留163项active原顺序，并将531精确声明为保留且不可执行draft；所有未知文件、缺失声明、重复或active/draft重叠仍拒绝，531不进入load/apply，SQL≤598未改。聚焦manifest CPU14项通过。主代理在原隔离库以只读事务提交原523/524文本，均在原首个库名门禁返回23514/B1d only并完整回滚，独立读回未变。18个来源/79表仅为66关系的结构依赖线索，不批准抽取表定义以绕过scope或丢失owner/immutable/epoch约束。当前未提交基线DDL；需完整的非B1d前向初装合同审查后，才可继续开发库对齐与两通道验收。
+
 ## 2026-10-16：C19 handle域修复563已安装，质量准备回滚通过，writer已过期
 
 原440 private version的opaque storage handle与version UUID分别生成，不能拿它与native canonical handle作等式。563仅精确前向修quality、publication insert/current、continuation terminal与560 readiness五个prosrc，0新增对象；原version行与generic storage不变，native域始终使用已验证actual version UUID派生值。13:17选定安装及catalog/history保全通过，**所有已安装SQL≤563冻结；后续必要修复仅新增≥564**。
@@ -128,8 +203,8 @@ projection 的唯一 durable authority；Desktop、Celery 和 provider 不拥有
 
 ## 1. Bootstrap、迁移与范围原则
 
-- `python -m app.db.bootstrap` 按 `SCHEMA_FRAGMENT_NAMES` 的显式顺序重复执行其中登记的 Schema fragment（数量以 manifest 为准）。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。当前仓库没有另一个可与其竞争的 Alembic/Graph migration path。
-- 所有 fragment 在同一 caller-owned PostgreSQL connection 和最终提交事务中执行；loader 不 `commit`。bootstrap 使用 transaction advisory lock，并对 deadlock/serialization failure 做有界整事务重试，避免多进程启动或测试重复 bootstrap 留下部分 Schema。
+- 仅保留的显式legacy维护/测试Python API `bootstrap_database()` 会按 `SCHEMA_FRAGMENT_NAMES` 的原顺序执行其中登记的fragment；它不是正常CLI入口，也不是当前受支持的空库初始化路线。本轮没有执行历史整链。数字前缀只帮助阅读，执行顺序不依赖目录自然排序。正常 `python -m app.db.bootstrap` 必须选择具名非B1d合同且只读检查；缺selector拒绝。不能把599/600接到原163项后再跳过523。当前仓库没有可与该owner竞争的Alembic/Graph迁移路径。
+- 该legacy API的所有fragment在同一caller-owned PostgreSQL connection和最终提交事务中执行；loader不`commit`。其transaction advisory lock及deadlock/serialization failure有界整事务重试仅为历史维护/测试兼容保留。具名非B1d初装/升级的候选、显式COMMIT、独立读回和未知提交处理按上文合同，不沿用该重放策略。
 - `load_schema_text()` 只提供 manifest 组合的只读视图；仓库不维护第二份聚合 `schema.sql`。
 - `tutor_*` 与 `harness_cutovers` 是当前 runtime 的核心表族。所有可公开读取的
   内容必须从 repository 的安全投影产生，不能直接把 JSONB、trace 或 provider

@@ -156,6 +156,7 @@ class TutorContextBuilder:
         token_budget: int,
         optional_token_budget: int | None = None,
         budget_plan: TutorContextBudgetPlan | None = None,
+        preserve_required_content: bool = False,
     ) -> TutorContextSelection:
         if token_budget <= 0:
             raise ValueError("token_budget must be positive")
@@ -196,7 +197,11 @@ class TutorContextBuilder:
                 if len(sources) > item_limit:
                     raise TutorContextError(error_code)
                 for source in sources:
-                    content, truncated = self._serialize_source(section, source)
+                    if preserve_required_content:
+                        content = self._serialize_complete_required_source(section, source)
+                        truncated = False
+                    else:
+                        content, truncated = self._serialize_source(section, source)
                     estimate = max(1, self._estimator.estimate_tokens(content))
                     if truncated or consumed_tokens + estimate > token_budget:
                         raise TutorContextError(error_code)
@@ -208,6 +213,7 @@ class TutorContextBuilder:
                             content=content,
                             source_hash=source_hash,
                             token_estimate=estimate,
+                            preserve_required_content=preserve_required_content,
                         )
                     )
                     selected_ids.append(source.source_id)
@@ -497,11 +503,42 @@ class TutorContextBuilder:
             return first_character
         raise TutorContextError("TUTOR_CURRENT_INPUT_UNREPRESENTABLE")
 
+    def _serialize_complete_required_source(
+        self, section: TutorContextSection, source: TutorContextSource,
+    ) -> str:
+        """Keep exact safe required evidence, or fail closed; never a summary.
+
+        Existing redaction/shape rules still apply. Any dropped mapping keys,
+        list entries, protected content or truncation is an explicit failure,
+        not a complete-evidence claim. The caller's token budget bounds the result.
+        """
+        try:
+            original = (
+                source.content.strip() if isinstance(source.content, str)
+                else json.dumps(source.content, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            )
+            content, truncated = self._serialize_source(
+                section, source, max_source_characters=max(
+                    1, len(original), len(source.content) if isinstance(source.content, str) else 0,
+                ),
+            )
+            identical = (
+                content == original if isinstance(source.content, str)
+                else json.loads(content) == json.loads(original)
+            )
+        except (TypeError, ValueError) as exc:
+            raise TutorContextError("TUTOR_CONTEXT_REQUIRED_OVERFLOW") from exc
+        if truncated or not identical:
+            raise TutorContextError("TUTOR_CONTEXT_REQUIRED_OVERFLOW")
+        return content
+
     def _serialize_source(
         self,
         section: TutorContextSection,
         source: TutorContextSource,
+        *, max_source_characters: int | None = None,
     ) -> tuple[str, bool]:
+        source_limit = max_source_characters if max_source_characters is not None else self._config.max_source_characters
         if section is TutorContextSection.REQUIRED_FACTS and source.source_id.startswith("teaching-artifact-evidence:"):
             # This server-authenticated task evidence is not a working summary.
             # Summary sanitization can trim ordered JSON pieces, drop options
@@ -514,7 +551,7 @@ class TutorContextBuilder:
             safe_serialized = json.dumps(redacted, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
             if serialized != safe_serialized:
                 raise TutorContextError("TUTOR_REQUIRED_FACTS_PROTECTED")
-            return serialized, len(serialized) > self._config.max_source_characters
+            return serialized, len(serialized) > source_limit
         if section is TutorContextSection.SYSTEM and source.source_id.startswith("catalog:selected:"):
             if not isinstance(source.content, Mapping) or not is_complete_selected_skill(source.source_id, source.content):
                 raise TutorContextError("TUTOR_SELECTED_SKILL_UNREPRESENTABLE")
@@ -547,13 +584,13 @@ class TutorContextBuilder:
         safe_value = _sanitize_source_value(
             section=section,
             value=source.content,
-            max_characters=self._config.max_source_characters,
+            max_characters=source_limit,
         )
         if isinstance(safe_value, str):
             return safe_value, _source_value_exceeds_limit(
                 section=section,
                 value=source.content,
-                max_characters=self._config.max_source_characters,
+                max_characters=source_limit,
             )
         serialized = json.dumps(
             safe_value,
@@ -566,19 +603,19 @@ class TutorContextBuilder:
             # measures UTF-8 bytes. Do not silently tighten multilingual capacity.
             # Keep JSON intact; build() rejects overflow instead of using a fragment.
             return serialized, (
-                len(serialized) > self._config.max_source_characters
+                len(serialized) > source_limit
                 or _source_value_exceeds_limit(
                     section=section, value=source.content,
-                    max_characters=self._config.max_source_characters,
+                    max_characters=source_limit,
                 )
             )
         return (
-            limit_text(serialized, self._config.max_source_characters),
-            len(serialized) > self._config.max_source_characters
+            limit_text(serialized, source_limit),
+            len(serialized) > source_limit
             or _source_value_exceeds_limit(
                 section=section,
                 value=source.content,
-                max_characters=self._config.max_source_characters,
+                max_characters=source_limit,
             ),
         )
 

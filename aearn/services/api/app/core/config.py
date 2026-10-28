@@ -55,6 +55,11 @@ def _env_optional(name: str) -> str | None:
     return stripped or None
 
 
+def _env_optional_int(name: str) -> int | None:
+    value = _env_optional(name)
+    return int(value) if value is not None else None
+
+
 class Settings(BaseModel):
     app_env: str = Field(default_factory=lambda: _env_str("APP_ENV", "development"))
     api_host: str = Field(default_factory=lambda: _env_str("API_HOST", "127.0.0.1"))
@@ -311,6 +316,55 @@ class Settings(BaseModel):
         le=3,
     )
     tutor_context_fixed_mode: str | None = Field(default_factory=lambda: _env_optional("TUTOR_CONTEXT_FIXED_MODE"))
+    # Opt-in contract for new runs only. None is not evidence of a 1M channel.
+    tutor_completion_driven_enabled: bool = Field(
+        default_factory=lambda: _env_bool("TUTOR_COMPLETION_DRIVEN_ENABLED", "false")
+    )
+    tutor_completion_validated_channel_context_tokens: int | None = Field(
+        default_factory=lambda: _env_optional_int("TUTOR_COMPLETION_VALIDATED_CHANNEL_CONTEXT_TOKENS"),
+        ge=1, validate_default=True,
+    )
+    tutor_completion_decision_max_output_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_DECISION_MAX_OUTPUT_TOKENS", "16384"), ge=1, validate_default=True,
+    )
+    tutor_completion_decision_timeout_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_DECISION_TIMEOUT_SECONDS", "300"), ge=1, le=600, validate_default=True,
+    )
+    tutor_completion_semantic_max_output_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_SEMANTIC_MAX_OUTPUT_TOKENS", "256"), ge=1, validate_default=True,
+    )
+    tutor_completion_semantic_timeout_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_SEMANTIC_TIMEOUT_SECONDS", "90"), ge=1, le=600, validate_default=True,
+    )
+    tutor_completion_lesson_max_output_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_LESSON_MAX_OUTPUT_TOKENS", "12000"), ge=1, validate_default=True,
+    )
+    tutor_completion_lesson_timeout_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_LESSON_TIMEOUT_SECONDS", "600"), ge=1, le=600, validate_default=True,
+    )
+    tutor_completion_model_review_max_output_tokens: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_MODEL_REVIEW_MAX_OUTPUT_TOKENS", "6000"), ge=1, validate_default=True,
+    )
+    tutor_completion_model_review_timeout_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_MODEL_REVIEW_TIMEOUT_SECONDS", "90"), ge=1, le=600, validate_default=True,
+    )
+    tutor_completion_sidecar_timeout_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_SIDECAR_TIMEOUT_SECONDS", "900"), ge=1, validate_default=True,
+    )
+    # The current owner/596 contract is fixed. Reject unsupported overrides
+    # instead of exposing knobs that are silently ignored by that owner.
+    tutor_completion_batch_timeout_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_BATCH_TIMEOUT_SECONDS", "2400"), ge=2400, le=2400, validate_default=True,
+    )
+    tutor_completion_max_decisions: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_MAX_DECISIONS", "8"), ge=8, le=8, validate_default=True,
+    )
+    tutor_completion_max_http_requests: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_MAX_HTTP_REQUESTS", "16"), ge=16, le=16, validate_default=True,
+    )
+    tutor_completion_result_reserve_seconds: int = Field(
+        default_factory=lambda: _env_int("TUTOR_COMPLETION_RESULT_RESERVE_SECONDS", "60"), ge=60, le=60, validate_default=True,
+    )
     exa_api_key: str | None = Field(default_factory=lambda: _env_optional("EXA_API_KEY"))
     plan_generation_enabled: bool = Field(
         default_factory=lambda: _env_str("PLAN_GENERATION_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -461,6 +515,8 @@ class Settings(BaseModel):
             raise ValueError("Tutor context warning ratio must be below the critical ratio")
         if self.tutor_context_fixed_mode not in {None, "compact", "normal", "complex", "extended"}:
             raise ValueError("TUTOR_CONTEXT_FIXED_MODE is invalid")
+        if self.tutor_completion_result_reserve_seconds >= self.tutor_completion_batch_timeout_seconds:
+            raise ValueError("Completion batch must leave time before its result reserve")
         return self
 
     @property

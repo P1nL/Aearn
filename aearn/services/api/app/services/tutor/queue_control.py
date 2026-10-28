@@ -785,7 +785,7 @@ def _json_hash(value: Mapping[str, object]) -> str:
 
 
 def build_queue_turn_policy(now: datetime, *, settings: Settings) -> TutorPolicySnapshot:
-    return TutorPolicySnapshot(
+    policy = TutorPolicySnapshot(
         deadline=now + timedelta(minutes=5),
         max_iterations=4,
         max_model_calls=3,
@@ -793,5 +793,12 @@ def build_queue_turn_policy(now: datetime, *, settings: Settings) -> TutorPolicy
         max_effects=2,
         context_token_budget=settings.tutor_context_token_budget,
         lease_duration_seconds=30,
-        context_budget_policy=build_tutor_context_budget_policy(settings),
+        context_budget_policy=build_tutor_context_budget_policy(
+            settings, completion_stage="tutor_decision" if settings.tutor_completion_driven_enabled else None,
+        ),
     )
+    if settings.tutor_completion_driven_enabled:
+        from app.services.tutor.completion_execution import completion_admission_policy
+
+        return completion_admission_policy(policy, now=now, settings=settings)
+    return policy

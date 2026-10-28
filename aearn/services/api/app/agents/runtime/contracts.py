@@ -130,6 +130,8 @@ class RuntimeTurnRequest:
     # Opt-in split: visible caps messages; reasoning includes raw and summary.
     # None preserves the legacy aggregate request cap. Global aggregate always applies.
     max_reasoning_text_chars: int | None = None
+    # Internal admission only; never sent as an unsupported App Server parameter.
+    completion_driven: bool = False
 
     def __post_init__(self) -> None:
         if not self.input or len(self.input) > 20:
@@ -236,6 +238,26 @@ class RuntimeTurnResult:
     events: tuple[RuntimeEvent, ...]
     safe_error_code: str | None = None
     metrics: RuntimeTurnMetrics = field(default_factory=RuntimeTurnMetrics)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimePlanningStepResult:
+    """Private durable turn DATA; neither business acceptance nor a reusable cap."""
+
+    runtime: RuntimeTurnResult
+    planning_state: Mapping[str, object]
+    tool_results: tuple[Mapping[str, object], ...]
+    tool_call_count: int
+    tool_repair_count: int
+    # Native turns do not reveal the count/usage of internal model HTTP requests.
+    model_http_request_count: int | None = None
+    model_usage_available: bool = False
+
+    def __post_init__(self) -> None:
+        if self.tool_call_count < 0 or self.tool_repair_count < 0:
+            raise ValueError("runtime planning tool counters are invalid")
+        if self.model_http_request_count is not None or self.model_usage_available:
+            raise ValueError("runtime internal HTTP usage is not observable")
 
 
 @dataclass(frozen=True, slots=True)

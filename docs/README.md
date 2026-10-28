@@ -1,5 +1,17 @@
 # Aearn Documentation Index
 
+## 2026-10-27：SQL迁移治理
+
+候选/已安装冻结/不可执行草案与目标就绪状态分开；manifest仍是唯一SQL执行顺序。正常受管启动不再回退全量legacy DDL/seed，有限旧前缀升级只接纳完整匹配的599/601，其他漂移拒绝。当前支持的是具名目标上已有BASE的子系统初装，不宣称任意空库初始化已完成；completion保持开启，不改历史SQL或业务权限。规则和支持矩阵见[数据库契约](architecture/database-schema.md#2026-10-27sql迁移生命周期与受支持路径)，操作见[开发环境](setup/development-environment.md#迁移清单初装和有限升级)。
+
+本轮最终274项直接CPU、8文件Ruff/mypy和独立CODE通过；隔离validation三条真实SQL分支全部TOP回滚，三库最新COMPLETE/空升级计划/noop及原记录计数通过，22:40实际配置新进程确认completion仍true。没有新持久DDL提交或付费业务调用；changed正式升级COMMIT故障路径仅有CPU/CODE，不将隔离回滚说成新的持久安装。验证层次与未支持路线见[数据库契约：本轮验证与未支持路线](architecture/database-schema.md#本轮验证与未支持路线)。
+
+## 2026-10-27：独立 B 组实施状态
+
+**2026-10-27 12:13：原批准§14.4具名B实施切片及补充的真实Lesson闭环已收口。** HTTP main03、sidecar r2分别实际通过；本次默认真实Lesson作者完成standard→personalized→原最终原子提交，两阶段均accepted，独立读回assignment/文档/公开投影一致。实际2请求、input4825/output1768/total6593（cached768包含在input中），金额仍unknown。已有具名CODE、179整合CPU、14接收器PG、两个fixed-author Lesson owner PG、172目录CPU和8真实角色场景（7+1）均复用，不重跑。完成驱动代码默认仍false，本地开发`.env`已于10:36设true并由新验证进程加载；原失败身份/日志/Home及所有UNKNOWN保留。范围见 [运行时契约](architecture/tutor-harness-runtime.md)，持久化见 [数据库契约](architecture/database-schema.md)。不扩大为全部B愿景、独立practice legacy迁移、Desktop/API HTTP-SSE E2E或P8；原G、assessment-2不动。
+
+非B1d三个具名目标已实际安装并独立读回COMPLETE，SQL≤602冻结；原163项legacy顺序、不可执行草案531及旧B1d门禁保持。初装固定计划为runtime 599→601→602、validation 599→601→602→600；已装目标的601/602仅走已审精确前向差量，不重放旧SQL。10:28完成602三库COMMIT与独立读回，既有计数不变；172项最终目录/loader/manifest CPU、Ruff/mypy通过。开发配置已使用专用runtime登录和显式selector；真实API、两类worker及beat完成受限启动检查并停止。部署入口/角色/三态分类见[数据库契约](architecture/database-schema.md)，日常只读检查见[本地环境](setup/development-environment.md)。安装和启动证据不替代真实业务验收。
+
 ## Current runtime status
 
 **Updated: 2026-09-03.** Aearn's active product runtime is the **Tutor Harness** with a controlled Codex Sidecar path for eligible new `plan_drafting` turns.

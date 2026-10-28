@@ -14,7 +14,8 @@ from psycopg.types.json import Jsonb
 
 from app.agents.harness.capabilities import LearningPlanDraftCapabilityInput, plan_draft_input_model
 from app.agents.harness.contracts import (
-    TutorContextSection, TutorContextSource, TutorDecision, TutorRunSnapshot, payload_mapping_from_fields,
+    TutorContextSection, TutorContextSource, TutorDecision, TutorExecutionProfile,
+    TutorRunSnapshot, payload_mapping_from_fields,
 )
 from app.agents.harness.context_builder import TutorContextBuilder, TutorContextBuilderConfig
 from app.services.grounding.material_binding_repository import (
@@ -32,9 +33,32 @@ from app.services.learning.material_semantics import (
 )
 from app.services.learning.plan_drafting import LearningPlanDraftArtifact
 from app.services.learning.plan_repository import PostgresLearningPlanSessionRepository
+from app.services.llm.contracts import LLMUsage
+from app.services.llm.http_execution import LLMHTTPExecutionError, current_http_execution
 
 
 logger = logging.getLogger(__name__)
+
+
+class MaterialSemanticReviewOutcomeUnknown(LLMHTTPExecutionError):
+    """Private consumer-to-gateway stop; never a semantic verdict or retry permit.
+
+    physical_attempts counts only the current HTTP execution scope. A cold
+    dispatched receipt does not reveal its historical send count or usage.
+    Existing dispatched DATA stays immutable; live metadata travels to the
+    original gateway/step owner instead of falsely settling the review.
+    """
+
+    def __init__(
+        self, request_binding_hash: str, *, physical_attempts: int,
+        from_dispatched_receipt: bool = False,
+    ) -> None:
+        super().__init__(
+            "material_review_dispatched_unknown" if from_dispatched_receipt else "material_review_outcome_unknown",
+            outcome_unknown=True, physical_attempts=physical_attempts,
+        )
+        self.request_binding_hash = request_binding_hash
+        self.from_dispatched_receipt = from_dispatched_receipt
 
 
 def _review_issue(verdict: str, reason: str) -> str | None:
@@ -438,6 +462,7 @@ class PostgresMaterialPlanningConsumer:
     def review_decision(self, run: TutorRunSnapshot, decision: TutorDecision,
                         attempt_index: int) -> str | None:
         """One D review per draft candidate, outside provider/DB write transactions."""
+        completion = run.policy.execution_profile is TutorExecutionProfile.COMPLETION_DRIVEN_V1
         requests = [item for item in decision.capability_requests
                     if item.capability_id == "learning.plan.draft"]
         if not requests:
@@ -451,7 +476,7 @@ class PostgresMaterialPlanningConsumer:
             candidate = plan_draft_input_model(requests[0].capability_version).model_validate(values)
         except ValueError:
             return "material_candidate_invalid"
-        if self._semantic_reviewer is None:
+        if self._semantic_reviewer is None and not completion:
             return "material_review_uncertain_unavailable"
         with material_transaction(self._conn):
             session = self._plans.active_session_for_run(
@@ -498,8 +523,26 @@ class PostgresMaterialPlanningConsumer:
                         or prior["candidate_digest"] != request.candidate_digest):
                     raise MaterialBindingStale("semantic review attempt conflicts with different candidate")
                 if prior["review_status"] == "dispatched":
+                    if completion:
+                        execution = current_http_execution()
+                        unknown = MaterialSemanticReviewOutcomeUnknown(
+                            request.binding_hash,
+                            physical_attempts=execution.physical_attempts if execution is not None else 0,
+                            from_dispatched_receipt=True,
+                        )
+                        model = prior.get("reviewer_model")
+                        unknown.model = model if isinstance(model, str) else None
+                        prior_usage = prior.get("usage_json")
+                        if isinstance(prior_usage, Mapping):
+                            try:
+                                unknown.usage = LLMUsage(**prior_usage)
+                            except (TypeError, ValueError):
+                                pass  # Invalid usage never downgrades execution UNKNOWN.
+                        raise unknown
                     return "material_review_uncertain_incomplete_dispatch"
                 return _review_issue(prior["verdict"], prior["reason_code"])
+            if self._semantic_reviewer is None:
+                return "material_review_uncertain_unavailable"
             self._conn.execute(
                 "INSERT INTO rag_material_semantic_reviews (user_id,conversation_id,run_id,"
                 "input_revision,decision_iteration,attempt_index,selection_handle,selection_digest,"
@@ -513,6 +556,23 @@ class PostgresMaterialPlanningConsumer:
             )
         try:
             receipt = self._semantic_reviewer.review(request)
+        except LLMHTTPExecutionError as exc:
+            if completion and exc.outcome_unknown:
+                unknown = MaterialSemanticReviewOutcomeUnknown(
+                    request.binding_hash, physical_attempts=exc.physical_attempts,
+                )
+                unknown.usage, unknown.model = exc.usage, exc.model
+                unknown.response_diagnostics = exc.response_diagnostics
+                unknown.diagnostic_capture, unknown.status_code = exc.diagnostic_capture, exc.status_code
+                # The existing table cannot append usage while retaining
+                # dispatched. Do not turn UNKNOWN into a settled verdict just
+                # to record it; the gateway/step owner receives the metadata.
+                raise unknown from exc
+            receipt = MaterialReviewReceipt(
+                request.binding_hash,
+                StrictReviewVerdict(verdict=ReviewVerdict.UNCERTAIN,
+                                    reason_code=ReviewReason.PROVIDER_UNAVAILABLE),
+                exc.model if completion else None, exc.usage if completion else None)
         except Exception:
             receipt = MaterialReviewReceipt(
                 request.binding_hash,

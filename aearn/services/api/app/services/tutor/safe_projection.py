@@ -80,7 +80,7 @@ _SAFE_KEYS = frozenset(
         "source_count", "item_count", "count", "selected_count", "skipped_count", "token_budget", "consumed_tokens",
         "duration_ms", "confidence", "section", "sections", "section_counts", "retention_until", "stale_after",
         "created_at", "expires_at", "deadline", "max_iterations", "max_model_calls", "max_capability_calls",
-        "max_effects", "context_token_budget", "lease_duration_seconds", "skills", "required_capability_ids",
+        "max_effects", "context_token_budget", "lease_duration_seconds", "execution_profile", "skills", "required_capability_ids",
         "allowed_effect_types", "policy_tags", "context_budget_policy", "budget_mode", "estimated_total_input_tokens", "optional_token_budget",
         "warning_reached", "critical_reached", "expansion_count", "estimator_version", "capability_version",
         "budget_policy_version", "truncated_count", "authoritative_snapshot_schema_version",

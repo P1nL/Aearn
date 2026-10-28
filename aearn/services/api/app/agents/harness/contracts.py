@@ -188,6 +188,9 @@ class TokenEstimator(Protocol):
     def estimate_tokens(self, value: object) -> int: ...
 
 
+TUTOR_COMPLETION_CONTEXT_SAFETY_MARGIN_RATIO = 0.05
+
+
 class TutorContextBudgetMode(str, Enum):
     COMPACT = "compact"
     NORMAL = "normal"
@@ -225,8 +228,21 @@ class TutorProviderContextCapability:
         return self.context_window_tokens - self.max_output_reserve_tokens
 
     @property
+    def safety_margin_ratio(self) -> float:
+        # Versioned semantics survive the existing persisted capability shape.
+        # Legacy snapshots retain their fixed-only margin without a backfill.
+        return TUTOR_COMPLETION_CONTEXT_SAFETY_MARGIN_RATIO if self.capability_version in {
+            "completion-legacy-application-fallback-v1",
+            "completion-declared-validated-channel-v1",
+        } else 0.0
+
+    @property
     def dynamic_hard_limit(self) -> int:
-        return self.input_hard_limit - self.protocol_reserve_tokens - self.safety_margin_tokens
+        available = self.input_hard_limit - self.protocol_reserve_tokens
+        return min(
+            available - self.safety_margin_tokens,
+            int(available / (1 + self.safety_margin_ratio)),
+        )
 
 
 @dataclass(frozen=True)
@@ -318,6 +334,11 @@ class TutorContextBudgetPlan:
         return self.estimated_total_input_tokens >= self.total_input_critical_tokens
 
 
+class TutorExecutionProfile(str, Enum):
+    MVP_TEACHING_V1 = "mvp_teaching_v1"
+    COMPLETION_DRIVEN_V1 = "completion_driven_v1"
+
+
 @dataclass(frozen=True)
 class TutorPolicySnapshot:
     deadline: datetime
@@ -328,8 +349,11 @@ class TutorPolicySnapshot:
     context_token_budget: int = 1200
     lease_duration_seconds: int = 30
     context_budget_policy: TutorContextBudgetPolicy | None = None
+    execution_profile: TutorExecutionProfile | None = None
 
     def __post_init__(self) -> None:
+        if self.execution_profile is not None and not isinstance(self.execution_profile, TutorExecutionProfile):
+            raise ValueError("execution_profile must be a typed Tutor execution profile")
         for name in ("max_iterations", "max_model_calls", "max_capability_calls", "max_effects"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
@@ -605,12 +629,17 @@ class TutorContextItem:
     content: str
     source_hash: str
     token_estimate: int
+    preserve_required_content: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_id", _safe_identifier(self.source_id))
         # Executable contracts are selected atomically by the builder. Never
         # turn a selected Skill or capability schema into partial instructions.
-        if self.section is not TutorContextSection.CAPABILITY_SCHEMAS and not (
+        if self.preserve_required_content and self.section not in {
+            TutorContextSection.REQUIRED_FACTS, TutorContextSection.TEACHING_SESSION,
+        }:
+            raise ValueError("Only required context can preserve complete evidence")
+        if not self.preserve_required_content and self.section is not TutorContextSection.CAPABILITY_SCHEMAS and not (
             self.section is TutorContextSection.SYSTEM
             and is_complete_selected_skill(self.source_id, self.content)
         ):

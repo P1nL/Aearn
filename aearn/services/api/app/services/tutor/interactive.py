@@ -15,6 +15,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from psycopg import Connection
+from app.services.tutor.completion_execution import CompletionExecutionOwner, validate_completion_batch_settings
 
 from app.agents.harness.actions import is_current_verified_plan_draft_receipt
 from app.agents.harness.catalog_context import CatalogContextLoader
@@ -1136,6 +1137,8 @@ class TutorInteractiveRunDispatcher:
             # or hold a foreground-run lock. Repository lifecycle methods open their
             # own short atomic transactions around each durable boundary.
             conn.autocommit = True
+            if self._settings.tutor_completion_driven_enabled:
+                validate_completion_batch_settings(self._settings)
             material_consumer = (self._material_consumer_factory(conn)
                                  if self._material_consumer_factory is not None else None)
             provider = self._provider_factory(self._settings)
@@ -1178,7 +1181,7 @@ class TutorInteractiveRunDispatcher:
                         for section, limit in TutorContextBuilderConfig().section_item_limits
                     ),
                 )),
-                context_budget_planner=TutorContextBudgetPlanner(),
+                context_budget_planner=TutorContextBudgetPlanner(settings=self._settings),
                 provider=PlanDraftingProviderGateway(
                     delegate=provider,
                     plans=PostgresLearningPlanSessionRepository(conn),
@@ -1224,6 +1227,8 @@ class TutorInteractiveRunDispatcher:
                     repository=repository,
                     intent_resolution_enabled=self._settings.tutor_planning_intent_enabled,
                 ),
+                completion_owner=CompletionExecutionOwner(conn) if self._settings.tutor_completion_driven_enabled else None,
+                completion_stage_seconds=float(self._settings.tutor_completion_decision_timeout_seconds),
             )
             result = TutorHarnessService.enabled(loop=loop).run(
                 run_id=run_id,

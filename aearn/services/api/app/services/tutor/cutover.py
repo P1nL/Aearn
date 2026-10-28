@@ -23,6 +23,7 @@ from app.db.connection import connect
 from app.services.grounding.autonomous.actual_d_lifecycle import actual_d_private_counts
 from app.services.learning.item_supply.storage import purge_private_supply
 from app.services.learning.item_supply.storage_tables import EPOCH_TABLE, PRIVATE_TABLES, SHARED_TABLES
+from app.services.tutor.completion_data import COMPLETION_PRIVATE_TABLES, completion_execution_counts
 
 
 CUTOVER_VERSION = "harness_clean_slate_v1"
@@ -279,7 +280,7 @@ _TARGET_COUNT_SQL = _TARGET_COUNT_SQL + tuple(
      + (" AND false" if table == "tutor_item_supply_native_exposure_births" else ""))
     for table in PRIVATE_TABLES
 ) + ((EPOCH_TABLE, f"SELECT count(*)::int AS count FROM {EPOCH_TABLE} WHERE user_id = %s AND false"),)
-CUTOVER_TARGET_TUTOR_TABLES = frozenset(name for name, _query in _TARGET_COUNT_SQL)
+CUTOVER_TARGET_TUTOR_TABLES = frozenset(name for name, _query in _TARGET_COUNT_SQL) | frozenset(COMPLETION_PRIVATE_TABLES)
 
 
 class HarnessCutoverService:
@@ -584,6 +585,7 @@ class HarnessCutoverService:
             raise CutoverError("USER_NOT_FOUND", "用户不存在。", status_code=404, details={"user_id": user_id})
         fields = {name: row.get(name) is not None for name in _LEGACY_PROFILE_FIELDS}
         target_counts = {name: self._count(query, user_id) for name, query in _TARGET_COUNT_SQL}
+        target_counts.update(completion_execution_counts(self._conn, user_id))
         # Mixed RAG tables are not wholesale Tutor-private/shared partitions.
         # Owner-bound actual-D rows are target contamination, not legacy data to
         # erase during cutover; the existing target-state gate must block first.

@@ -112,6 +112,8 @@ class BridgeProtocol(prior.OfflineD):
         elif q.startswith("SELECT e.id AS public_evidence_id"):
             rows = ([dict(public_evidence_id=self.public.evidence_id,corpus_id=self.cid,generation=self.generation)]
                     if self.carrier_enabled and self.evidence[self.public.evidence_id]["revoked_at"] is None else [])
+        elif q.startswith("SELECT v.id FROM grounding_corpus_versions v"):
+            rows = [{"id": self.cid}]
         elif "FROM rag_assessment_source_evidence" in q:
             if "WHERE e.id=%s" in q or "WHERE id=%s" in q:
                 row = self.evidence.get(params[0])
@@ -125,6 +127,10 @@ class BridgeProtocol(prior.OfflineD):
                 row = next((r for r in self.evidence.values() if r[column] == params[0]),None)
                 if "signed_proof->'payload'->>'format'=%s" in q and row and row["private_user_id"] is None:
                     row = None
+        elif q.startswith("SELECT private_evidence_id FROM rag_actual_d_private_provenance"):
+            # Discovery is identity-only. It supplies no proof/current authority.
+            row = ({"private_evidence_id": self.bridge["private_evidence_id"]}
+                   if self.bridge is not None and self.bridge["private_evidence_id"] == params[0] else None)
         elif q.startswith("SELECT * FROM rag_actual_d_private_provenance"):
             row = self.bridge
         elif q.startswith("INSERT INTO rag_actual_d_private_provenance"):

@@ -158,6 +158,56 @@ circuit breaker 仍然生效。curation/inferred memory 仍默认关闭。
 
 ## 4. Bootstrap、启动与停止
 
+### 具名非B1d数据库合同
+
+对既有基础schema上的本次具名非B1d初装，必须显式配置 `AEARN_DATABASE_CONTRACT=completion_non_b1d_v1`，不能运行完整legacy迁移链或用`-SkipBootstrap`冒充已经对齐。固定初装顺序是runtime 599→601→602、validation 599→601→602→600；三个具名目标现均已安装。精确数据库、角色、验证分区和实际验收状态见[数据库契约](../architecture/database-schema.md#2026-10-27具名非b1d首次安装与只读启动合同)。当前合同只支持列出的本地目标，不是任意库bootstrap或PARTIAL恢复工具。
+
+普通 `python -m app.db.bootstrap` 在此selector下仅检查完整合同；也可显式使用 `--check`。API、worker、beat和独立operator各自检查，异常必须停止启动；旧进程存活或`/health`响应不能替代新进程载入合同。启动脚本跳过bootstrap、Celery自定义loader或遗失selector都不能让专用DSN绕到legacy模式。
+
+`--candidate`、`--install`是Main维护操作，不是正常启动副作用；须提供事先核实的 `--database-oid`、`--maintenance-confirmed` 和仅用于固定验证库的 `--storage-check`（适用时）。候选全回滚；安装有独立COMMIT/只读读回；不做seed/import、不恢复历史UNKNOWN。不要把schema管理DSN或验证身份作为应用runtime配置，也不要把口令放进命令行或文档。下方正常命令只检查当前合同，不是空库provisioning。
+
+**支持边界：**初装的`ABSENT`是“完整匹配BASE已存在、该子系统未安装”，不是没有表的空数据库。当前没有已审的任意空库→完整BASE初始化命令；不要重放163项legacy、截取其前缀、重建现库或复制用户数据来替代。仅精确599/601旧前缀可走有限增量升级；部分ACL、未知漂移、逆序组合和缺失validation用途对象拒绝。生命周期、冻结时点与支持矩阵见[数据库迁移治理](../architecture/database-schema.md#2026-10-27sql迁移生命周期与受支持路径)。
+
+受管`dev`对缺失/未知selector在启动依赖和服务前拒绝，绝不回退全量DDL/seed；`-SkipBootstrap`不跳过readiness。历史显式legacy维护/测试Python API继续与正常启动分开，不是本轮新库支持路线。
+
+### 迁移清单、初装和有限升级
+
+离线清单不加载配置或连接数据库；它报告生命周期与manifest选择，`target_database_installation=not_observed`，不能代替真实目标readiness：
+
+```powershell
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --inventory
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --inventory --contract completion_non_b1d_v1
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --inventory --contract completion_non_b1d_v1 --storage-check
+```
+
+对于已安全配置的具名runtime目标，先只读观察计划和完整就绪状态：
+
+```powershell
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --contract completion_non_b1d_v1 --upgrade-plan
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --contract completion_non_b1d_v1 --check
+```
+
+`--upgrade-plan`仅承认全目录精确匹配的599、601或最新602；最新返回空片段。旧前缀的`--check`仍拒绝，不能拿计划通过当作可启动业务。validation调用另加`--storage-check`且必须已具有完整600用途对象；不能用该选项给其他库安装验证权限。
+
+写入仅在独立维护终端、已停止对应业务且事先核实目标/OID/用途时运行，schema管理DSN须安全注入当前进程，不写回应用`.env`。`--maintenance-confirmed`是operator对静默维护的确认，不是自动停止所有业务的锁。下例的`$ExpectedDatabaseOid`必须来自独立只读核对；不能从失败结果猜测或照抄其他库的OID：
+
+```powershell
+if (-not $ExpectedDatabaseOid -or $ExpectedDatabaseOid -le 0) { throw '先核实本次具名目标的真实 OID' }
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --contract completion_non_b1d_v1 --candidate --upgrade --database-oid $ExpectedDatabaseOid --maintenance-confirmed
+```
+
+候选成功表示整个TOP已回滚。完成同一候选的CODE、真实消费者/权限、全目录和恢复路径审查，并对将安装文件记录冻结承诺后，才单独执行正式升级：
+
+```powershell
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --contract completion_non_b1d_v1 --install --upgrade --database-oid $ExpectedDatabaseOid --maintenance-confirmed
+```
+
+正式安装只接纳已冻结片段或显式记录冻结承诺的候选；不会在COMMIT后自动改源码、创建另一套ledger或把候选留为可编辑。`--upgrade`仅补有限缺失601/602；已有最新合同为rollback/no-op。对于完整匹配BASE上的子系统`ABSENT`初装，去掉`--upgrade`，沿相同candidate→审查/冻结→install边界执行固定初装计划；这仍不支持空库。不得以重复执行当前初装计划修复未知PARTIAL。
+
+发生`COMPLETION_BASELINE_COMMIT_UNKNOWN`时，停止重试并独立只读对账；`COMPLETION_BASELINE_COMMITTED_READBACK_FAILED`或`COMPLETION_BASELINE_COMMITTED_CLEANUP_FAILED`明确表示COMMIT已经确认，不能改记为未安装或继续修改原候选。成功返回前必须有新连接的只读身份/用途/完整目录读回；维护后仍须正常readiness通过。
+
+当前开发`.env`已使用专用runtime登录与此selector，completion在HTTP/sidecar分别实际通过后于2026-10-27 10:36设为true，并由新验证进程从真实文件加载/完整检查；代码默认仍false，更改文件不代表旧进程已加载。此前API实际新进程lifespan/health通过后已由原受管Stop停止，两类worker/beat仅用进程内memory broker检查启动后停止，未消费既有队列。此证据不表示完整开发环境仍在运行，也不替代Desktop或真实HTTP/SSE E2E。
+
 ### 一键开发环境
 
 ```powershell
@@ -167,7 +217,7 @@ pnpm --dir .\aearn dev:restart
 pnpm --dir .\aearn dev:stop
 ```
 
-`dev` 的顺序是：Docker PostgreSQL/Redis → `app.db.bootstrap` → API → Celery
+`dev` 的顺序是：显式合同配置检查 → Docker PostgreSQL/Redis → 只读readiness → API → Celery
 worker → Celery beat → Tauri Desktop dev server。worker 消费 interactive/proactive/curation
 队列；beat 每 5 秒触发 `tutor.interactive.reconcile`，用于恢复丢失 wakeup 或过期 lease。
 它们的受管 PID 与日志都在 `aearn/.dev-state.json`、`aearn/.logs/`。
@@ -184,9 +234,11 @@ worker → Celery beat → Tauri Desktop dev server。worker 消费 interactive/
 
 ### 手动等价命令
 
+以下命令要求已配置且达到最新合同的具名目标；它们不创建BASE schema或导入seed。
+
 ```powershell
 docker compose -f .\aearn\infra\docker-compose.yml up -d
-uv --directory .\aearn\services\api run python -m app.db.bootstrap
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --contract completion_non_b1d_v1 --check
 uv --directory .\aearn\services\api run python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
 uv --directory .\aearn\services\api run python -m celery -A aearn_worker.worker_app:celery_app worker --loglevel=info --pool=solo
 uv --directory .\aearn\services\api run python -m celery -A aearn_worker.worker_app:celery_app beat --loglevel=info --pidfile=
@@ -347,17 +399,18 @@ transcripts or every subsystem's logs.
 
 ## Course intent metadata checks
 
-Database bootstrap now seeds `tutor_learning_intents` and `language_course_intent_tags` after the published course catalog, then validates bidirectional active coverage. Run bootstrap twice after catalog metadata changes:
+`tutor_learning_intents` and `language_course_intent_tags` retain bidirectional active-course coverage. Seeding/backfill belongs to the explicit historical maintenance/test Python API, not normal startup. The current CLI never seeds, imports or republishes the catalog; verify an already provisioned, admitted target read-only:
 
 ```powershell
-uv --directory .\aearn\services\api run python -m app.db.bootstrap
-uv --directory .\aearn\services\api run python -m app.db.bootstrap
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --contract completion_non_b1d_v1 --check
 ```
 
-A new active course must add intent tags in the same transaction or bootstrap/publication fails with `language_course_intent_coverage_missing`. Course slug is allowed only in the idempotent bootstrap backfill; runtime code must use course UUID/tag joins. With `TUTOR_PLANNING_INTENT_ENABLED=true`, explicit language is the only auto-confirm path, semantic candidates require learner confirmation, and insufficient evidence uses clarification rather than the full catalog. `TUTOR_PLANNING_INTENT_ENABLED=false` is the explicit legacy rollback to the full active catalog; that selector still has no default selection. Routine verification uses fake provider/App Server fixtures only.
+A new active course must add intent tags in the original publication transaction or publication fails with `language_course_intent_coverage_missing`; existing catalog changes require their own approved owner/migration rather than rerunning startup. Course slug is allowed only in the historical idempotent backfill; runtime code must use course UUID/tag joins. With `TUTOR_PLANNING_INTENT_ENABLED=true`, explicit language is the only auto-confirm path, semantic candidates require learner confirmation, and insufficient evidence uses clarification rather than the full catalog. `TUTOR_PLANNING_INTENT_ENABLED=false` is the explicit legacy rollback to the full active catalog; that selector still has no default selection. Routine verification uses fake provider/App Server fixtures only.
 
 
 ## 2026-09-02：Learning Artifact platform final local verification
+
+本节保留当时的验收矩阵，不是本轮治理要求全量重跑的测试列表。2026-10-27起，下方数据库检查只适用于已按独立合同配置并达到最新状态的具名目标；历史“任意临时空库bootstrap两次”不再是当前支持路径。
 
 Run bootstrap-sensitive API tests in one process. Keep provider and public executor admission disabled unless a separate approval explicitly changes that boundary.
 
@@ -381,9 +434,8 @@ cargo check --manifest-path .\aearn\apps\desktop\src-tauri\Cargo.toml
 cargo clippy --manifest-path .\aearn\apps\desktop\src-tauri\Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path .\aearn\apps\desktop\src-tauri\Cargo.toml
 
-# Use a uniquely named disposable local PostgreSQL database, then run:
-uv --directory .\aearn\services\api run python -m app.db.bootstrap
-uv --directory .\aearn\services\api run python -m app.db.bootstrap
+# Read-only check of an already provisioned, admitted named target; not empty-DB initialization:
+uv --directory .\aearn\services\api run python -m app.db.bootstrap --contract completion_non_b1d_v1 --check
 ~~~
 
 The browser matrix uses disposable learner-safe fixtures at 1440x900, 900x900, 390x844, and reduced motion. It must verify no page overflow, clean console, keyboard/focus return, isolated conversation/drawer/Artifact scrolling, and protected-marker absence. Native Preview security evidence may run only the local Tauri/WebView2 harness already defined by the Preview contract; it must not be described as Docker or production container conformance.
@@ -401,11 +453,9 @@ Do not set the real-provider marker, enable Docker conformance, build/sign/publi
 即使操作生成了 published corpus / active pointer，也不表示公开课程、真实题库或教学准入已完成。
 `--mode fetch` 当前明确返回 `FETCH_NOT_READY`（退出码 2），不抓取、不静默改用 fixture。
 
-### 临时库演示
+### 历史临时库演示（不是当前初始化入口）
 
-先自行创建一个本轮专用、以 `aearn_rag260_` 开头的本地临时数据库，再显式设置 `DATABASE_URL`。
-不要把已有学习库作为演示库。下面从仓库根目录使用 PowerShell 7 运行，先拒绝错误目标，再在该临时库
-执行 bootstrap（bootstrap 是独立开发步骤，不是 CLI 的副作用）。
+本节保留2026-09-23的fixture operator操作序列。其“创建任意`aearn_rag260_*`空库后运行bootstrap”的旧前置条件已失效：当前completion合同不支持这些目标，缺selector也不会回退legacy DDL。没有本轮已审的替代provisioning流程，不要借用现有学习库或另加业务权限。下方脚本显式停止，不能当作当前可执行验收教程；后续若单独批准历史fixture域的配置与准入，再审查该域后继续原CLI序列。
 
 ```powershell
 if (-not $env:DATABASE_URL) { throw '先显式设置本轮临时库 DATABASE_URL' }
@@ -416,8 +466,7 @@ if ($dbUri.Host -notin @('localhost', '127.0.0.1') -or
 }
 $env:PYTHON_DOTENV_DISABLED = '1'
 $env:LLM_TYPE = 'disabled'
-uv --directory .\aearn\services\api run python -m app.db.bootstrap
-if ($LASTEXITCODE -ne 0) { throw '临时库 bootstrap 失败' }
+throw '历史空库 bootstrap 路线已停用；先独立审查 fixture 域 provisioning 与准入，不得绕过当前合同'
 
 function Invoke-RagCorpus {
     $json = uv --directory .\aearn\services\api run python -m app.services.grounding.corpus_cli @args
